@@ -215,6 +215,13 @@ class NewPiScreen(ModalScreen):
         color: #8abeb7;
         text-style: bold;
     }
+    NewPiScreen #new-pi-matches {
+        color: #808080;
+        height: auto;
+        max-height: 5;
+        margin-top: 1;
+        padding: 0;
+    }
     NewPiScreen #new-pi-hint {
         color: #808080;
         margin-top: 1;
@@ -230,7 +237,11 @@ class NewPiScreen(ModalScreen):
     }
     """
 
-    BINDINGS = [Binding("escape", "cancel", "cancel")]
+    BINDINGS = [
+        Binding("escape", "cancel", "cancel"),
+        # priority=True so the modal grabs Tab before Input's focus-traversal.
+        Binding("tab", "complete", "complete", priority=True, show=False),
+    ]
 
     def __init__(self, mode: str, default_cwd: str) -> None:
         super().__init__()
@@ -250,14 +261,18 @@ class NewPiScreen(ModalScreen):
                 id="new-pi-cwd",
                 placeholder="directory to start pi in",
             )
+            yield Static("", id="new-pi-matches")
             yield Static(
+                "[#8abeb7]Tab[/#8abeb7] to complete  ·  "
                 "[#8abeb7]Enter[/#8abeb7] to launch  ·  "
                 "[#8abeb7]Esc[/#8abeb7] to cancel",
                 id="new-pi-hint",
             )
 
     def on_mount(self) -> None:
-        self.query_one(Input).focus()
+        inp = self.query_one(Input)
+        inp.focus()
+        inp.cursor_position = len(inp.value)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         cwd = event.value.strip()
@@ -268,6 +283,86 @@ class NewPiScreen(ModalScreen):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def action_complete(self) -> None:
+        """Bash-style tab completion: extend value to longest common prefix
+        of matching subdirectories, show remaining candidates below."""
+        inp = self.query_one(Input)
+        current = inp.value
+        completed, matches = _complete_dir_path(current)
+        if completed != current:
+            inp.value = completed
+            inp.cursor_position = len(completed)
+        matches_widget = self.query_one("#new-pi-matches", Static)
+        if not matches:
+            matches_widget.update("[dim](no matching directories)[/dim]")
+        elif len(matches) == 1:
+            matches_widget.update("")
+        else:
+            shown = "  ".join(escape(m) for m in matches[:6])
+            extra = (
+                f"  [dim]+{len(matches) - 6} more[/dim]"
+                if len(matches) > 6
+                else ""
+            )
+            matches_widget.update(f"[dim]{shown}[/dim]{extra}")
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        # Clear stale match list when the user keeps typing.
+        self.query_one("#new-pi-matches", Static).update("")
+
+
+def _complete_dir_path(value: str) -> tuple[str, list[str]]:
+    """Return (completed_value, matching_subdir_names).
+
+    `completed_value` is the longest common prefix of all directories whose
+    name starts with the partial component of `value`. If exactly one match,
+    a trailing slash is appended so the user can immediately tab again into
+    the next level. Hidden entries (`.` prefix) are only shown when the
+    user typed a leading dot themselves.
+    """
+    if not value:
+        return value, []
+    expanded = os.path.expanduser(value)
+    if expanded.endswith("/"):
+        parent = expanded.rstrip("/") or "/"
+        partial = ""
+    else:
+        parent = os.path.dirname(expanded) or "."
+        partial = os.path.basename(expanded)
+    show_hidden = partial.startswith(".")
+    try:
+        entries = sorted(os.listdir(parent))
+    except (FileNotFoundError, PermissionError, NotADirectoryError):
+        return value, []
+    matches: list[str] = []
+    for name in entries:
+        if not show_hidden and name.startswith("."):
+            continue
+        if not name.startswith(partial):
+            continue
+        if os.path.isdir(os.path.join(parent, name)):
+            matches.append(name)
+    if not matches:
+        return value, []
+    if len(matches) == 1:
+        full = os.path.join(parent, matches[0]) + "/"
+    else:
+        common = matches[0]
+        for m in matches[1:]:
+            i = 0
+            while i < len(common) and i < len(m) and common[i] == m[i]:
+                i += 1
+            common = common[:i]
+        if not common or common == partial:
+            return value, matches
+        full = os.path.join(parent, common)
+    # Preserve `~` form if the user typed it.
+    if value.startswith("~"):
+        home = os.path.expanduser("~")
+        if full.startswith(home):
+            full = "~" + full[len(home):]
+    return full, matches
 
 
 # ---------------------------------------------------------------------------
