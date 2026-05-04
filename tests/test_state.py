@@ -260,3 +260,20 @@ def test_reader_picks_up_appended_lines(tmp_path: Path):
 def test_sessions_root_points_at_pi_dir():
     from pi_monitor.state import SESSIONS_ROOT
     assert str(SESSIONS_ROOT).endswith(".pi/agent/sessions")
+
+
+# ---------------------------------------------------------------------------
+# Cwd → session dir encoding
+# ---------------------------------------------------------------------------
+
+
+def test_cwd_to_session_dir_encodes_slashes():
+    from pi_monitor.state import cwd_to_session_dir
+    out = cwd_to_session_dir("/home/me/proj")
+    assert out.name == "--home-me-proj--"
+
+
+def test_cwd_to_session_dir_under_sessions_root():
+    from pi_monitor.state import SESSIONS_ROOT, cwd_to_session_dir
+    out = cwd_to_session_dir("/x")
+    assert out.parent == SESSIONS_ROOT

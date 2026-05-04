@@ -4,8 +4,16 @@ We derive `AgentState` for each pi pane by reading the *last* meaningful
 message entry from the pane's session file and looking at the file's mtime.
 We never scrape `tmux capture-pane`; the JSONL plus mtime is sufficient.
 
-Pane → JSONL mapping uses `/proc/<pid>/fd/*` walked over the pane's process
-and all its descendants, since pi may run as a child of a login shell.
+Pane → JSONL mapping: pi stores sessions per cwd at
+`~/.pi/agent/sessions/--<cwd-with-/-replaced-by->--/<timestamp>_<uuid>.jsonl`.
+We map a tmux pane to its session by encoding the pane's `pane_current_path`
+(the shell's cwd, which is the cwd pi was launched from) and picking the
+most recently modified jsonl in that directory.
+
+Limitation: if two tmux panes have the same `pane_current_path`, they share
+a session directory and we'll show identical state for both panes (whichever
+pi most recently wrote wins). This is documented as a v1 limitation; future
+versions could disambiguate via process start time matching.
 """
 
 from __future__ import annotations
@@ -171,57 +179,29 @@ def _scan_lines(blob: bytes, mtime: float) -> JsonlSnapshot:
 
 
 # ---------------------------------------------------------------------------
-# Pane → JSONL mapping via /proc
+# Pane → JSONL mapping
 # ---------------------------------------------------------------------------
 
 
-def _descendant_pids(root_pid: int) -> list[int]:
-    """BFS through /proc/<pid>/task/<pid>/children. Linux-only."""
-    seen: list[int] = []
-    queue = [root_pid]
-    while queue:
-        pid = queue.pop(0)
-        seen.append(pid)
-        children_path = Path(f"/proc/{pid}/task/{pid}/children")
-        try:
-            children = children_path.read_text().split()
-        except (FileNotFoundError, PermissionError):
-            continue
-        for child in children:
-            try:
-                queue.append(int(child))
-            except ValueError:
-                pass
-    return seen
+def cwd_to_session_dir(cwd: str) -> Path:
+    """Pi encodes a session's cwd as `--<path-with-/-replaced-by->--`,
+    stripping the leading `/` first (so `/home/x` becomes `--home-x--`)."""
+    return SESSIONS_ROOT / f"--{cwd.lstrip('/').replace('/', '-')}--"
 
 
-def find_session_file_for_pid(pane_pid: int) -> Path | None:
-    """Walk fd/ for the pane's process tree, return the open *.jsonl under
-    ~/.pi/agent/sessions/. If the process tree has multiple matches (rare),
-    return the most recently modified."""
-    candidates: list[Path] = []
-    for pid in _descendant_pids(pane_pid):
-        fd_dir = Path(f"/proc/{pid}/fd")
-        try:
-            entries = list(fd_dir.iterdir())
-        except (FileNotFoundError, PermissionError):
-            continue
-        for entry in entries:
-            try:
-                target = os.readlink(entry)
-            except OSError:
-                continue
-            if not target.endswith(".jsonl"):
-                continue
-            target_path = Path(target)
-            try:
-                target_path.relative_to(SESSIONS_ROOT)
-            except ValueError:
-                continue
-            candidates.append(target_path)
+def _newest_jsonl(directory: Path) -> Path | None:
+    if not directory.exists():
+        return None
+    candidates = [p for p in directory.iterdir() if p.suffix == ".jsonl"]
     if not candidates:
         return None
-    return max(candidates, key=lambda p: p.stat().st_mtime if p.exists() else 0.0)
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def find_session_file_for_cwd(pane_cwd: str) -> Path | None:
+    """Most recently modified jsonl in the cwd's session directory, or None
+    if no session directory exists yet for that cwd."""
+    return _newest_jsonl(cwd_to_session_dir(pane_cwd))
 
 
 # ---------------------------------------------------------------------------
@@ -265,31 +245,25 @@ def infer_state(snapshot: JsonlSnapshot | None, now: float | None = None) -> tup
 
 @dataclass
 class StateResolver:
-    """Combines pane discovery, JSONL caching, and state inference."""
+    """Combines per-pane jsonl discovery, JSONL caching, and state inference."""
 
     reader: JsonlReader = field(default_factory=JsonlReader)
-    _pid_to_session: dict[int, Path] = field(default_factory=dict)
 
     def status_for_pane(
         self,
         pane_id: str,
-        pane_pid: int,
+        pane_cwd: str,
         is_pi: bool,
         now: float | None = None,
     ) -> PaneStatus:
         if not is_pi:
             return PaneStatus(pane_id=pane_id, state=AgentState.NO_PI)
 
-        # Re-resolve the session file if our cached one is stale (file gone,
-        # or the pi process restarted).
-        cached = self._pid_to_session.get(pane_pid)
-        if cached is None or not cached.exists():
-            session_file = find_session_file_for_pid(pane_pid)
-            if session_file is None:
-                return PaneStatus(pane_id=pane_id, state=AgentState.UNKNOWN)
-            self._pid_to_session[pane_pid] = session_file
-        else:
-            session_file = cached
+        # Always re-check the most recent jsonl: a new session can be
+        # started in the same cwd at any time.
+        session_file = find_session_file_for_cwd(pane_cwd)
+        if session_file is None:
+            return PaneStatus(pane_id=pane_id, state=AgentState.UNKNOWN)
 
         snapshot = self.reader.read(session_file)
         state, idle_for = infer_state(snapshot, now=now)
