@@ -658,3 +658,87 @@ def test_inspector_current_tool_cleared_after_tool_result(tmp_path: Path):
 
     snap = InspectorReader().read(f)
     assert snap.current_tool is None
+
+
+# ---------------------------------------------------------------------------
+# STALLED -> WORKING override when pi has a fresh tool descendant
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_promotes_stalled_to_working_when_tool_descendant_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """If JSONL silence would say 'stalled' but pi has a child process that
+    started after the last JSONL write, treat it as a still-running tool
+    and report WORKING instead."""
+    monkeypatch.setattr("pi_monitor.state.SESSIONS_ROOT", tmp_path)
+    sess = tmp_path / "--proj--"
+    sess.mkdir()
+    f = sess / "s.jsonl"
+    _write_jsonl(
+        f,
+        [
+            _msg(
+                "assistant",
+                content=[
+                    {"type": "toolCall", "id": "t1", "name": "bash", "arguments": {}}
+                ],
+                stopReason="toolUse",
+            )
+        ],
+    )
+    os.utime(f, (100.0, 100.0))  # mtime=100
+
+    monkeypatch.setattr("pi_monitor.state.find_pi_pid_for_pane", lambda pid: 42)
+    monkeypatch.setattr(
+        "pi_monitor.state._proc_starttime", lambda pid: 50.0 if pid == 42 else None
+    )
+    monkeypatch.setattr(
+        "pi_monitor.state._pi_has_active_tool_descendant",
+        lambda pi_pid, mtime: True,  # tool is actively running
+    )
+
+    from pi_monitor.state import AgentState, PaneRef, StateResolver
+
+    resolver = StateResolver()
+    refs = [PaneRef(pane_id="x:0.0", cwd="/proj", is_pi=True, pane_pid=1)]
+    out = resolver.resolve(refs, now=200.0)  # 100s idle => would be stalled
+    assert out["x:0.0"].state == AgentState.WORKING
+
+
+def test_resolve_keeps_stalled_when_no_fresh_descendant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr("pi_monitor.state.SESSIONS_ROOT", tmp_path)
+    sess = tmp_path / "--proj--"
+    sess.mkdir()
+    f = sess / "s.jsonl"
+    _write_jsonl(
+        f,
+        [
+            _msg(
+                "assistant",
+                content=[
+                    {"type": "toolCall", "id": "t1", "name": "bash", "arguments": {}}
+                ],
+                stopReason="toolUse",
+            )
+        ],
+    )
+    os.utime(f, (100.0, 100.0))
+
+    monkeypatch.setattr("pi_monitor.state.find_pi_pid_for_pane", lambda pid: 42)
+    monkeypatch.setattr(
+        "pi_monitor.state._proc_starttime", lambda pid: 50.0 if pid == 42 else None
+    )
+    monkeypatch.setattr(
+        "pi_monitor.state._pi_has_active_tool_descendant",
+        lambda pi_pid, mtime: False,
+    )
+
+    from pi_monitor.state import AgentState, PaneRef, StateResolver
+
+    resolver = StateResolver()
+    refs = [PaneRef(pane_id="x:0.0", cwd="/proj", is_pi=True, pane_pid=1)]
+    out = resolver.resolve(refs, now=200.0)
+    assert out["x:0.0"].state == AgentState.STALLED

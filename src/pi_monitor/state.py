@@ -428,6 +428,58 @@ def find_pi_pid_for_pane(pane_pid: int) -> int | None:
     return _walk_pi_descendant(pane_pid)
 
 
+# Treat any descendant whose start time is within this many seconds AFTER the
+# JSONL mtime as fresh (i.e. spawned during the current tool-use turn). Slop
+# absorbs sub-second clock skew between fs mtime and process starttime.
+_FRESH_DESCENDANT_SLOP_S = 1.0
+
+
+def _walk_descendants(root_pid: int, max_depth: int = 6):
+    """Iterative BFS over `/proc/<pid>/task/<pid>/children`. Yields child pids
+    of `root_pid` (excluding root itself). Bounded depth to avoid pathological
+    /proc snapshots."""
+    queue: list[tuple[int, int]] = [(root_pid, 0)]
+    seen: set[int] = {root_pid}
+    while queue:
+        pid, depth = queue.pop(0)
+        if depth >= max_depth:
+            continue
+        try:
+            children_raw = (
+                _PROC / str(pid) / "task" / str(pid) / "children"
+            ).read_text()
+        except (FileNotFoundError, PermissionError):
+            continue
+        for child_str in children_raw.split():
+            try:
+                child_pid = int(child_str)
+            except ValueError:
+                continue
+            if child_pid in seen:
+                continue
+            seen.add(child_pid)
+            yield child_pid
+            queue.append((child_pid, depth + 1))
+
+
+def _pi_has_active_tool_descendant(pi_pid: int, jsonl_mtime: float) -> bool:
+    """True iff any descendant of pi was started AFTER the last JSONL write,
+    indicating a tool spawned during the current toolUse turn is still alive.
+
+    Pi spawns tool processes (bash, python, subagents, etc.) only AFTER the
+    assistant message announcing the toolUse is appended to the JSONL. So any
+    descendant whose start time is past the JSONL mtime (with sub-second slop)
+    must be a fresh tool execution. Long-lived helpers (LSP / MCP servers)
+    started before pi's last write fail this check and are correctly ignored.
+    """
+    threshold = jsonl_mtime - _FRESH_DESCENDANT_SLOP_S
+    for child_pid in _walk_descendants(pi_pid):
+        start = _proc_starttime(child_pid)
+        if start is not None and start > threshold:
+            return True
+    return False
+
+
 def _claim_session_file(
     cwd: str,
     pi_pid: int | None,
@@ -560,6 +612,16 @@ class StateResolver:
             claimed.add(session_file)
             snapshot = self.reader.read(session_file)
             state, idle_for = infer_state(snapshot, now=now)
+            # Override: a STALLED inference based on JSONL silence is wrong
+            # if pi actually has a tool subprocess still running. Promote
+            # back to WORKING in that case.
+            if (
+                state == AgentState.STALLED
+                and pi_pid is not None
+                and snapshot is not None
+                and _pi_has_active_tool_descendant(pi_pid, snapshot.mtime)
+            ):
+                state = AgentState.WORKING
             results[ref.pane_id] = PaneStatus(
                 pane_id=ref.pane_id,
                 state=state,
