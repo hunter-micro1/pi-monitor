@@ -93,23 +93,9 @@ STATE_GLYPHS: dict[AgentState, str] = {
     AgentState.NO_PI: "⚫",
 }
 
-# Shape-distinct unicode glyphs used inside the in-TUI tree, inspector, and
-# preview header. Combined with state colors these are double-coded — you
-# can read state at a glance from shape alone, color reinforces it.
-#   working  ▶  (play)
-#   idle     ⏸  (pause)
-#   stalled  ⚠  (warning sign)
-#   error    ✗  (cross)
-#   unknown  ◌  (dotted circle)
-#   no_pi    ─  (em-dash; signals "not applicable")
-STATE_TREE_GLYPHS: dict[AgentState, str] = {
-    AgentState.WORKING: "▶",
-    AgentState.IDLE: "⏸",
-    AgentState.STALLED: "⚠",
-    AgentState.ERROR: "✗",
-    AgentState.UNKNOWN: "◌",
-    AgentState.NO_PI: "─",
-}
+# Width to which we pad state labels in the tree. Determined by the longest
+# state word + a one-space gutter. Keeps the title column aligned across rows.
+STATE_LABEL_WIDTH = 8  # "stalled ", "working ", "idle    ", etc.
 
 # Lower number = higher attention priority.
 STATE_PRIORITY: dict[AgentState, int] = {
@@ -217,36 +203,39 @@ def fmt_idle(seconds: float) -> str:
 def fmt_row(pane: Pane, status: PaneStatus) -> str:
     """Rich markup string for a tree leaf.
 
-    Layout:  `<glyph>  Title  · cwd     state · idle`
-    Glyph is shape-distinct per state (▶ ⏸ ⚠ ✗ ◌ ─) and color-coded.
+    Layout:  `<state>  Title  · cwd  · idle`
+
+    No leading glyph. State word is colored + bold + fixed-width so the
+    title column always lines up. Reads like `gh pr list` or `kubectl get
+    pods` output — typography does the work, not iconography.
     """
     color = STATE_COLORS.get(status.state, "grey50")
-    glyph = STATE_TREE_GLYPHS.get(status.state, "•")
+    state_label = status.state.value.ljust(STATE_LABEL_WIDTH)
     title = escape(pane.title or f"pane {pane.pane_index}")
     cwd = escape(Path(pane.cwd).name or pane.cwd)
-    state_label = status.state.value
     idle = fmt_idle(status.idle_seconds)
 
-    parts = [f"[{color}]{glyph}[/{color}]  {title}"]
+    parts = [f"[bold {color}]{state_label}[/bold {color}] {title}"]
     if cwd:
         parts.append(f"  [dim]· {cwd}[/dim]")
-    parts.append(f"   [{color}]{state_label}[/{color}]")
     if idle:
-        parts.append(f" [dim]· {idle}[/dim]")
+        parts.append(f"  [dim]· {idle}[/dim]")
     return "".join(parts)
 
 
 def fmt_session_header(session: str, statuses: list[PaneStatus]) -> str:
-    """`Session  <glyph>N <glyph>M` (counts only for attention states)."""
+    """`Session       1 stalled · 1 idle` (counts only for attention states).
+
+    No glyphs; colored count text on the right.
+    """
     name = escape(session)
-    badges: list[str] = []
+    counts: list[str] = []
     for state in (AgentState.ERROR, AgentState.STALLED, AgentState.IDLE):
         n = sum(1 for s in statuses if s.state == state)
         if n:
             color = STATE_COLORS[state]
-            glyph = STATE_TREE_GLYPHS[state]
-            badges.append(f"[{color}]{glyph}{n}[/{color}]")
-    suffix = f"  {' '.join(badges)}" if badges else ""
+            counts.append(f"[{color}]{n} {state.value}[/{color}]")
+    suffix = f"  [dim]·[/dim]  {'  [dim]·[/dim]  '.join(counts)}" if counts else ""
     return f"[bold]{name}[/bold]{suffix}"
 
 
@@ -562,9 +551,8 @@ class PiMonitorApp(App):
             if not n:
                 continue
             color = STATE_COLORS[state]
-            glyph = STATE_TREE_GLYPHS[state]
-            parts.append(f"[{color}]{glyph} {n} {label}[/{color}]")
-        msg = "  ·  ".join(parts)
+            parts.append(f"[bold {color}]{n} {label}[/bold {color}]")
+        msg = "  [dim]·[/dim]  ".join(parts)
         self._attention_banner.update(f"{msg}  [dim]· press 1–9 to jump[/dim]")
         self._attention_banner.remove_class("hidden")
 
@@ -764,10 +752,7 @@ class PiMonitorApp(App):
             n = counts.get(state, 0)
             if n:
                 color = STATE_COLORS[state]
-                glyph = STATE_TREE_GLYPHS[state]
-                sub_parts.append(
-                    f"[{color}]{glyph} {n} {state.value}[/{color}]"
-                )
+                sub_parts.append(f"[{color}]{n} {state.value}[/{color}]")
         self._preview_header.update(
             f"{header_line}\n[dim]{'  ·  '.join(sub_parts)}[/dim]"
         )
@@ -781,8 +766,7 @@ class PiMonitorApp(App):
         # Header: title + tmux address + state · model · cost · tool
         title = escape(pane.title or f"pane {pane.pane_index}")
         color = STATE_COLORS.get(status.state, PI_DIM)
-        glyph = STATE_TREE_GLYPHS.get(status.state, "•")
-        state_seg = f"[{color}]{glyph}[/{color}] {status.state.value}"
+        state_seg = f"[bold {color}]{status.state.value}[/bold {color}]"
         idle = fmt_idle(status.idle_seconds)
 
         snap: InspectorSnapshot | None = (
