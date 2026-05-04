@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pi-monitor"
+version = "0.1.0"
+description = "Live tmux-aware status monitor for pi coding agents"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "hshayde" }]
+dependencies = [
+    "textual>=0.60.0",
+]
+
+[project.scripts]
+pi-monitor = "pi_monitor.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/hshayde/pi-monitor"
+Repository = "https://github.com/hshayde/pi-monitor"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pi_monitor"]
