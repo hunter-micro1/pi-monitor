@@ -93,6 +93,24 @@ STATE_GLYPHS: dict[AgentState, str] = {
     AgentState.NO_PI: "⚫",
 }
 
+# Shape-distinct unicode glyphs used inside the in-TUI tree, inspector, and
+# preview header. Combined with state colors these are double-coded — you
+# can read state at a glance from shape alone, color reinforces it.
+#   working  ▶  (play)
+#   idle     ⏸  (pause)
+#   stalled  ⚠  (warning sign)
+#   error    ✗  (cross)
+#   unknown  ◌  (dotted circle)
+#   no_pi    ─  (em-dash; signals "not applicable")
+STATE_TREE_GLYPHS: dict[AgentState, str] = {
+    AgentState.WORKING: "▶",
+    AgentState.IDLE: "⏸",
+    AgentState.STALLED: "⚠",
+    AgentState.ERROR: "✗",
+    AgentState.UNKNOWN: "◌",
+    AgentState.NO_PI: "─",
+}
+
 # Lower number = higher attention priority.
 STATE_PRIORITY: dict[AgentState, int] = {
     AgentState.ERROR: 0,
@@ -197,14 +215,19 @@ def fmt_idle(seconds: float) -> str:
 
 
 def fmt_row(pane: Pane, status: PaneStatus) -> str:
-    """Rich markup string. Layout:  ` ●  Title  · cwd          state · idle`."""
+    """Rich markup string for a tree leaf.
+
+    Layout:  `<glyph>  Title  · cwd     state · idle`
+    Glyph is shape-distinct per state (▶ ⏸ ⚠ ✗ ◌ ─) and color-coded.
+    """
     color = STATE_COLORS.get(status.state, "grey50")
+    glyph = STATE_TREE_GLYPHS.get(status.state, "•")
     title = escape(pane.title or f"pane {pane.pane_index}")
     cwd = escape(Path(pane.cwd).name or pane.cwd)
     state_label = status.state.value
     idle = fmt_idle(status.idle_seconds)
 
-    parts = [f"[{color}]●[/{color}]  {title}"]
+    parts = [f"[{color}]{glyph}[/{color}]  {title}"]
     if cwd:
         parts.append(f"  [dim]· {cwd}[/dim]")
     parts.append(f"   [{color}]{state_label}[/{color}]")
@@ -214,14 +237,15 @@ def fmt_row(pane: Pane, status: PaneStatus) -> str:
 
 
 def fmt_session_header(session: str, statuses: list[PaneStatus]) -> str:
-    """`Session  ●N ●M` (counts only for attention states)."""
+    """`Session  <glyph>N <glyph>M` (counts only for attention states)."""
     name = escape(session)
     badges: list[str] = []
     for state in (AgentState.ERROR, AgentState.STALLED, AgentState.IDLE):
         n = sum(1 for s in statuses if s.state == state)
         if n:
             color = STATE_COLORS[state]
-            badges.append(f"[{color}]●{n}[/{color}]")
+            glyph = STATE_TREE_GLYPHS[state]
+            badges.append(f"[{color}]{glyph}{n}[/{color}]")
     suffix = f"  {' '.join(badges)}" if badges else ""
     return f"[bold]{name}[/bold]{suffix}"
 
@@ -538,7 +562,8 @@ class PiMonitorApp(App):
             if not n:
                 continue
             color = STATE_COLORS[state]
-            parts.append(f"[{color}]● {n} {label}[/{color}]")
+            glyph = STATE_TREE_GLYPHS[state]
+            parts.append(f"[{color}]{glyph} {n} {label}[/{color}]")
         msg = "  ·  ".join(parts)
         self._attention_banner.update(f"{msg}  [dim]· press 1–9 to jump[/dim]")
         self._attention_banner.remove_class("hidden")
@@ -739,8 +764,13 @@ class PiMonitorApp(App):
             n = counts.get(state, 0)
             if n:
                 color = STATE_COLORS[state]
-                sub_parts.append(f"[{color}]● {n} {state.value}[/{color}]")
-        self._preview_header.update(f"{header_line}\n[dim]{'  ·  '.join(sub_parts)}[/dim]")
+                glyph = STATE_TREE_GLYPHS[state]
+                sub_parts.append(
+                    f"[{color}]{glyph} {n} {state.value}[/{color}]"
+                )
+        self._preview_header.update(
+            f"{header_line}\n[dim]{'  ·  '.join(sub_parts)}[/dim]"
+        )
         self._preview_body.update(
             "[dim]Select a pane to see its live agent screen.[/dim]"
         )
@@ -751,7 +781,8 @@ class PiMonitorApp(App):
         # Header: title + tmux address + state · model · cost · tool
         title = escape(pane.title or f"pane {pane.pane_index}")
         color = STATE_COLORS.get(status.state, PI_DIM)
-        state_seg = f"[{color}]●[/{color}] {status.state.value}"
+        glyph = STATE_TREE_GLYPHS.get(status.state, "•")
+        state_seg = f"[{color}]{glyph}[/{color}] {status.state.value}"
         idle = fmt_idle(status.idle_seconds)
 
         snap: InspectorSnapshot | None = (
@@ -766,9 +797,7 @@ class PiMonitorApp(App):
         if snap and snap.model:
             meta_parts.append(f"[dim]·[/dim] [dim]{escape(snap.model)}[/dim]")
         if snap and snap.cumulative_cost:
-            meta_parts.append(
-                f"[dim]·[/dim] [bold]${snap.cumulative_cost:.2f}[/bold]"
-            )
+            meta_parts.append(f"[dim]·[/dim] [bold]${snap.cumulative_cost:.2f}[/bold]")
         if snap and (snap.cumulative_input or snap.cumulative_output):
             meta_parts.append(
                 f"[dim]·[/dim] [dim]{_fmt_tokens(snap.cumulative_input)} / "
@@ -781,7 +810,9 @@ class PiMonitorApp(App):
 
         line1 = f"[bold {PI_ACCENT}]{title}[/bold {PI_ACCENT}]  [dim]· {escape(pane.target)}[/dim]"
         line2 = "  ".join(meta_parts)
-        self._preview_wrap.border_title = f"Preview · {escape(pane.title or pane.target)}"
+        self._preview_wrap.border_title = (
+            f"Preview · {escape(pane.title or pane.target)}"
+        )
         self._preview_header.update(f"{line1}\n{line2}")
 
         # Body: live capture-pane mirror.
