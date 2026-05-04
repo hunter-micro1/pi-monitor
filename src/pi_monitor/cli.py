@@ -63,7 +63,6 @@ def _bootstrap_and_switch() -> int:
     # Late imports so `--version` doesn't pay the textual import cost.
     from .tmux import (
         ensure_monitor_session,
-        recover_orphan_panes,
         switch_client_to_monitor,
         TmuxError,
     )
@@ -71,13 +70,6 @@ def _bootstrap_and_switch() -> int:
     left_command = _self_invocation()
     try:
         ensure_monitor_session(left_command=left_command)
-        recovered = recover_orphan_panes()
-        if recovered:
-            print(
-                f"pi-monitor: recovered {len(recovered)} orphan pane(s) from "
-                f"a previous run: {', '.join(recovered)}",
-                file=sys.stderr,
-            )
         switch_client_to_monitor()
     except TmuxError as exc:
         print(f"pi-monitor: tmux error: {exc}", file=sys.stderr)

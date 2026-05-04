@@ -183,9 +183,7 @@ class InspectorReader:
             with path.open("rb") as f:
                 f.seek(cached.size)
                 new_blob = f.read()
-            snap = _inspector_incremental_scan(
-                new_blob, cached.snapshot, st.st_mtime
-            )
+            snap = _inspector_incremental_scan(new_blob, cached.snapshot, st.st_mtime)
         self._cache[str(path)] = _CachedInspector(size=st.st_size, snapshot=snap)
         return snap
 

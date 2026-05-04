@@ -1,9 +1,23 @@
 """Textual TUI for pi-monitor.
 
-Renders a tree of `<tmux session> → <pi pane>` rows with live status badges,
-ticks every 500ms, updates the tmux status-line widget, fires desktop
-notifications on transitions into attention states, and lets the user borrow
-a selected pane into the monitor session's right slot.
+Layout:
+    ┌──────────────────────────────────────────────────────────┐
+    │ title-bar (one line)                                     │
+    │ attention-banner (auto-hides when nothing needs help)    │
+    │ ╭─ Sessions ───╮  ╭─ <pane title> · model · cost ─────╮  │
+    │ │ tree         │  │ preview-header                    │  │
+    │ │              │  │ ─────────────────────────────────  │  │
+    │ │              │  │ live capture-pane mirror of the   │  │
+    │ │              │  │ cursored agent (ANSI-rendered)    │  │
+    │ ╰──────────────╯  ╰───────────────────────────────────╯  │
+    │ footer (key hints)                                       │
+    └──────────────────────────────────────────────────────────┘
+
+The right side is a pure Textual widget; we never `tmux join-pane` user
+panes anywhere. To actually interact with the cursored agent the user
+presses Tab — which `tmux switch-client`s them into the agent's pane
+full-screen. Coming back is whatever they bound the launcher hotkey to
+(typically `prefix + M` running `pi-monitor`).
 """
 
 from __future__ import annotations
@@ -11,9 +25,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from rich.markup import escape
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container
+from textual.containers import Container, Horizontal
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Static, Tree
 
@@ -30,22 +45,20 @@ from .tmux import (
     MONITOR_SESSION,
     Pane,
     TmuxError,
-    borrow_pane,
+    capture_pane,
     clear_status_widget,
-    focus_right_slot,
     kill_monitor_session,
     list_panes,
-    monitor_has_pi_panes,
-    return_pane,
     set_status_widget,
+    switch_client_to_pane,
     _tmux,
 )
 
 POLL_INTERVAL_S = 0.5
 
-# Pi's `dark` theme color tokens (from
-# pi-coding-agent/dist/modes/interactive/theme/dark.json). Used as Rich
-# markup colors in the tree and as Textual CSS variables in the layout.
+# Pi's `dark` theme color tokens, from
+# pi-coding-agent/dist/modes/interactive/theme/dark.json. Used as Rich
+# markup colors and as Textual CSS variables in the layout.
 PI_ACCENT = "#8abeb7"  # teal
 PI_SUCCESS = "#b5bd68"  # green
 PI_ERROR = "#cc6666"  # red
@@ -70,6 +83,26 @@ STATE_TOAST_SEVERITY: dict[AgentState, str] = {
     AgentState.ERROR: "error",
 }
 
+# Used only by the tmux status-line widget; emoji are dependable in tmux.
+STATE_GLYPHS: dict[AgentState, str] = {
+    AgentState.IDLE: "🔴",
+    AgentState.WORKING: "🟢",
+    AgentState.STALLED: "🟡",
+    AgentState.ERROR: "❌",
+    AgentState.UNKNOWN: "❓",
+    AgentState.NO_PI: "⚫",
+}
+
+# Lower number = higher attention priority.
+STATE_PRIORITY: dict[AgentState, int] = {
+    AgentState.ERROR: 0,
+    AgentState.STALLED: 1,
+    AgentState.IDLE: 2,
+    AgentState.UNKNOWN: 3,
+    AgentState.WORKING: 4,
+    AgentState.NO_PI: 5,
+}
+
 HELP_TEXT = """\
 [bold #8abeb7]pi-monitor — keybindings[/bold #8abeb7]
 
@@ -82,10 +115,10 @@ HELP_TEXT = """\
   [#8abeb7]1–9[/#8abeb7]        jump to Nth pane
   [#8abeb7]Space[/#8abeb7]      expand / collapse session
 
-[bold]Borrow[/bold]
-  [#8abeb7]Enter[/#8abeb7]      borrow selected pane into right slot
-  [#8abeb7]Tab[/#8abeb7]        focus the borrowed pane (interact with agent)
-  tmux [#8abeb7]prefix ←[/#8abeb7]   back to the tree from inside the agent
+[bold]Interact[/bold]
+  [#8abeb7]Enter[/#8abeb7] / [#8abeb7]Tab[/#8abeb7]   switch tmux client to the cursored
+                  agent (full-screen). Re-launch
+                  pi-monitor (e.g. [#8abeb7]prefix+M[/#8abeb7]) to come back.
 
 [bold]View[/bold]
   [#8abeb7]s[/#8abeb7]          cycle sort: tmux ↔ needs-attention-first
@@ -96,7 +129,7 @@ HELP_TEXT = """\
   [#8abeb7]m[/#8abeb7]          mute / unmute (desktop + in-app toasts)
 
 [bold]Exit[/bold]
-  [#8abeb7]q[/#8abeb7]          return borrowed pane, kill monitor session
+  [#8abeb7]q[/#8abeb7]          kill monitor session
   [#8abeb7]?[/#8abeb7]          toggle this help
 
 [dim]press any key to dismiss[/dim]
@@ -147,27 +180,6 @@ class HelpScreen(ModalScreen):
     def on_key(self, event) -> None:
         self.dismiss()
 
-# Used only by the tmux status-line widget; emoji are dependable in tmux.
-STATE_GLYPHS: dict[AgentState, str] = {
-    AgentState.IDLE: "🔴",
-    AgentState.WORKING: "🟢",
-    AgentState.STALLED: "🟡",
-    AgentState.ERROR: "❌",
-    AgentState.UNKNOWN: "❓",
-    AgentState.NO_PI: "⚫",
-}
-
-# Lower number = higher attention priority. Used by the "status" sort mode
-# and by the status-line widget's badge order.
-STATE_PRIORITY: dict[AgentState, int] = {
-    AgentState.ERROR: 0,
-    AgentState.STALLED: 1,
-    AgentState.IDLE: 2,
-    AgentState.UNKNOWN: 3,
-    AgentState.WORKING: 4,
-    AgentState.NO_PI: 5,
-}
-
 
 # ---------------------------------------------------------------------------
 # Formatting helpers
@@ -184,12 +196,8 @@ def fmt_idle(seconds: float) -> str:
     return f"{int(seconds // 3600)}h"
 
 
-def fmt_row(pane: Pane, status: PaneStatus, borrowed: bool) -> str:
-    """Rich markup string. Layout:  ` ●  Title  · cwd          state · idle`.
-
-    All user-supplied text (title, cwd) is `rich.markup.escape`d to neutralize
-    any literal `[` characters in pane titles / paths.
-    """
+def fmt_row(pane: Pane, status: PaneStatus) -> str:
+    """Rich markup string. Layout:  ` ●  Title  · cwd          state · idle`."""
     color = STATE_COLORS.get(status.state, "grey50")
     title = escape(pane.title or f"pane {pane.pane_index}")
     cwd = escape(Path(pane.cwd).name or pane.cwd)
@@ -202,8 +210,6 @@ def fmt_row(pane: Pane, status: PaneStatus, borrowed: bool) -> str:
     parts.append(f"   [{color}]{state_label}[/{color}]")
     if idle:
         parts.append(f" [dim]· {idle}[/dim]")
-    if borrowed:
-        parts.append("  [bold cyan]→ right[/bold cyan]")
     return "".join(parts)
 
 
@@ -243,7 +249,11 @@ def fmt_status_widget(statuses: list[PaneStatus]) -> str:
 
 
 class PiMonitorApp(App):
-    """The pi-monitor TUI. Single screen: header + tree + footer."""
+    """The pi-monitor TUI.
+
+    Single-screen layout: title-bar, attention-banner, horizontal split of
+    tree (left, fixed-width) + preview (right, flexible), footer.
+    """
 
     CSS = """
     /* Pi `dark` theme tokens, mirrored into Textual CSS vars. */
@@ -285,7 +295,25 @@ class PiMonitorApp(App):
         display: none;
     }
 
+    #main-row {
+        layout: horizontal;
+        height: 1fr;
+        width: 100%;
+    }
+
     #tree-wrap {
+        width: 38;
+        border: round $pi-border-muted;
+        border-title-color: $pi-accent;
+        border-title-style: bold;
+        border-title-align: left;
+        background: $pi-card-bg;
+        margin: 1 0 0 1;
+        padding: 0;
+    }
+
+    #preview-wrap {
+        width: 1fr;
         border: round $pi-border-muted;
         border-title-color: $pi-accent;
         border-title-style: bold;
@@ -293,26 +321,21 @@ class PiMonitorApp(App):
         background: $pi-card-bg;
         margin: 1 1 0 1;
         padding: 0;
-        height: 3fr;
     }
 
-    #inspector-wrap {
-        border: round $pi-border-muted;
-        border-title-color: $pi-accent;
-        border-title-style: bold;
-        border-title-align: left;
-        background: $pi-card-bg;
-        margin: 0 1 0 1;
-        padding: 0;
-        height: 2fr;
-    }
-
-    #inspector {
+    #preview-header {
+        height: 3;
+        padding: 0 1;
         background: $pi-card-bg;
         color: white;
-        padding: 1 2;
+    }
+
+    #preview-body {
+        background: $pi-card-bg;
+        color: white;
+        padding: 0 1;
         width: 100%;
-        height: 100%;
+        height: 1fr;
     }
 
     Tree {
@@ -348,18 +371,12 @@ class PiMonitorApp(App):
     }
     """
 
-    # Vim-style hjkl on top of arrow-key navigation:
-    #   h - collapse current node, or jump to parent if already collapsed
-    #   j - down (Tree binds arrows by default; we add j/k aliases)
-    #   k - up
-    #   l - expand current node, or step into first child if already expanded
-    # Tab keeps its tmux-pane-focus job. `enter` -> TreeNodeSelected (below).
     BINDINGS = [
         Binding("h", "tree_collapse_or_parent", "←", show=False),
         Binding("j", "tree_cursor_down", "↓", show=False),
         Binding("k", "tree_cursor_up", "↑", show=False),
         Binding("l", "tree_expand_or_child", "→", show=False),
-        Binding("tab", "focus_right", "→agent"),
+        Binding("tab", "interact", "→agent"),
         Binding("g", "go_top", "top", show=False),
         Binding("G", "go_bottom", "bottom", show=False),
         Binding("s", "cycle_sort", "sort"),
@@ -389,29 +406,25 @@ class PiMonitorApp(App):
         self.inspector_reader = InspectorReader()
         self.show_non_pi = False
         self.sort_mode = self.config.get("sort_mode", "tmux")
-        self._borrowed_pane_id: str | None = None
-        self._borrowed_origin: Pane | None = None
         self._first_tick = True
-        # Tracks the rendered label for each tree node so we can skip
-        # `set_label` calls when nothing changed (avoids flicker).
         self._last_labels: dict[tuple[str, str], str] = {}
-        # Forces the next render to fully rebuild instead of diffing.
-        # Set on user-initiated changes that re-order nodes (sort, filter).
         self._needs_full_rebuild = True
-        # Cache the latest snapshot per pane so the inspector can render
-        # without re-running resolve.
         self._latest_statuses: dict[str, tuple[Pane, PaneStatus]] = {}
-        self._inspector_text: str = ""
+        # Last preview content cached so we skip redraws when nothing changed.
+        self._last_preview_target: str | None = None
+        self._last_preview_capture: str = ""
 
     # -- Composition --------------------------------------------------------
 
     def compose(self) -> ComposeResult:
         yield Static("pi-monitor", id="title-bar")
         yield Static("", id="attention-banner", classes="hidden")
-        with Container(id="tree-wrap"):
-            yield Tree("Sessions", id="tree")
-        with Container(id="inspector-wrap"):
-            yield Static("", id="inspector")
+        with Horizontal(id="main-row"):
+            with Container(id="tree-wrap"):
+                yield Tree("Sessions", id="tree")
+            with Container(id="preview-wrap"):
+                yield Static("", id="preview-header")
+                yield Static("", id="preview-body")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -420,18 +433,18 @@ class PiMonitorApp(App):
         self._attention_banner: Static = self.query_one("#attention-banner", Static)
         self._tree_wrap: Container = self.query_one("#tree-wrap", Container)
         self._tree_wrap.border_title = "Sessions"
-        self._inspector_wrap: Container = self.query_one("#inspector-wrap", Container)
-        self._inspector_wrap.border_title = "Inspector"
-        self._inspector: Static = self.query_one("#inspector", Static)
+        self._preview_wrap: Container = self.query_one("#preview-wrap", Container)
+        self._preview_wrap.border_title = "Preview"
+        self._preview_header: Static = self.query_one("#preview-header", Static)
+        self._preview_body: Static = self.query_one("#preview-body", Static)
         self._tree: Tree = self.query_one("#tree", Tree)
         self._tree.show_root = False
         self._tree.guide_depth = 2
         self._tree.focus()
-        # Pipe Notifier transitions into the in-TUI toast.
         self.notifier.on_transition = self._on_transition
         self.set_interval(POLL_INTERVAL_S, self._tick)
         self._tick()
-        self._refresh_inspector()
+        self._refresh_preview()
 
     def _on_transition(
         self,
@@ -440,8 +453,6 @@ class PiMonitorApp(App):
         title: str,
         body: str,
     ) -> None:
-        """Called by Notifier when a pane transitions into an attention state.
-        Shows a Textual toast in the bottom-right of the monitor TUI."""
         severity = STATE_TOAST_SEVERITY.get(state, "information")
         self.notify(
             f"{body}\nstate: {state.value}",
@@ -458,21 +469,9 @@ class PiMonitorApp(App):
         except TmuxError:
             return
 
-        # The monitor session itself never appears in the tree. Anything
-        # currently borrowed will be parented in monitor:0.1; we still want
-        # to show it in its origin position with a "borrowed" tag, so we
-        # graft the borrowed pane back into its origin session below.
         visible = [p for p in all_panes if p.session != MONITOR_SESSION]
         if not self.show_non_pi:
             visible = [p for p in visible if p.is_pi]
-
-        if self._borrowed_origin and self._borrowed_pane_id:
-            origins = [p for p in visible if p.pane_id == self._borrowed_pane_id]
-            if not origins:
-                # The borrowed pane lives in monitor:0.1 right now. Splice
-                # in our cached origin metadata so it shows in the right
-                # session.
-                visible.append(self._borrowed_origin)
 
         refs = [
             PaneRef(
@@ -488,7 +487,6 @@ class PiMonitorApp(App):
             (p, resolved[p.target]) for p in visible
         ]
 
-        # Notifications: seed on first tick to avoid flooding with "idle".
         observations = [(p.target, s.state) for p, s in statuses]
         if self._first_tick:
             self.notifier.seed_from(observations)
@@ -502,17 +500,14 @@ class PiMonitorApp(App):
                     body=Path(pane.cwd).name or pane.cwd,
                 )
 
-        # Cache for inspector lookups. Key matches the tree-node data key
-        # (pane.pane_id, e.g. "%42"), which is stable across pane moves.
         self._latest_statuses = {p.pane_id: (p, s) for p, s in statuses}
 
         set_status_widget(fmt_status_widget([s for _, s in statuses]))
         self._update_chrome([s for _, s in statuses])
         self._render(statuses)
-        self._refresh_inspector()
+        self._refresh_preview()
 
     def _update_chrome(self, all_statuses: list[PaneStatus]) -> None:
-        """Refresh the title bar and the attention banner from current state."""
         counts: dict[AgentState, int] = {}
         for s in all_statuses:
             counts[s.state] = counts.get(s.state, 0) + 1
@@ -549,11 +544,6 @@ class PiMonitorApp(App):
         self._attention_banner.remove_class("hidden")
 
     def _render(self, statuses: list[tuple[Pane, PaneStatus]]) -> None:
-        """Diff-based update: existing nodes get their labels updated in place;
-        only added/removed panes touch the tree topology. Cursor and expand
-        state survive naturally because we never remove the node we're on.
-        Full rebuild only on `_needs_full_rebuild` (sort/filter changes).
-        """
         by_session: dict[str, list[tuple[Pane, PaneStatus]]] = {}
         for pane, status in statuses:
             by_session.setdefault(pane.session, []).append((pane, status))
@@ -598,8 +588,7 @@ class PiMonitorApp(App):
             if expanded.get(sess_key, True) is False:
                 sess_node.collapse()
             for pane, status in items:
-                borrowed = pane.pane_id == self._borrowed_pane_id
-                label = fmt_row(pane, status, borrowed)
+                label = fmt_row(pane, status)
                 pane_key = ("pane", pane.pane_id)
                 sess_node.add_leaf(label, data=pane_key)
                 self._last_labels[pane_key] = label
@@ -612,13 +601,11 @@ class PiMonitorApp(App):
         by_session: dict[str, list[tuple[Pane, PaneStatus]]],
         desired_sessions: list[str],
     ) -> None:
-        # Index existing session nodes by name.
         sess_nodes: dict[str, object] = {}
         for child in self._tree.root.children:
             if child.data and child.data[0] == "session":
                 sess_nodes[child.data[1]] = child
 
-        # Drop sessions that no longer exist.
         live = set(desired_sessions)
         for name, node in list(sess_nodes.items()):
             if name not in live:
@@ -626,21 +613,17 @@ class PiMonitorApp(App):
                 self._last_labels.pop(("session", name), None)
                 del sess_nodes[name]
 
-        # Add or update each session.
         for name in desired_sessions:
             items = by_session[name]
             header = fmt_session_header(name, [s for _, s in items])
             sess_key = ("session", name)
 
             if name not in sess_nodes:
-                # New session: append. Order may be slightly off until next
-                # full rebuild, which is rare and intentional.
                 sess_node = self._tree.root.add(header, data=sess_key, expand=True)
                 sess_nodes[name] = sess_node
                 self._last_labels[sess_key] = header
                 for pane, status in items:
-                    borrowed = pane.pane_id == self._borrowed_pane_id
-                    label = fmt_row(pane, status, borrowed)
+                    label = fmt_row(pane, status)
                     pane_key = ("pane", pane.pane_id)
                     sess_node.add_leaf(label, data=pane_key)
                     self._last_labels[pane_key] = label
@@ -651,7 +634,6 @@ class PiMonitorApp(App):
                 sess_node.set_label(header)
                 self._last_labels[sess_key] = header
 
-            # Diff panes within the session.
             pane_nodes: dict[str, object] = {}
             for child in sess_node.children:
                 if child.data and child.data[0] == "pane":
@@ -665,8 +647,7 @@ class PiMonitorApp(App):
                     del pane_nodes[pid]
 
             for pane, status in items:
-                borrowed = pane.pane_id == self._borrowed_pane_id
-                label = fmt_row(pane, status, borrowed)
+                label = fmt_row(pane, status)
                 pane_key = ("pane", pane.pane_id)
                 if pane.pane_id in pane_nodes:
                     if self._last_labels.get(pane_key) != label:
@@ -691,20 +672,164 @@ class PiMonitorApp(App):
     # -- Tree event ---------------------------------------------------------
 
     def on_tree_node_selected(self, event) -> None:
-        """Enter / mouse-click on a row. On a pane row, borrow it. On a
-        session header, the tree's default toggles expansion (we no-op)."""
+        """Enter on a pane row: switch tmux client to that pane (full-screen)."""
         node = event.node
         if not node.data or node.data[0] != "pane":
             return
-        self._borrow(node.data[1])
+        self._jump_to_pane(node.data[1])
+
+    def on_tree_node_highlighted(self, event) -> None:
+        """Cursor moved; refresh the preview for the new selection."""
+        self._refresh_preview()
+
+    # -- Preview ------------------------------------------------------------
+
+    def _refresh_preview(self) -> None:
+        if not hasattr(self, "_preview_body"):
+            return
+        node = self._tree.cursor_node if hasattr(self, "_tree") else None
+        if node is None or not node.data:
+            self._render_preview_placeholder("Cursor a pane to preview its agent.")
+            return
+        kind, key = node.data
+        if kind == "session":
+            sess_panes = [
+                (p, s) for p, s in self._latest_statuses.values() if p.session == key
+            ]
+            self._render_preview_session(key, sess_panes)
+            return
+        if kind == "pane":
+            entry = self._latest_statuses.get(key)
+            if entry is None:
+                self._render_preview_placeholder(f"No data for pane {escape(str(key))}")
+                return
+            pane, status = entry
+            self._render_preview_pane(pane, status)
+
+    def _render_preview_placeholder(self, msg: str) -> None:
+        self._preview_wrap.border_title = "Preview"
+        self._preview_header.update("")
+        self._preview_body.update(f"[dim]{msg}[/dim]")
+        self._last_preview_target = None
+        self._last_preview_capture = ""
+
+    def _render_preview_session(
+        self, session_name: str, panes: list[tuple[Pane, PaneStatus]]
+    ) -> None:
+        self._preview_wrap.border_title = f"Preview · {escape(session_name)}"
+        if not panes:
+            self._preview_header.update("")
+            self._preview_body.update(
+                f"[dim]Session {escape(session_name)} has no visible panes.[/dim]"
+            )
+            return
+
+        counts: dict[AgentState, int] = {}
+        for _, s in panes:
+            counts[s.state] = counts.get(s.state, 0) + 1
+
+        header_line = f"[bold {PI_ACCENT}]{escape(session_name)}[/bold {PI_ACCENT}]"
+        sub_parts = [f"{len(panes)} panes"]
+        for state in (
+            AgentState.ERROR,
+            AgentState.STALLED,
+            AgentState.IDLE,
+            AgentState.WORKING,
+        ):
+            n = counts.get(state, 0)
+            if n:
+                color = STATE_COLORS[state]
+                sub_parts.append(f"[{color}]● {n} {state.value}[/{color}]")
+        self._preview_header.update(f"{header_line}\n[dim]{'  ·  '.join(sub_parts)}[/dim]")
+        self._preview_body.update(
+            "[dim]Select a pane to see its live agent screen.[/dim]"
+        )
+        self._last_preview_target = None
+        self._last_preview_capture = ""
+
+    def _render_preview_pane(self, pane: Pane, status: PaneStatus) -> None:
+        # Header: title + tmux address + state · model · cost · tool
+        title = escape(pane.title or f"pane {pane.pane_index}")
+        color = STATE_COLORS.get(status.state, PI_DIM)
+        state_seg = f"[{color}]●[/{color}] {status.state.value}"
+        idle = fmt_idle(status.idle_seconds)
+
+        snap: InspectorSnapshot | None = (
+            self.inspector_reader.read(status.session_file)
+            if status.session_file
+            else None
+        )
+
+        meta_parts = [state_seg]
+        if idle:
+            meta_parts.append(f"[dim]{idle}[/dim]")
+        if snap and snap.model:
+            meta_parts.append(f"[dim]·[/dim] [dim]{escape(snap.model)}[/dim]")
+        if snap and snap.cumulative_cost:
+            meta_parts.append(
+                f"[dim]·[/dim] [bold]${snap.cumulative_cost:.2f}[/bold]"
+            )
+        if snap and (snap.cumulative_input or snap.cumulative_output):
+            meta_parts.append(
+                f"[dim]·[/dim] [dim]{_fmt_tokens(snap.cumulative_input)} / "
+                f"{_fmt_tokens(snap.cumulative_output)} tokens[/dim]"
+            )
+        if snap and snap.current_tool:
+            meta_parts.append(
+                f"[dim]·[/dim] [{PI_ACCENT}]{escape(snap.current_tool)}[/{PI_ACCENT}] running"
+            )
+
+        line1 = f"[bold {PI_ACCENT}]{title}[/bold {PI_ACCENT}]  [dim]· {escape(pane.target)}[/dim]"
+        line2 = "  ".join(meta_parts)
+        self._preview_wrap.border_title = f"Preview · {escape(pane.title or pane.target)}"
+        self._preview_header.update(f"{line1}\n{line2}")
+
+        # Body: live capture-pane mirror.
+        try:
+            captured = capture_pane(pane.target)
+        except TmuxError:
+            self._preview_body.update("[dim](could not capture pane)[/dim]")
+            self._last_preview_target = pane.target
+            self._last_preview_capture = ""
+            return
+
+        # Skip the redraw if nothing changed since last tick (cheap).
+        if (
+            self._last_preview_target == pane.target
+            and captured == self._last_preview_capture
+        ):
+            return
+        self._last_preview_target = pane.target
+        self._last_preview_capture = captured
+
+        # Strip trailing blank lines for a tighter visual.
+        body_text = captured.rstrip()
+        if not body_text:
+            self._preview_body.update("[dim](empty pane)[/dim]")
+            return
+        self._preview_body.update(Text.from_ansi(body_text))
 
     # -- Actions ------------------------------------------------------------
 
-    def action_focus_right(self) -> None:
+    def action_interact(self) -> None:
+        """Tab: switch tmux client to the cursored pane (full-screen)."""
+        node = self._tree.cursor_node
+        if node is None or not node.data:
+            return
+        kind, key = node.data
+        if kind != "pane":
+            return
+        self._jump_to_pane(key)
+
+    def _jump_to_pane(self, pane_id: str) -> None:
+        entry = self._latest_statuses.get(pane_id)
+        if entry is None:
+            return
+        pane, _ = entry
         try:
-            focus_right_slot()
-        except TmuxError:
-            pass
+            switch_client_to_pane(pane)
+        except TmuxError as exc:
+            self.notify(f"could not switch: {exc}", severity="error", timeout=8)
 
     def action_go_top(self) -> None:
         if self._tree.root.children:
@@ -761,8 +886,6 @@ class PiMonitorApp(App):
         self._tree.action_cursor_up()
 
     def action_tree_collapse_or_parent(self) -> None:
-        """Vim `h`: collapse the current node, or jump to its parent if it's
-        already collapsed (or it's a leaf)."""
         node = self._tree.cursor_node
         if node is None:
             return
@@ -774,8 +897,6 @@ class PiMonitorApp(App):
             self._tree.select_node(parent)
 
     def action_tree_expand_or_child(self) -> None:
-        """Vim `l`: expand the current node, or step into the first child if
-        already expanded. No-op on a leaf with no children."""
         node = self._tree.cursor_node
         if node is None:
             return
@@ -792,199 +913,7 @@ class PiMonitorApp(App):
     def action_quit_monitor(self) -> None:
         self._cleanup_and_exit()
 
-    def on_tree_node_highlighted(self, event) -> None:
-        """Cursor moved to a different tree node; refresh the inspector."""
-        self._refresh_inspector()
-
-    # -- Inspector ----------------------------------------------------------
-
-    def _refresh_inspector(self) -> None:
-        if not hasattr(self, "_inspector"):
-            return
-        node = self._tree.cursor_node if hasattr(self, "_tree") else None
-        text = self._build_inspector_text(node)
-        if text != self._inspector_text:
-            self._inspector_text = text
-            self._inspector.update(text)
-
-    def _build_inspector_text(self, node) -> str:
-        if node is None or not node.data:
-            return "[dim]Cursor a pane to see details.[/dim]"
-        kind, key = node.data
-        if kind == "session":
-            sess_panes = [
-                (p, s)
-                for p, s in self._latest_statuses.values()
-                if p.session == key
-            ]
-            return self._render_session_inspector(key, sess_panes)
-        if kind == "pane":
-            entry = self._latest_statuses.get(key)
-            if entry is None:
-                return f"[dim]No data for pane {escape(str(key))}[/dim]"
-            pane, status = entry
-            return self._render_pane_inspector(pane, status)
-        return ""
-
-    def _render_session_inspector(
-        self, session_name: str, panes: list[tuple[Pane, PaneStatus]]
-    ) -> str:
-        if not panes:
-            return f"[bold {PI_ACCENT}]{escape(session_name)}[/bold {PI_ACCENT}]"
-        counts: dict[AgentState, int] = {}
-        for _, s in panes:
-            counts[s.state] = counts.get(s.state, 0) + 1
-        lines = [
-            f"[bold {PI_ACCENT}]{escape(session_name)}[/bold {PI_ACCENT}]",
-            "",
-            f"[dim]panes[/dim]      {len(panes)}",
-        ]
-        for state in (
-            AgentState.ERROR,
-            AgentState.STALLED,
-            AgentState.IDLE,
-            AgentState.WORKING,
-            AgentState.UNKNOWN,
-            AgentState.NO_PI,
-        ):
-            n = counts.get(state, 0)
-            if not n:
-                continue
-            color = STATE_COLORS[state]
-            lines.append(
-                f"[dim]{state.value:10s}[/dim] [{color}]●[/{color}] {n}"
-            )
-        return "\n".join(lines)
-
-    def _render_pane_inspector(self, pane: Pane, status: PaneStatus) -> str:
-        title = escape(pane.title or f"pane {pane.pane_index}")
-        cwd = escape(pane.cwd)
-        color = STATE_COLORS.get(status.state, PI_DIM)
-        idle_part = (
-            f" · [dim]{fmt_idle(status.idle_seconds)}[/dim]"
-            if status.idle_seconds >= 1
-            else ""
-        )
-        lines = [
-            f"[bold {PI_ACCENT}]{title}[/bold {PI_ACCENT}]",
-            f"[dim]· {escape(pane.session)}:{pane.window_index}.{pane.pane_index}[/dim]",
-            "",
-            f"[dim]state[/dim]      [{color}]●[/{color}] {status.state.value}{idle_part}",
-            f"[dim]cwd[/dim]        {cwd}",
-        ]
-
-        if status.session_file is None:
-            lines.append("")
-            lines.append("[dim](no pi session detected)[/dim]")
-            return "\n".join(lines)
-
-        snap: InspectorSnapshot | None = self.inspector_reader.read(
-            status.session_file
-        )
-        if snap is None:
-            return "\n".join(lines)
-
-        if snap.session_name:
-            lines.append(f"[dim]name[/dim]       {escape(snap.session_name)}")
-        if snap.model:
-            lines.append(f"[dim]model[/dim]      {escape(snap.model)}")
-        if snap.cumulative_input or snap.cumulative_output:
-            lines.append(
-                f"[dim]tokens[/dim]     {_fmt_tokens(snap.cumulative_input)} in "
-                f"· {_fmt_tokens(snap.cumulative_output)} out "
-                f"· [dim]{_fmt_tokens(snap.cumulative_cache_read)} cache[/dim]"
-            )
-        if snap.cumulative_cost:
-            lines.append(
-                f"[dim]cost[/dim]       [bold]${snap.cumulative_cost:.2f}[/bold]"
-            )
-        lines.append(
-            f"[dim]turns[/dim]      {snap.user_message_count} user "
-            f"· {snap.assistant_message_count} assistant"
-        )
-        if snap.current_tool:
-            lines.append(
-                f"[dim]tool[/dim]       [{PI_ACCENT}]{escape(snap.current_tool)}[/{PI_ACCENT}] running"
-            )
-
-        if snap.last_user_message:
-            preview = _truncate(snap.last_user_message, 240)
-            lines.append("")
-            lines.append("[dim]last user:[/dim]")
-            lines.append(f"[italic]{escape(preview)}[/italic]")
-        return "\n".join(lines)
-
-    # -- Borrow / return ----------------------------------------------------
-
-    def _borrow(self, source_pane_id: str) -> None:
-        if source_pane_id == self._borrowed_pane_id:
-            return
-        # Find the pane object so we can cache its origin for return_pane.
-        try:
-            origin = next(p for p in list_panes() if p.pane_id == source_pane_id)
-        except (StopIteration, TmuxError):
-            return
-
-        # Return any previously borrowed pane FIRST, before we kill the right
-        # slot in borrow_pane. If the return fails, we must NOT proceed —
-        # otherwise we'd kill a real pi pane.
-        if self._borrowed_pane_id and self._borrowed_origin is not None:
-            try:
-                return_pane(self._borrowed_pane_id, self._borrowed_origin.session)
-            except TmuxError as exc:
-                self.notify(
-                    f"refusing to swap: could not return previous pane: {exc}",
-                    severity="error",
-                    timeout=10,
-                )
-                return
-            self._borrowed_pane_id = None
-            self._borrowed_origin = None
-
-        try:
-            borrow_pane(source_pane_id)
-        except TmuxError as exc:
-            self.notify(f"borrow failed: {exc}", severity="error", timeout=10)
-            return
-
-        self._borrowed_pane_id = source_pane_id
-        self._borrowed_origin = origin
-        self._tick()
-
     def _cleanup_and_exit(self) -> None:
-        # Step 1: try to return any borrowed pane to its origin.
-        if self._borrowed_pane_id and self._borrowed_origin is not None:
-            try:
-                return_pane(self._borrowed_pane_id, self._borrowed_origin.session)
-                self._borrowed_pane_id = None
-                self._borrowed_origin = None
-            except TmuxError as exc:
-                # CRITICAL: do NOT kill the monitor session if the borrowed
-                # pane is still parked there. Better to leave it alive so
-                # the user can rescue manually than to silently destroy a
-                # real pi process.
-                self.notify(
-                    f"could not return borrowed pane: {exc}\n"
-                    "Leaving the monitor session alive so you can rescue "
-                    "manually with `tmux move-pane` or by attaching.",
-                    severity="error",
-                    timeout=15,
-                )
-                self.exit()
-                return
-
-        # Step 2: even after the explicit return above succeeded, double-check
-        # nothing pi-shaped is still parked in monitor (defense in depth).
-        if monitor_has_pi_panes():
-            self.notify(
-                "Monitor session still contains a pi pane after cleanup. "
-                "Leaving it alive; rescue manually with `tmux attach -t monitor`.",
-                severity="error",
-                timeout=15,
-            )
-            self.exit()
-            return
-
         clear_status_widget()
         # Hand the user's client to another existing session before we
         # kill the monitor session out from under them.
