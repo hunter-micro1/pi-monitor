@@ -16,7 +16,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .state import AgentState
 
@@ -60,10 +60,15 @@ def save_config(config: dict) -> None:
 class Notifier:
     """Tracks last-known state per pane and fires `notify-send` on transitions
     into attention states. Debounces duplicate transitions inside `debounce_s`.
+
+    The TUI installs `on_transition` to also receive an in-TUI toast on the
+    same trigger. The callback runs only when `enabled` is True (mute affects
+    both desktop notifications and in-app toasts).
     """
 
     debounce_s: float = 2.0
     enabled: bool = True
+    on_transition: Callable[[str, AgentState, str, str], None] | None = None
     _last_state: dict[str, AgentState] = field(default_factory=dict)
     _last_fire: dict[str, float] = field(default_factory=dict)
 
@@ -96,9 +101,17 @@ class Notifier:
             return False
         self._last_fire[pane_id] = now
 
+        resolved_title = title or f"pi-monitor · {pane_id}"
+        resolved_body = body or f"agent state: {new_state.value}"
+        if self.on_transition is not None:
+            try:
+                self.on_transition(pane_id, new_state, resolved_title, resolved_body)
+            except Exception:
+                # In-app callback failures must never block desktop notifications.
+                pass
         _send_notification(
-            title or f"pi-monitor · {pane_id}",
-            body or f"agent state: {new_state.value}",
+            resolved_title,
+            resolved_body,
             urgency="critical" if new_state == AgentState.ERROR else "normal",
         )
         return True

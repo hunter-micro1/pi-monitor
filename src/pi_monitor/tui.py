@@ -13,7 +13,8 @@ from pathlib import Path
 from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Footer, Header, Tree
+from textual.containers import Container
+from textual.widgets import Footer, Static, Tree
 
 from .notify import Notifier, load_config, save_config
 from .state import AgentState, PaneRef, PaneStatus, StateResolver
@@ -34,16 +35,31 @@ from .tmux import (
 
 POLL_INTERVAL_S = 0.5
 
-# Rich color names for each state. Used in the in-TUI tree only; the tmux
-# status-line widget uses emoji glyphs (below) because tmux's status format
-# doesn't render Rich markup consistently across terminals.
+# Pi's `dark` theme color tokens (from
+# pi-coding-agent/dist/modes/interactive/theme/dark.json). Used as Rich
+# markup colors in the tree and as Textual CSS variables in the layout.
+PI_ACCENT = "#8abeb7"  # teal
+PI_SUCCESS = "#b5bd68"  # green
+PI_ERROR = "#cc6666"  # red
+PI_WARNING = "#ffff00"  # yellow
+PI_MUTED = "#808080"
+PI_DIM = "#666666"
+
+# Per-state colors used inside Rich markup strings in the tree.
 STATE_COLORS: dict[AgentState, str] = {
-    AgentState.IDLE: "red",
-    AgentState.WORKING: "green",
-    AgentState.STALLED: "yellow",
+    AgentState.IDLE: PI_ERROR,
+    AgentState.WORKING: PI_SUCCESS,
+    AgentState.STALLED: PI_WARNING,
     AgentState.ERROR: "bright_red",
-    AgentState.UNKNOWN: "grey50",
-    AgentState.NO_PI: "grey42",
+    AgentState.UNKNOWN: PI_DIM,
+    AgentState.NO_PI: "#505050",
+}
+
+# Severity passed to Textual's in-TUI toast on transitions.
+STATE_TOAST_SEVERITY: dict[AgentState, str] = {
+    AgentState.IDLE: "warning",
+    AgentState.STALLED: "warning",
+    AgentState.ERROR: "error",
 }
 
 # Used only by the tmux status-line widget; emoji are dependable in tmux.
@@ -145,23 +161,86 @@ class PiMonitorApp(App):
     """The pi-monitor TUI. Single screen: header + tree + footer."""
 
     CSS = """
+    /* Pi `dark` theme tokens, mirrored into Textual CSS vars. */
+    $pi-bg: #18181e;
+    $pi-card-bg: #1e1e24;
+    $pi-accent: #8abeb7;
+    $pi-border: #5f87ff;
+    $pi-border-accent: #00d7ff;
+    $pi-border-muted: #505050;
+    $pi-success: #b5bd68;
+    $pi-error: #cc6666;
+    $pi-warning: #ffff00;
+    $pi-muted: #808080;
+    $pi-dim: #666666;
+    $pi-selected-bg: #3a3a4a;
+
     Screen {
-        background: $surface;
+        background: $pi-bg;
+        color: white;
+        layout: vertical;
+    }
+
+    #title-bar {
+        height: 1;
+        padding: 0 2;
+        background: $pi-bg;
+        color: $pi-accent;
+        text-style: bold;
+    }
+
+    #attention-banner {
+        height: 1;
+        padding: 0 2;
+        background: $pi-card-bg;
+        color: $pi-warning;
+    }
+
+    #attention-banner.hidden {
+        display: none;
+    }
+
+    #tree-wrap {
+        border: round $pi-border-muted;
+        border-title-color: $pi-accent;
+        border-title-style: bold;
+        border-title-align: left;
+        background: $pi-card-bg;
+        margin: 1 1 0 1;
+        padding: 0;
+        height: 1fr;
     }
 
     Tree {
-        padding: 1 2;
-        background: $surface;
+        background: $pi-card-bg;
+        color: white;
+        padding: 1 1;
     }
 
     Tree > .tree--cursor {
-        background: $primary 30%;
-        color: $text;
+        background: $pi-selected-bg;
+        color: white;
         text-style: bold;
     }
 
     Tree > .tree--guides {
-        color: $surface-lighten-2;
+        color: $pi-border-muted;
+    }
+
+    Footer {
+        background: $pi-bg;
+        color: $pi-muted;
+    }
+
+    Footer > .footer-key--key {
+        background: $pi-bg;
+        color: $pi-accent;
+        text-style: bold;
+    }
+
+    Footer > .footer-key--description {
+        background: $pi-bg;
+        color: $pi-muted;
     }
     """
 
@@ -217,18 +296,45 @@ class PiMonitorApp(App):
     # -- Composition --------------------------------------------------------
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=False)
-        yield Tree("pi-monitor", id="tree")
+        yield Static("pi-monitor", id="title-bar")
+        yield Static("", id="attention-banner", classes="hidden")
+        with Container(id="tree-wrap"):
+            yield Tree("Sessions", id="tree")
         yield Footer()
 
     def on_mount(self) -> None:
         self.title = "pi-monitor"
+        self._title_bar: Static = self.query_one("#title-bar", Static)
+        self._attention_banner: Static = self.query_one(
+            "#attention-banner", Static
+        )
+        self._tree_wrap: Container = self.query_one("#tree-wrap", Container)
+        self._tree_wrap.border_title = "Sessions"
         self._tree: Tree = self.query_one("#tree", Tree)
         self._tree.show_root = False
         self._tree.guide_depth = 2
         self._tree.focus()
+        # Pipe Notifier transitions into the in-TUI toast.
+        self.notifier.on_transition = self._on_transition
         self.set_interval(POLL_INTERVAL_S, self._tick)
         self._tick()
+
+    def _on_transition(
+        self,
+        pane_id: str,
+        state: AgentState,
+        title: str,
+        body: str,
+    ) -> None:
+        """Called by Notifier when a pane transitions into an attention state.
+        Shows a Textual toast in the bottom-right of the monitor TUI."""
+        severity = STATE_TOAST_SEVERITY.get(state, "information")
+        self.notify(
+            f"{body}\nstate: {state.value}",
+            title=title,
+            severity=severity,
+            timeout=6,
+        )
 
     # -- Tick / render ------------------------------------------------------
 
@@ -283,7 +389,47 @@ class PiMonitorApp(App):
                 )
 
         set_status_widget(fmt_status_widget([s for _, s in statuses]))
+        self._update_chrome([s for _, s in statuses])
         self._render(statuses)
+
+    def _update_chrome(self, all_statuses: list[PaneStatus]) -> None:
+        """Refresh the title bar and the attention banner from current state."""
+        counts: dict[AgentState, int] = {}
+        for s in all_statuses:
+            counts[s.state] = counts.get(s.state, 0) + 1
+
+        total = sum(counts.values())
+        mute_tag = "" if self.notifier.enabled else "  · muted"
+        sort_tag = f"sort:{self.sort_mode}"
+        self._title_bar.update(
+            f"pi-monitor  ·  {total} pane{'s' if total != 1 else ''}  ·  {sort_tag}{mute_tag}"
+        )
+
+        attention_total = sum(
+            counts.get(s, 0)
+            for s in (AgentState.ERROR, AgentState.STALLED, AgentState.IDLE)
+        )
+        if attention_total == 0:
+            self._attention_banner.add_class("hidden")
+            self._attention_banner.update("")
+            return
+
+        parts: list[str] = []
+        for state, label in (
+            (AgentState.ERROR, "error"),
+            (AgentState.STALLED, "stalled"),
+            (AgentState.IDLE, "idle"),
+        ):
+            n = counts.get(state, 0)
+            if not n:
+                continue
+            color = STATE_COLORS[state]
+            parts.append(f"[{color}]● {n} {label}[/{color}]")
+        msg = "  ·  ".join(parts)
+        self._attention_banner.update(
+            f"{msg}  [dim]· press 1–9 to jump[/dim]"
+        )
+        self._attention_banner.remove_class("hidden")
 
     def _render(self, statuses: list[tuple[Pane, PaneStatus]]) -> None:
         """Diff-based update: existing nodes get their labels updated in place;
@@ -542,9 +688,7 @@ class PiMonitorApp(App):
         # otherwise we'd kill a real pi pane.
         if self._borrowed_pane_id and self._borrowed_origin is not None:
             try:
-                return_pane(
-                    self._borrowed_pane_id, self._borrowed_origin.session
-                )
+                return_pane(self._borrowed_pane_id, self._borrowed_origin.session)
             except TmuxError as exc:
                 self.notify(
                     f"refusing to swap: could not return previous pane: {exc}",
@@ -569,9 +713,7 @@ class PiMonitorApp(App):
         # Step 1: try to return any borrowed pane to its origin.
         if self._borrowed_pane_id and self._borrowed_origin is not None:
             try:
-                return_pane(
-                    self._borrowed_pane_id, self._borrowed_origin.session
-                )
+                return_pane(self._borrowed_pane_id, self._borrowed_origin.session)
                 self._borrowed_pane_id = None
                 self._borrowed_origin = None
             except TmuxError as exc:

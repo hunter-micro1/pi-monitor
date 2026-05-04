@@ -165,9 +165,12 @@ def recover_orphan_panes() -> list[str]:
             _tmux(
                 "break-pane",
                 "-d",
-                "-s", p.pane_id,
-                "-t", f"{RESCUE_SESSION}:",
-                "-n", p.title or "rescued",
+                "-s",
+                p.pane_id,
+                "-t",
+                f"{RESCUE_SESSION}:",
+                "-n",
+                p.title or "rescued",
             )
             recovered.append(p.target)
         except TmuxError:
@@ -199,9 +202,7 @@ def borrow_pane(source_pane_id: str) -> None:
     holds a pi pane (which would mean a previous return_pane silently
     failed). Better to error loudly than silently destroy a borrowed agent.
     """
-    right_slot = next(
-        (p for p in list_panes() if p.target == RIGHT_SLOT), None
-    )
+    right_slot = next((p for p in list_panes() if p.target == RIGHT_SLOT), None)
     if right_slot is not None and right_slot.is_pi:
         raise TmuxError(
             "refusing to borrow: right slot still contains a pi pane "
@@ -229,8 +230,10 @@ def return_pane(borrowed_pane_id: str, origin_session: str) -> None:
     _tmux(
         "break-pane",
         "-d",
-        "-s", borrowed_pane_id,
-        "-t", f"{origin_session}:",
+        "-s",
+        borrowed_pane_id,
+        "-t",
+        f"{origin_session}:",
     )
     # After breaking out the borrowed pane, the right slot is now empty.
     # Recreate a placeholder shell so the layout doesn't collapse to a
