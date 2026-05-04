@@ -98,6 +98,11 @@ STATE_GLYPHS: dict[AgentState, str] = {
 # state word + a one-space gutter. Keeps the title column aligned across rows.
 STATE_LABEL_WIDTH = 8  # "stalled ", "working ", "idle    ", etc.
 
+# Synthetic top-of-tree row that, when activated, opens the new-session
+# modal. Always present so the user has an explicit, discoverable way to
+# create a tmux session without it being context-sensitive.
+NEW_SESSION_LABEL = "[bold #8abeb7][+] new session[/bold #8abeb7]"
+
 # Lower number = higher attention priority.
 STATE_PRIORITY: dict[AgentState, int] = {
     AgentState.ERROR: 0,
@@ -126,8 +131,10 @@ HELP_TEXT = """\
                   pi-monitor (e.g. [#8abeb7]prefix+M[/#8abeb7]) to come back.
 
 [bold]Spawn[/bold]
-  [#8abeb7]o[/#8abeb7]          launch pi in a new tmux session
-  [#8abeb7]Shift+O[/#8abeb7]    split the cursored session, launch pi
+  [#8abeb7]o[/#8abeb7]          context-sensitive launch:
+              · on [+] new session row → new tmux session
+              · on session header / pane → split that session
+  [#8abeb7]Enter[/#8abeb7]      same as `o` on the [+] new session row
 
 [bold]View[/bold]
   [#8abeb7]s[/#8abeb7]          cycle sort: tmux ↔ needs-attention-first
@@ -300,11 +307,7 @@ class NewPiScreen(ModalScreen):
             matches_widget.update("")
         else:
             shown = "  ".join(escape(m) for m in matches[:6])
-            extra = (
-                f"  [dim]+{len(matches) - 6} more[/dim]"
-                if len(matches) > 6
-                else ""
-            )
+            extra = f"  [dim]+{len(matches) - 6} more[/dim]" if len(matches) > 6 else ""
             matches_widget.update(f"[dim]{shown}[/dim]{extra}")
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -361,7 +364,7 @@ def _complete_dir_path(value: str) -> tuple[str, list[str]]:
     if value.startswith("~"):
         home = os.path.expanduser("~")
         if full.startswith(home):
-            full = "~" + full[len(home):]
+            full = "~" + full[len(home) :]
     return full, matches
 
 
@@ -576,8 +579,7 @@ class PiMonitorApp(App):
         Binding("shift+h", "toggle_show_non_pi", "show non-pi", show=False),
         Binding("r", "refresh_now", "refresh", show=False),
         Binding("m", "toggle_mute", "mute"),
-        Binding("o", "new_session", "new"),
-        Binding("O", "split_pane", "split", show=False),
+        Binding("o", "open_new", "new"),
         Binding("q", "quit_monitor", "quit"),
         Binding("?", "show_help", "help"),
         Binding("1", "jump(1)", show=False),
@@ -774,6 +776,13 @@ class PiMonitorApp(App):
 
         self._tree.root.remove_children()
         self._last_labels.clear()
+
+        # Synthetic 'new session' affordance always at the top of the tree.
+        new_label = NEW_SESSION_LABEL
+        new_key = ("new", None)
+        self._tree.root.add_leaf(new_label, data=new_key)
+        self._last_labels[new_key] = new_label
+
         for session in desired_sessions:
             items = by_session[session]
             header = fmt_session_header(session, [s for _, s in items])
@@ -867,11 +876,21 @@ class PiMonitorApp(App):
     # -- Tree event ---------------------------------------------------------
 
     def on_tree_node_selected(self, event) -> None:
-        """Enter on a pane row: switch tmux client to that pane (full-screen)."""
+        """Enter on a row.
+
+          - on `[+] new session`: open the new-session modal
+          - on a pane: switch tmux client to that pane (full-screen)
+          - on a session header: default tree expand/collapse (no-op here)
+        """
         node = event.node
-        if not node.data or node.data[0] != "pane":
+        if not node.data:
             return
-        self._jump_to_pane(node.data[1])
+        kind = node.data[0]
+        if kind == "new":
+            self._open_new_session()
+            return
+        if kind == "pane":
+            self._jump_to_pane(node.data[1])
 
     def on_tree_node_highlighted(self, event) -> None:
         """Cursor moved; refresh the preview for the new selection."""
@@ -1107,23 +1126,39 @@ class PiMonitorApp(App):
     def action_show_help(self) -> None:
         self.push_screen(HelpScreen())
 
-    def action_new_session(self) -> None:
-        """`o`: prompt for a directory and launch a new tmux session running pi."""
+    def action_open_new(self) -> None:
+        """`o` is context-sensitive:
+
+          - cursor on `[+] new session` row → new tmux session
+          - cursor on a session header / pane → split that session
+          - cursor on nothing useful (empty tree) → fall back to new session
+        """
+        node = self._tree.cursor_node
+        if node is None or not node.data:
+            self._open_new_session()
+            return
+        kind = node.data[0]
+        if kind == "new":
+            self._open_new_session()
+            return
+        if kind in ("session", "pane"):
+            self._open_split()
+            return
+        # Defensive fallback for any unrecognized node kind.
+        self._open_new_session()
+
+    def _open_new_session(self) -> None:
         default_cwd = self._cursored_cwd() or os.path.expanduser("~")
         self.push_screen(
             NewPiScreen("session", default_cwd),
             self._handle_launch_result,
         )
 
-    def action_split_pane(self) -> None:
-        """`O`: prompt for a directory and split the cursored session's window."""
+    def _open_split(self) -> None:
         pane = self._cursored_pane_obj()
         if pane is None:
-            self.notify(
-                "cursor a session or pane to choose where to split",
-                severity="warning",
-                timeout=5,
-            )
+            # Shouldn't normally happen given the dispatcher above; safe fallback.
+            self._open_new_session()
             return
         self._split_target = f"{pane.session}:{pane.window_index}"
         self.push_screen(
