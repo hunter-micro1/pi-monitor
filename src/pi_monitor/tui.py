@@ -165,12 +165,16 @@ class PiMonitorApp(App):
     }
     """
 
-    # Tree handles j/k/up/down/space natively. We add vim-style hjkl on top:
-    # h collapses the current node (or moves to parent if already collapsed),
-    # l expands it (or steps into the first child if already expanded). Tab
-    # keeps its tmux-pane-focus job. `enter` -> TreeNodeSelected, handled below.
+    # Vim-style hjkl on top of arrow-key navigation:
+    #   h - collapse current node, or jump to parent if already collapsed
+    #   j - down (Tree binds arrows by default; we add j/k aliases)
+    #   k - up
+    #   l - expand current node, or step into first child if already expanded
+    # Tab keeps its tmux-pane-focus job. `enter` -> TreeNodeSelected (below).
     BINDINGS = [
         Binding("h", "tree_collapse_or_parent", "←", show=False),
+        Binding("j", "tree_cursor_down", "↓", show=False),
+        Binding("k", "tree_cursor_up", "↑", show=False),
         Binding("l", "tree_expand_or_child", "→", show=False),
         Binding("tab", "focus_right", "→agent"),
         Binding("g", "go_top", "top", show=False),
@@ -486,6 +490,12 @@ class PiMonitorApp(App):
                 if idx == n:
                     self._tree.select_node(leaf)
                     return
+
+    def action_tree_cursor_down(self) -> None:
+        self._tree.action_cursor_down()
+
+    def action_tree_cursor_up(self) -> None:
+        self._tree.action_cursor_up()
 
     def action_tree_collapse_or_parent(self) -> None:
         """Vim `h`: collapse the current node, or jump to its parent if it's
