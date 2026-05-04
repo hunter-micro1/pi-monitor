@@ -22,6 +22,7 @@ full-screen. Coming back is whatever they bound the launcher hotkey to
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from rich.markup import escape
@@ -30,7 +31,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal
 from textual.screen import ModalScreen
-from textual.widgets import Footer, Static, Tree
+from textual.widgets import Footer, Input, Static, Tree
 
 from .notify import Notifier, load_config, save_config
 from .state import (
@@ -124,6 +125,10 @@ HELP_TEXT = """\
                   agent (full-screen). Re-launch
                   pi-monitor (e.g. [#8abeb7]prefix+M[/#8abeb7]) to come back.
 
+[bold]Spawn[/bold]
+  [#8abeb7]o[/#8abeb7]          launch pi in a new tmux session
+  [#8abeb7]Shift+O[/#8abeb7]    split the cursored session, launch pi
+
 [bold]View[/bold]
   [#8abeb7]s[/#8abeb7]          cycle sort: tmux ↔ needs-attention-first
   [#8abeb7]Shift+H[/#8abeb7]    toggle showing non-pi panes
@@ -183,6 +188,86 @@ class HelpScreen(ModalScreen):
 
     def on_key(self, event) -> None:
         self.dismiss()
+
+
+class NewPiScreen(ModalScreen):
+    """Prompt for a directory to launch a new pi agent in.
+
+    Returns a tuple `(mode, cwd)` on Enter, or `None` on Esc. The caller
+    distinguishes 'session' (new tmux session) vs 'split' (split current)
+    via the `mode` it passed in at construction.
+    """
+
+    DEFAULT_CSS = """
+    NewPiScreen {
+        align: center middle;
+        background: rgba(0,0,0,0.7);
+    }
+    NewPiScreen > #new-pi-dialog {
+        width: 70;
+        height: auto;
+        padding: 1 2;
+        border: round #5f87ff;
+        background: #1e1e24;
+        color: white;
+    }
+    NewPiScreen #new-pi-title {
+        color: #8abeb7;
+        text-style: bold;
+    }
+    NewPiScreen #new-pi-hint {
+        color: #808080;
+        margin-top: 1;
+    }
+    NewPiScreen Input {
+        margin-top: 1;
+        background: #18181e;
+        color: white;
+        border: tall #505050;
+    }
+    NewPiScreen Input:focus {
+        border: tall #8abeb7;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "cancel")]
+
+    def __init__(self, mode: str, default_cwd: str) -> None:
+        super().__init__()
+        self.mode = mode  # "session" or "split"
+        self.default_cwd = default_cwd
+
+    def compose(self) -> ComposeResult:
+        title = (
+            "Launch pi in a new tmux session"
+            if self.mode == "session"
+            else "Launch pi in a new split (current session)"
+        )
+        with Container(id="new-pi-dialog"):
+            yield Static(title, id="new-pi-title")
+            yield Input(
+                value=self.default_cwd,
+                id="new-pi-cwd",
+                placeholder="directory to start pi in",
+            )
+            yield Static(
+                "[#8abeb7]Enter[/#8abeb7] to launch  ·  "
+                "[#8abeb7]Esc[/#8abeb7] to cancel",
+                id="new-pi-hint",
+            )
+
+    def on_mount(self) -> None:
+        self.query_one(Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        cwd = event.value.strip()
+        if not cwd:
+            self.dismiss(None)
+            return
+        self.dismiss((self.mode, cwd))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +481,8 @@ class PiMonitorApp(App):
         Binding("shift+h", "toggle_show_non_pi", "show non-pi", show=False),
         Binding("r", "refresh_now", "refresh", show=False),
         Binding("m", "toggle_mute", "mute"),
+        Binding("o", "new_session", "new"),
+        Binding("O", "split_pane", "split", show=False),
         Binding("q", "quit_monitor", "quit"),
         Binding("?", "show_help", "help"),
         Binding("1", "jump(1)", show=False),
@@ -924,6 +1011,96 @@ class PiMonitorApp(App):
 
     def action_show_help(self) -> None:
         self.push_screen(HelpScreen())
+
+    def action_new_session(self) -> None:
+        """`o`: prompt for a directory and launch a new tmux session running pi."""
+        default_cwd = self._cursored_cwd() or os.path.expanduser("~")
+        self.push_screen(
+            NewPiScreen("session", default_cwd),
+            self._handle_launch_result,
+        )
+
+    def action_split_pane(self) -> None:
+        """`O`: prompt for a directory and split the cursored session's window."""
+        pane = self._cursored_pane_obj()
+        if pane is None:
+            self.notify(
+                "cursor a session or pane to choose where to split",
+                severity="warning",
+                timeout=5,
+            )
+            return
+        self._split_target = f"{pane.session}:{pane.window_index}"
+        self.push_screen(
+            NewPiScreen("split", pane.cwd),
+            self._handle_launch_result,
+        )
+
+    def _cursored_cwd(self) -> str | None:
+        node = self._tree.cursor_node
+        if node and node.data:
+            kind, key = node.data
+            if kind == "pane":
+                entry = self._latest_statuses.get(key)
+                if entry is not None:
+                    return entry[0].cwd
+            elif kind == "session":
+                for p, _ in self._latest_statuses.values():
+                    if p.session == key:
+                        return p.cwd
+        return None
+
+    def _cursored_pane_obj(self) -> Pane | None:
+        node = self._tree.cursor_node
+        if node is None or not node.data:
+            return None
+        kind, key = node.data
+        if kind == "pane":
+            entry = self._latest_statuses.get(key)
+            return entry[0] if entry else None
+        if kind == "session":
+            # Pick any pane in the session; window_index will be the same.
+            for p, _ in self._latest_statuses.values():
+                if p.session == key:
+                    return p
+        return None
+
+    def _handle_launch_result(self, result) -> None:
+        if result is None:
+            return
+        mode, cwd = result
+        try:
+            if mode == "session":
+                from .tmux import create_pi_session
+
+                name = create_pi_session(cwd)
+                self.notify(
+                    f"started pi in session {name}",
+                    severity="information",
+                    timeout=4,
+                )
+            else:
+                from .tmux import split_pi_pane
+
+                target = getattr(self, "_split_target", None)
+                if target is None:
+                    self.notify(
+                        "no split target tracked; cursor a pane and try again",
+                        severity="error",
+                        timeout=5,
+                    )
+                    return
+                split_pi_pane(target, cwd)
+                self.notify(
+                    f"started pi in split on {target}",
+                    severity="information",
+                    timeout=4,
+                )
+        except TmuxError as exc:
+            self.notify(f"launch failed: {exc}", severity="error", timeout=8)
+        # Refresh tree immediately so the new agent shows up.
+        self._needs_full_rebuild = True
+        self._tick()
 
     def action_quit_monitor(self) -> None:
         self._cleanup_and_exit()

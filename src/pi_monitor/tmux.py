@@ -171,6 +171,55 @@ def switch_client_to_pane(pane: Pane) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Spawning new pi agents
+# ---------------------------------------------------------------------------
+
+
+def _suggest_session_name(cwd: str) -> str:
+    """Basename of the cwd, with `-2`, `-3` ... appended if a session of
+    that name already exists. `pi` is the fallback for empty/root paths."""
+    import os
+
+    base = os.path.basename(cwd.rstrip("/")) or "pi"
+    candidate = base
+    n = 2
+    while session_exists(candidate):
+        candidate = f"{base}-{n}"
+        n += 1
+    return candidate
+
+
+def create_pi_session(cwd: str, name: str | None = None) -> str:
+    """Create a new detached tmux session running `pi` in `cwd`. Returns the
+    final session name (which may differ from the requested one if a
+    collision suffix was appended)."""
+    import os
+
+    cwd = os.path.expanduser(cwd)
+    if not os.path.isdir(cwd):
+        raise TmuxError(f"directory not found: {cwd}")
+    final_name = name or _suggest_session_name(cwd)
+    if name is not None and session_exists(name):
+        raise TmuxError(f"session {name!r} already exists")
+    _tmux("new-session", "-d", "-s", final_name, "-c", cwd, "pi")
+    return final_name
+
+
+def split_pi_pane(target_window: str, cwd: str) -> None:
+    """Split the target window with a new pane running `pi` in `cwd`.
+
+    `target_window` is in `<session>:<window_index>` form (e.g. `contracts:0`).
+    The split is horizontal so the new pane appears beside its sibling.
+    """
+    import os
+
+    cwd = os.path.expanduser(cwd)
+    if not os.path.isdir(cwd):
+        raise TmuxError(f"directory not found: {cwd}")
+    _tmux("split-window", "-h", "-t", target_window, "-c", cwd, "pi")
+
+
+# ---------------------------------------------------------------------------
 # Status-line widget
 # ---------------------------------------------------------------------------
 
