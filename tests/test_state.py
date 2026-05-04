@@ -159,27 +159,20 @@ def test_infer_idle_below_threshold_is_working():
     assert state == AgentState.WORKING
 
 
-def test_infer_stalled_after_threshold():
+def test_infer_tooluse_pending_is_working_regardless_of_idle_time():
+    """toolUse with pending tool calls always reports WORKING. We deliberately
+    don't try to flag long-running tools as stalled — from outside we can't
+    tell 'still running' from 'awaiting confirmation', so just trust the
+    user to look at the pane via the preview."""
     snap = JsonlSnapshot(
         mtime=0.0,
         last_role="assistant",
         last_stop_reason="toolUse",
         pending_tool_calls=1,
     )
-    state, idle = infer_state(snap, now=10.0)
-    assert state == AgentState.STALLED
-    assert idle == 10.0
-
-
-def test_infer_stalled_below_threshold_is_working():
-    snap = JsonlSnapshot(
-        mtime=0.0,
-        last_role="assistant",
-        last_stop_reason="toolUse",
-        pending_tool_calls=1,
-    )
-    state, _ = infer_state(snap, now=2.0)
-    assert state == AgentState.WORKING
+    for now in (1.0, 30.0, 600.0, 10000.0):
+        state, _ = infer_state(snap, now=now)
+        assert state == AgentState.WORKING, f"now={now} -> {state}"
 
 
 def test_infer_tooluse_with_no_pending_is_working():
@@ -661,16 +654,18 @@ def test_inspector_current_tool_cleared_after_tool_result(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# STALLED -> WORKING override when pi has a fresh tool descendant
+# Long-running toolUse stays WORKING (no STALLED state surfaces)
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_promotes_stalled_to_working_when_tool_descendant_alive(
+def test_resolve_long_tooluse_stays_working(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """If JSONL silence would say 'stalled' but pi has a child process that
-    started after the last JSONL write, treat it as a still-running tool
-    and report WORKING instead."""
+    """toolUse-pending agents always report WORKING, even when JSONL has been
+    silent for many minutes. We deliberately can't tell 'tool running' from
+    'tool awaiting confirmation' externally, and reporting STALLED was
+    causing too many false positives (extensions that spawn helper subprocesses
+    were being interpreted as fresh tool work)."""
     monkeypatch.setattr("pi_monitor.state.SESSIONS_ROOT", tmp_path)
     sess = tmp_path / "--proj--"
     sess.mkdir()
@@ -681,45 +676,12 @@ def test_resolve_promotes_stalled_to_working_when_tool_descendant_alive(
             _msg(
                 "assistant",
                 content=[
-                    {"type": "toolCall", "id": "t1", "name": "bash", "arguments": {}}
-                ],
-                stopReason="toolUse",
-            )
-        ],
-    )
-    os.utime(f, (100.0, 100.0))  # mtime=100
-
-    monkeypatch.setattr("pi_monitor.state.find_pi_pid_for_pane", lambda pid: 42)
-    monkeypatch.setattr(
-        "pi_monitor.state._proc_starttime", lambda pid: 50.0 if pid == 42 else None
-    )
-    monkeypatch.setattr(
-        "pi_monitor.state._pi_has_active_tool_descendant",
-        lambda pi_pid, mtime: True,  # tool is actively running
-    )
-
-    from pi_monitor.state import AgentState, PaneRef, StateResolver
-
-    resolver = StateResolver()
-    refs = [PaneRef(pane_id="x:0.0", cwd="/proj", is_pi=True, pane_pid=1)]
-    out = resolver.resolve(refs, now=200.0)  # 100s idle => would be stalled
-    assert out["x:0.0"].state == AgentState.WORKING
-
-
-def test_resolve_keeps_stalled_when_no_fresh_descendant(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setattr("pi_monitor.state.SESSIONS_ROOT", tmp_path)
-    sess = tmp_path / "--proj--"
-    sess.mkdir()
-    f = sess / "s.jsonl"
-    _write_jsonl(
-        f,
-        [
-            _msg(
-                "assistant",
-                content=[
-                    {"type": "toolCall", "id": "t1", "name": "bash", "arguments": {}}
+                    {
+                        "type": "toolCall",
+                        "id": "t1",
+                        "name": "bash",
+                        "arguments": {},
+                    }
                 ],
                 stopReason="toolUse",
             )
@@ -729,16 +691,15 @@ def test_resolve_keeps_stalled_when_no_fresh_descendant(
 
     monkeypatch.setattr("pi_monitor.state.find_pi_pid_for_pane", lambda pid: 42)
     monkeypatch.setattr(
-        "pi_monitor.state._proc_starttime", lambda pid: 50.0 if pid == 42 else None
-    )
-    monkeypatch.setattr(
-        "pi_monitor.state._pi_has_active_tool_descendant",
-        lambda pi_pid, mtime: False,
+        "pi_monitor.state._proc_starttime",
+        lambda pid: 50.0 if pid == 42 else None,
     )
 
     from pi_monitor.state import AgentState, PaneRef, StateResolver
 
     resolver = StateResolver()
     refs = [PaneRef(pane_id="x:0.0", cwd="/proj", is_pi=True, pane_pid=1)]
-    out = resolver.resolve(refs, now=200.0)
-    assert out["x:0.0"].state == AgentState.STALLED
+    # 100s, 10min, 2hr after last write — always WORKING.
+    for now in (200.0, 700.0, 7300.0):
+        out = resolver.resolve(refs, now=now)
+        assert out["x:0.0"].state == AgentState.WORKING, f"now={now}"

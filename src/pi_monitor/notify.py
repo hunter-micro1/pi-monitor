@@ -1,7 +1,7 @@
 """Desktop notifications + tiny config persistence.
 
 We only fire notifications for transitions *into* a "needs-attention" state
-(idle / stalled / error). Working → idle fires; idle → working does not.
+(idle / error). Working → idle fires; idle → working does not.
 Each pane gets a 2-second debounce so flapping states don't spam the user.
 
 Config lives at `~/.config/pi-monitor/config.json` and is touched only when
@@ -20,7 +20,7 @@ from typing import Callable, Iterable
 
 from .state import AgentState
 
-ATTENTION_STATES = frozenset({AgentState.IDLE, AgentState.STALLED, AgentState.ERROR})
+ATTENTION_STATES = frozenset({AgentState.IDLE, AgentState.ERROR})
 
 CONFIG_PATH = Path.home() / ".config" / "pi-monitor" / "config.json"
 DEFAULT_CONFIG = {

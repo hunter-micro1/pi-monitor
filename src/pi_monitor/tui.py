@@ -67,12 +67,14 @@ PI_WARNING = "#ffff00"  # yellow
 PI_MUTED = "#808080"
 PI_DIM = "#666666"
 
-# Per-state colors used inside Rich markup strings in the tree.
+# Per-state colors. Traffic-light semantics:
+#   working = green (good, leave alone)
+#   idle    = yellow (waiting for you)
+#   error   = red (broken)
 STATE_COLORS: dict[AgentState, str] = {
-    AgentState.IDLE: PI_ERROR,
     AgentState.WORKING: PI_SUCCESS,
-    AgentState.STALLED: PI_WARNING,
-    AgentState.ERROR: "bright_red",
+    AgentState.IDLE: PI_WARNING,
+    AgentState.ERROR: PI_ERROR,
     AgentState.UNKNOWN: PI_DIM,
     AgentState.NO_PI: "#505050",
 }
@@ -80,7 +82,6 @@ STATE_COLORS: dict[AgentState, str] = {
 # Severity passed to Textual's in-TUI toast on transitions.
 STATE_TOAST_SEVERITY: dict[AgentState, str] = {
     AgentState.IDLE: "warning",
-    AgentState.STALLED: "warning",
     AgentState.ERROR: "error",
 }
 
@@ -88,15 +89,13 @@ STATE_TOAST_SEVERITY: dict[AgentState, str] = {
 STATE_GLYPHS: dict[AgentState, str] = {
     AgentState.IDLE: "🔴",
     AgentState.WORKING: "🟢",
-    AgentState.STALLED: "🟡",
     AgentState.ERROR: "❌",
     AgentState.UNKNOWN: "❓",
     AgentState.NO_PI: "⚫",
 }
 
-# Width to which we pad state labels in the tree. Determined by the longest
-# state word + a one-space gutter. Keeps the title column aligned across rows.
-STATE_LABEL_WIDTH = 8  # "stalled ", "working ", "idle    ", etc.
+# Width to which we pad state labels in the tree. Longest is 'working' (7).
+STATE_LABEL_WIDTH = 8
 
 # Synthetic top-of-tree row that, when activated, opens the new-session
 # modal. Always present so the user has an explicit, discoverable way to
@@ -106,9 +105,8 @@ NEW_SESSION_LABEL = "[bold #8abeb7][+] new session[/bold #8abeb7]"
 # Lower number = higher attention priority.
 STATE_PRIORITY: dict[AgentState, int] = {
     AgentState.ERROR: 0,
-    AgentState.STALLED: 1,
-    AgentState.IDLE: 2,
-    AgentState.UNKNOWN: 3,
+    AgentState.IDLE: 1,
+    AgentState.UNKNOWN: 2,
     AgentState.WORKING: 4,
     AgentState.NO_PI: 5,
 }
@@ -407,13 +405,13 @@ def fmt_row(pane: Pane, status: PaneStatus) -> str:
 
 
 def fmt_session_header(session: str, statuses: list[PaneStatus]) -> str:
-    """`Session       1 stalled · 1 idle` (counts only for attention states).
+    """`Session  ·  1 idle` (counts only for attention states).
 
     No glyphs; colored count text on the right.
     """
     name = escape(session)
     counts: list[str] = []
-    for state in (AgentState.ERROR, AgentState.STALLED, AgentState.IDLE):
+    for state in (AgentState.ERROR, AgentState.IDLE):
         n = sum(1 for s in statuses if s.state == state)
         if n:
             color = STATE_COLORS[state]
@@ -430,7 +428,6 @@ def fmt_status_widget(statuses: list[PaneStatus]) -> str:
     for state in (
         AgentState.ERROR,
         AgentState.IDLE,
-        AgentState.STALLED,
         AgentState.WORKING,
     ):
         n = counts.get(state, 0)
@@ -717,8 +714,7 @@ class PiMonitorApp(App):
         )
 
         attention_total = sum(
-            counts.get(s, 0)
-            for s in (AgentState.ERROR, AgentState.STALLED, AgentState.IDLE)
+            counts.get(s, 0) for s in (AgentState.ERROR, AgentState.IDLE)
         )
         if attention_total == 0:
             self._attention_banner.add_class("hidden")
@@ -728,7 +724,6 @@ class PiMonitorApp(App):
         parts: list[str] = []
         for state, label in (
             (AgentState.ERROR, "error"),
-            (AgentState.STALLED, "stalled"),
             (AgentState.IDLE, "idle"),
         ):
             n = counts.get(state, 0)
@@ -878,9 +873,9 @@ class PiMonitorApp(App):
     def on_tree_node_selected(self, event) -> None:
         """Enter on a row.
 
-          - on `[+] new session`: open the new-session modal
-          - on a pane: switch tmux client to that pane (full-screen)
-          - on a session header: default tree expand/collapse (no-op here)
+        - on `[+] new session`: open the new-session modal
+        - on a pane: switch tmux client to that pane (full-screen)
+        - on a session header: default tree expand/collapse (no-op here)
         """
         node = event.node
         if not node.data:
@@ -946,7 +941,6 @@ class PiMonitorApp(App):
         sub_parts = [f"{len(panes)} panes"]
         for state in (
             AgentState.ERROR,
-            AgentState.STALLED,
             AgentState.IDLE,
             AgentState.WORKING,
         ):
@@ -1129,9 +1123,9 @@ class PiMonitorApp(App):
     def action_open_new(self) -> None:
         """`o` is context-sensitive:
 
-          - cursor on `[+] new session` row → new tmux session
-          - cursor on a session header / pane → split that session
-          - cursor on nothing useful (empty tree) → fall back to new session
+        - cursor on `[+] new session` row → new tmux session
+        - cursor on a session header / pane → split that session
+        - cursor on nothing useful (empty tree) → fall back to new session
         """
         node = self._tree.cursor_node
         if node is None or not node.data:
