@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Footer, Header, Tree
@@ -32,6 +33,19 @@ from .tmux import (
 
 POLL_INTERVAL_S = 0.5
 
+# Rich color names for each state. Used in the in-TUI tree only; the tmux
+# status-line widget uses emoji glyphs (below) because tmux's status format
+# doesn't render Rich markup consistently across terminals.
+STATE_COLORS: dict[AgentState, str] = {
+    AgentState.IDLE: "red",
+    AgentState.WORKING: "green",
+    AgentState.STALLED: "yellow",
+    AgentState.ERROR: "bright_red",
+    AgentState.UNKNOWN: "grey50",
+    AgentState.NO_PI: "grey42",
+}
+
+# Used only by the tmux status-line widget; emoji are dependable in tmux.
 STATE_GLYPHS: dict[AgentState, str] = {
     AgentState.IDLE: "🔴",
     AgentState.WORKING: "🟢",
@@ -69,27 +83,39 @@ def fmt_idle(seconds: float) -> str:
 
 
 def fmt_row(pane: Pane, status: PaneStatus, borrowed: bool) -> str:
-    glyph = STATE_GLYPHS.get(status.state, "•")
-    title = pane.title or f"pane {pane.pane_index}"
-    cwd = Path(pane.cwd).name or pane.cwd
+    """Rich markup string. Layout:  ` ●  Title  · cwd          state · idle`.
+
+    All user-supplied text (title, cwd) is `rich.markup.escape`d to neutralize
+    any literal `[` characters in pane titles / paths.
+    """
+    color = STATE_COLORS.get(status.state, "grey50")
+    title = escape(pane.title or f"pane {pane.pane_index}")
+    cwd = escape(Path(pane.cwd).name or pane.cwd)
     state_label = status.state.value
-    parts = [glyph, title, f"[{cwd}]", state_label]
     idle = fmt_idle(status.idle_seconds)
+
+    parts = [f"[{color}]●[/{color}]  {title}"]
+    if cwd:
+        parts.append(f"  [dim]· {cwd}[/dim]")
+    parts.append(f"   [{color}]{state_label}[/{color}]")
     if idle:
-        parts.append(idle)
+        parts.append(f" [dim]· {idle}[/dim]")
     if borrowed:
-        parts.append("· borrowed")
-    return " ".join(parts)
+        parts.append("  [bold cyan]→ right[/bold cyan]")
+    return "".join(parts)
 
 
 def fmt_session_header(session: str, statuses: list[PaneStatus]) -> str:
+    """`Session  ●N ●M` (counts only for attention states)."""
+    name = escape(session)
     badges: list[str] = []
     for state in (AgentState.ERROR, AgentState.STALLED, AgentState.IDLE):
         n = sum(1 for s in statuses if s.state == state)
         if n:
-            badges.append(f"{STATE_GLYPHS[state]}{n}")
-    suffix = f"  ({' '.join(badges)})" if badges else ""
-    return f"▾ {session}{suffix}"
+            color = STATE_COLORS[state]
+            badges.append(f"[{color}]●{n}[/{color}]")
+    suffix = f"  {' '.join(badges)}" if badges else ""
+    return f"[bold]{name}[/bold]{suffix}"
 
 
 def fmt_status_widget(statuses: list[PaneStatus]) -> str:
@@ -118,8 +144,23 @@ class PiMonitorApp(App):
     """The pi-monitor TUI. Single screen: header + tree + footer."""
 
     CSS = """
+    Screen {
+        background: $surface;
+    }
+
     Tree {
-        padding: 0 1;
+        padding: 1 2;
+        background: $surface;
+    }
+
+    Tree > .tree--cursor {
+        background: $primary 30%;
+        color: $text;
+        text-style: bold;
+    }
+
+    Tree > .tree--guides {
+        color: $surface-lighten-2;
     }
     """
 
@@ -158,6 +199,12 @@ class PiMonitorApp(App):
         self._borrowed_pane_id: str | None = None
         self._borrowed_origin: Pane | None = None
         self._first_tick = True
+        # Tracks the rendered label for each tree node so we can skip
+        # `set_label` calls when nothing changed (avoids flicker).
+        self._last_labels: dict[tuple[str, str], str] = {}
+        # Forces the next render to fully rebuild instead of diffing.
+        # Set on user-initiated changes that re-order nodes (sort, filter).
+        self._needs_full_rebuild = True
 
     # -- Composition --------------------------------------------------------
 
@@ -231,12 +278,14 @@ class PiMonitorApp(App):
         self._render(statuses)
 
     def _render(self, statuses: list[tuple[Pane, PaneStatus]]) -> None:
-        # Group by session, sort within session per current sort mode,
-        # then sort sessions alphabetically (stable mental map).
+        """Diff-based update: existing nodes get their labels updated in place;
+        only added/removed panes touch the tree topology. Cursor and expand
+        state survive naturally because we never remove the node we're on.
+        Full rebuild only on `_needs_full_rebuild` (sort/filter changes).
+        """
         by_session: dict[str, list[tuple[Pane, PaneStatus]]] = {}
         for pane, status in statuses:
             by_session.setdefault(pane.session, []).append((pane, status))
-
         for items in by_session.values():
             if self.sort_mode == "status":
                 items.sort(
@@ -248,8 +297,19 @@ class PiMonitorApp(App):
                 )
             else:
                 items.sort(key=lambda x: (x[0].window_index, x[0].pane_index))
+        desired_sessions = sorted(by_session.keys())
 
-        # Capture cursor + expansion state to restore after rebuild.
+        if self._needs_full_rebuild:
+            self._full_rebuild(by_session, desired_sessions)
+            self._needs_full_rebuild = False
+        else:
+            self._diff_update(by_session, desired_sessions)
+
+    def _full_rebuild(
+        self,
+        by_session: dict[str, list[tuple[Pane, PaneStatus]]],
+        desired_sessions: list[str],
+    ) -> None:
         prev_cursor = self._tree.cursor_node.data if self._tree.cursor_node else None
         expanded: dict[tuple, bool] = {}
         for child in list(self._tree.root.children):
@@ -257,20 +317,93 @@ class PiMonitorApp(App):
                 expanded[child.data] = child.is_expanded
 
         self._tree.root.remove_children()
-        for session in sorted(by_session.keys()):
+        self._last_labels.clear()
+        for session in desired_sessions:
             items = by_session[session]
             header = fmt_session_header(session, [s for _, s in items])
-            session_node = self._tree.root.add(
-                header, data=("session", session), expand=True
-            )
-            if expanded.get(("session", session), True) is False:
-                session_node.collapse()
+            sess_key = ("session", session)
+            sess_node = self._tree.root.add(header, data=sess_key, expand=True)
+            self._last_labels[sess_key] = header
+            if expanded.get(sess_key, True) is False:
+                sess_node.collapse()
             for pane, status in items:
                 borrowed = pane.pane_id == self._borrowed_pane_id
                 label = fmt_row(pane, status, borrowed)
-                session_node.add_leaf(label, data=("pane", pane.pane_id))
+                pane_key = ("pane", pane.pane_id)
+                sess_node.add_leaf(label, data=pane_key)
+                self._last_labels[pane_key] = label
 
-        self._restore_cursor(prev_cursor)
+        if prev_cursor is not None:
+            self._restore_cursor(prev_cursor)
+
+    def _diff_update(
+        self,
+        by_session: dict[str, list[tuple[Pane, PaneStatus]]],
+        desired_sessions: list[str],
+    ) -> None:
+        # Index existing session nodes by name.
+        sess_nodes: dict[str, object] = {}
+        for child in self._tree.root.children:
+            if child.data and child.data[0] == "session":
+                sess_nodes[child.data[1]] = child
+
+        # Drop sessions that no longer exist.
+        live = set(desired_sessions)
+        for name, node in list(sess_nodes.items()):
+            if name not in live:
+                node.remove()
+                self._last_labels.pop(("session", name), None)
+                del sess_nodes[name]
+
+        # Add or update each session.
+        for name in desired_sessions:
+            items = by_session[name]
+            header = fmt_session_header(name, [s for _, s in items])
+            sess_key = ("session", name)
+
+            if name not in sess_nodes:
+                # New session: append. Order may be slightly off until next
+                # full rebuild, which is rare and intentional.
+                sess_node = self._tree.root.add(header, data=sess_key, expand=True)
+                sess_nodes[name] = sess_node
+                self._last_labels[sess_key] = header
+                for pane, status in items:
+                    borrowed = pane.pane_id == self._borrowed_pane_id
+                    label = fmt_row(pane, status, borrowed)
+                    pane_key = ("pane", pane.pane_id)
+                    sess_node.add_leaf(label, data=pane_key)
+                    self._last_labels[pane_key] = label
+                continue
+
+            sess_node = sess_nodes[name]
+            if self._last_labels.get(sess_key) != header:
+                sess_node.set_label(header)
+                self._last_labels[sess_key] = header
+
+            # Diff panes within the session.
+            pane_nodes: dict[str, object] = {}
+            for child in sess_node.children:
+                if child.data and child.data[0] == "pane":
+                    pane_nodes[child.data[1]] = child
+
+            desired_ids = {p.pane_id for p, _ in items}
+            for pid, node in list(pane_nodes.items()):
+                if pid not in desired_ids:
+                    node.remove()
+                    self._last_labels.pop(("pane", pid), None)
+                    del pane_nodes[pid]
+
+            for pane, status in items:
+                borrowed = pane.pane_id == self._borrowed_pane_id
+                label = fmt_row(pane, status, borrowed)
+                pane_key = ("pane", pane.pane_id)
+                if pane.pane_id in pane_nodes:
+                    if self._last_labels.get(pane_key) != label:
+                        pane_nodes[pane.pane_id].set_label(label)
+                        self._last_labels[pane_key] = label
+                else:
+                    sess_node.add_leaf(label, data=pane_key)
+                    self._last_labels[pane_key] = label
 
     def _restore_cursor(self, target_data) -> None:
         if target_data is None:
@@ -321,10 +454,12 @@ class PiMonitorApp(App):
         self.sort_mode = "status" if self.sort_mode == "tmux" else "tmux"
         self.config["sort_mode"] = self.sort_mode
         save_config(self.config)
+        self._needs_full_rebuild = True
         self._tick()
 
     def action_toggle_show_non_pi(self) -> None:
         self.show_non_pi = not self.show_non_pi
+        self._needs_full_rebuild = True
         self._tick()
 
     def action_refresh_now(self) -> None:

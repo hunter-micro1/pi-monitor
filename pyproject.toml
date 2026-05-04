@@ -10,9 +10,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "hshayde" }]
-dependencies = [
-    "textual>=0.60.0",
-]
+dependencies = ["textual>=0.60.0"]
 
 [project.scripts]
 pi-monitor = "pi_monitor.cli:main"

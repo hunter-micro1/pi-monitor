@@ -198,11 +198,7 @@ def cwd_to_session_dir(cwd: str) -> Path:
 def _list_jsonl_with_mtime(directory: Path) -> list[tuple[Path, float]]:
     if not directory.exists():
         return []
-    return [
-        (p, p.stat().st_mtime)
-        for p in directory.iterdir()
-        if p.suffix == ".jsonl"
-    ]
+    return [(p, p.stat().st_mtime) for p in directory.iterdir() if p.suffix == ".jsonl"]
 
 
 _PROC = Path("/proc")
