@@ -22,7 +22,9 @@ full-screen. Coming back is whatever they bound the launcher hotkey to
 
 from __future__ import annotations
 
+import math
 import os
+import time
 from pathlib import Path
 
 from rich.markup import escape
@@ -57,6 +59,14 @@ from .tmux import (
 
 POLL_INTERVAL_S = 0.5
 
+# Spinner / pulse animation cadence. 80ms ~ 12 fps which is what npm, yarn,
+# kubectl etc. use; smooth without burning cycles.
+SPINNER_INTERVAL_S = 0.08
+# Standard braille rotation (10 frames). Each frame is one cell wide.
+SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+# Pulse period for working-state text color (sine wave between bright and dim).
+PULSE_PERIOD_S = 1.5
+
 # Pi's `dark` theme color tokens, from
 # pi-coding-agent/dist/modes/interactive/theme/dark.json. Used as Rich
 # markup colors and as Textual CSS variables in the layout.
@@ -66,6 +76,9 @@ PI_ERROR = "#cc6666"  # red
 PI_WARNING = "#ffff00"  # yellow
 PI_MUTED = "#808080"
 PI_DIM = "#666666"
+# Dim end of the working-state pulse. ~50% darker than PI_SUCCESS, but still
+# readable. Picked manually to keep mid-pulse text legible on the card-bg.
+PI_SUCCESS_DIM = "#7d8347"
 
 # Per-state colors. Traffic-light semantics:
 #   working = green (good, leave alone)
@@ -381,22 +394,49 @@ def fmt_idle(seconds: float) -> str:
     return f"{int(seconds // 3600)}h"
 
 
-def fmt_row(pane: Pane, status: PaneStatus) -> str:
+def _lerp_color(c1: str, c2: str, t: float) -> str:
+    """Linear-interpolate two `#rrggbb` colors. t in [0, 1]."""
+    r1, g1, b1 = int(c1[1:3], 16), int(c1[3:5], 16), int(c1[5:7], 16)
+    r2, g2, b2 = int(c2[1:3], 16), int(c2[3:5], 16), int(c2[5:7], 16)
+    r = int(r1 + (r2 - r1) * t)
+    g = int(g1 + (g2 - g1) * t)
+    b = int(b1 + (b2 - b1) * t)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def fmt_row(
+    pane: Pane,
+    status: PaneStatus,
+    *,
+    spinner_char: str = " ",
+    working_color: str | None = None,
+) -> str:
     """Rich markup string for a tree leaf.
 
-    Layout:  `<state>  Title  · cwd  · idle`
+    Layout:  `<glyph> <state>  Title  · cwd  · idle`
 
-    No leading glyph. State word is colored + bold + fixed-width so the
-    title column always lines up. Reads like `gh pr list` or `kubectl get
-    pods` output — typography does the work, not iconography.
+    For WORKING rows, the leading glyph is the current spinner frame and
+    the state word's color comes from `working_color` (the pulsed value
+    computed by the animation timer). For all other states the leading
+    column is a single space (kept for column alignment) and color comes
+    from `STATE_COLORS`.
     """
-    color = STATE_COLORS.get(status.state, "grey50")
+    is_working = status.state == AgentState.WORKING
+    if is_working:
+        color = working_color or STATE_COLORS[AgentState.WORKING]
+        glyph = spinner_char
+    else:
+        color = STATE_COLORS.get(status.state, "grey50")
+        glyph = " "
+
     state_label = status.state.value.ljust(STATE_LABEL_WIDTH)
     title = escape(pane.title or f"pane {pane.pane_index}")
     cwd = escape(Path(pane.cwd).name or pane.cwd)
     idle = fmt_idle(status.idle_seconds)
 
-    parts = [f"[bold {color}]{state_label}[/bold {color}] {title}"]
+    parts = [
+        f"[{color}]{glyph}[/{color}] [bold {color}]{state_label}[/bold {color}] {title}"
+    ]
     if cwd:
         parts.append(f"  [dim]· {cwd}[/dim]")
     if idle:
@@ -607,6 +647,8 @@ class PiMonitorApp(App):
         # Last preview content cached so we skip redraws when nothing changed.
         self._last_preview_target: str | None = None
         self._last_preview_capture: str = ""
+        # Animation state: spinner frame counter + last computed pulse color.
+        self._spinner_frame = 0
 
     # -- Composition --------------------------------------------------------
 
@@ -637,8 +679,54 @@ class PiMonitorApp(App):
         self._tree.focus()
         self.notifier.on_transition = self._on_transition
         self.set_interval(POLL_INTERVAL_S, self._tick)
+        self.set_interval(SPINNER_INTERVAL_S, self._animate_working_rows)
         self._tick()
         self._refresh_preview()
+
+    # -- Animation ---------------------------------------------------------
+
+    def _animation_state(self) -> tuple[str, str]:
+        """Current (spinner_char, pulse_color) for working rows."""
+        spinner_char = SPINNER_FRAMES[self._spinner_frame % len(SPINNER_FRAMES)]
+        # Sine-wave pulse between dim and bright green over PULSE_PERIOD_S.
+        # Range 0.55..1.0 keeps the dim end legible.
+        t = time.time() % PULSE_PERIOD_S
+        fraction = 0.55 + 0.45 * math.sin(2 * math.pi * t / PULSE_PERIOD_S)
+        if fraction < 0:
+            fraction = 0.0
+        elif fraction > 1:
+            fraction = 1.0
+        pulse_color = _lerp_color(PI_SUCCESS_DIM, PI_SUCCESS, fraction)
+        return spinner_char, pulse_color
+
+    def _animate_working_rows(self) -> None:
+        """Update labels of WORKING rows with the next spinner frame and the
+        current pulse color. Skips non-working rows so non-animated rows
+        don't flicker. Runs every SPINNER_INTERVAL_S."""
+        if not hasattr(self, "_tree"):
+            return
+        self._spinner_frame = (self._spinner_frame + 1) % len(SPINNER_FRAMES)
+        spinner_char, pulse_color = self._animation_state()
+        for sess_node in self._tree.root.children:
+            for leaf in sess_node.children:
+                if not (leaf.data and leaf.data[0] == "pane"):
+                    continue
+                entry = self._latest_statuses.get(leaf.data[1])
+                if entry is None:
+                    continue
+                pane, status = entry
+                if status.state != AgentState.WORKING:
+                    continue
+                label = fmt_row(
+                    pane,
+                    status,
+                    spinner_char=spinner_char,
+                    working_color=pulse_color,
+                )
+                pane_key = ("pane", pane.pane_id)
+                if self._last_labels.get(pane_key) != label:
+                    self._last_labels[pane_key] = label
+                    leaf.set_label(label)
 
     def _on_transition(
         self,
@@ -778,6 +866,7 @@ class PiMonitorApp(App):
         self._tree.root.add_leaf(new_label, data=new_key)
         self._last_labels[new_key] = new_label
 
+        spinner_char, pulse_color = self._animation_state()
         for session in desired_sessions:
             items = by_session[session]
             header = fmt_session_header(session, [s for _, s in items])
@@ -787,7 +876,12 @@ class PiMonitorApp(App):
             if expanded.get(sess_key, True) is False:
                 sess_node.collapse()
             for pane, status in items:
-                label = fmt_row(pane, status)
+                label = fmt_row(
+                    pane,
+                    status,
+                    spinner_char=spinner_char,
+                    working_color=pulse_color,
+                )
                 pane_key = ("pane", pane.pane_id)
                 sess_node.add_leaf(label, data=pane_key)
                 self._last_labels[pane_key] = label
@@ -812,6 +906,7 @@ class PiMonitorApp(App):
                 self._last_labels.pop(("session", name), None)
                 del sess_nodes[name]
 
+        spinner_char, pulse_color = self._animation_state()
         for name in desired_sessions:
             items = by_session[name]
             header = fmt_session_header(name, [s for _, s in items])
@@ -822,7 +917,12 @@ class PiMonitorApp(App):
                 sess_nodes[name] = sess_node
                 self._last_labels[sess_key] = header
                 for pane, status in items:
-                    label = fmt_row(pane, status)
+                    label = fmt_row(
+                        pane,
+                        status,
+                        spinner_char=spinner_char,
+                        working_color=pulse_color,
+                    )
                     pane_key = ("pane", pane.pane_id)
                     sess_node.add_leaf(label, data=pane_key)
                     self._last_labels[pane_key] = label
@@ -846,13 +946,24 @@ class PiMonitorApp(App):
                     del pane_nodes[pid]
 
             for pane, status in items:
-                label = fmt_row(pane, status)
+                # WORKING rows are owned by the animation timer; let it set
+                # their labels so its frame doesn't fight ours. We still add
+                # missing rows here (with the current animation snapshot).
                 pane_key = ("pane", pane.pane_id)
                 if pane.pane_id in pane_nodes:
+                    if status.state == AgentState.WORKING:
+                        continue
+                    label = fmt_row(pane, status)
                     if self._last_labels.get(pane_key) != label:
                         pane_nodes[pane.pane_id].set_label(label)
                         self._last_labels[pane_key] = label
                 else:
+                    label = fmt_row(
+                        pane,
+                        status,
+                        spinner_char=spinner_char,
+                        working_color=pulse_color,
+                    )
                     sess_node.add_leaf(label, data=pane_key)
                     self._last_labels[pane_key] = label
 
