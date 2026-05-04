@@ -97,9 +97,7 @@ def _run_tui() -> int:
 
 
 def _tmux_server_running() -> bool:
-    return (
-        subprocess.run(["tmux", "has-session"], capture_output=True).returncode == 0
-    )
+    return subprocess.run(["tmux", "has-session"], capture_output=True).returncode == 0
 
 
 def _inside_monitor_session() -> bool:

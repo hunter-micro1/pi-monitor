@@ -57,38 +57,38 @@ uv tool install -e .
 ## How it works
 
 - A dedicated `monitor` tmux session is created on first run, with two panes side by side: the TUI on the left, an empty "borrow slot" on the right.
-- Pressing `Enter` on a pane row uses `tmux join-pane` to *move* that pane into the right slot — it's the real, fully interactive pi agent. Selecting a different pane returns the previous one to its origin window and pulls the new one in.
+- Pressing `Enter` on a pane row uses `tmux join-pane` to _move_ that pane into the right slot — it's the real, fully interactive pi agent. Selecting a different pane returns the previous one to its origin window and pulls the new one in.
 - Status is inferred from each pane's pi session JSONL file (`~/.pi/agent/sessions/`) plus its mtime. No screen scraping.
 - Aggregate counts (`🔴N 🟡N 🟢N`) are pushed to a tmux user option `@pi-monitor-status` every 500ms while the TUI runs, so your `status-right` shows them in every session.
 - Crash-safe: if the TUI dies while a pane is borrowed, the next launch breaks the orphan back out before opening.
 
 ## Keybindings
 
-| Key | Action |
-|---|---|
-| `j` / `k` / `↓` / `↑` | Move selection |
-| `Enter` (or click) | Borrow the selected pane into the right slot |
-| `Tab` (or `l`) | Focus the right pane to interact with the agent |
-| tmux `prefix + ←` | Native tmux nav back to the tree |
-| `Space` | Expand / collapse a session header |
-| `g` / `G` | Jump to top / bottom |
-| `s` | Cycle sort: tmux-order ↔ needs-attention-first |
-| `H` | Toggle showing non-pi panes |
-| `r` | Force refresh now |
-| `m` | Toggle desktop notifications (mute/unmute) |
-| `q` | Quit: return borrowed pane, kill monitor session |
-| `1`–`9` | Jump to the Nth pane in the tree |
+| Key                   | Action                                           |
+| --------------------- | ------------------------------------------------ |
+| `j` / `k` / `↓` / `↑` | Move selection                                   |
+| `Enter` (or click)    | Borrow the selected pane into the right slot     |
+| `Tab` (or `l`)        | Focus the right pane to interact with the agent  |
+| tmux `prefix + ←`     | Native tmux nav back to the tree                 |
+| `Space`               | Expand / collapse a session header               |
+| `g` / `G`             | Jump to top / bottom                             |
+| `s`                   | Cycle sort: tmux-order ↔ needs-attention-first  |
+| `H`                   | Toggle showing non-pi panes                      |
+| `r`                   | Force refresh now                                |
+| `m`                   | Toggle desktop notifications (mute/unmute)       |
+| `q`                   | Quit: return borrowed pane, kill monitor session |
+| `1`–`9`               | Jump to the Nth pane in the tree                 |
 
 ## States
 
-| Glyph | Meaning |
-|---|---|
-| 🟢 | working — agent is streaming or running tools |
-| 🔴 | idle — agent finished, awaiting your next prompt |
-| 🟡 | stalled — tool-use turn open >5s without a result (likely awaiting your confirmation, or a long-running tool) |
-| ❌ | error — last assistant message has an error |
-| ❓ | unknown — pane runs pi but no JSONL detected yet |
-| ⚫ | no pi running in this pane |
+| Glyph | Meaning                                                                                                       |
+| ----- | ------------------------------------------------------------------------------------------------------------- |
+| 🟢    | working — agent is streaming or running tools                                                                 |
+| 🔴    | idle — agent finished, awaiting your next prompt                                                              |
+| 🟡    | stalled — tool-use turn open >5s without a result (likely awaiting your confirmation, or a long-running tool) |
+| ❌    | error — last assistant message has an error                                                                   |
+| ❓    | unknown — pane runs pi but no JSONL detected yet                                                              |
+| ⚫    | no pi running in this pane                                                                                    |
 
 ## Notifications
 
@@ -98,7 +98,7 @@ Press `m` in the TUI to mute / unmute. The setting persists in `~/.config/pi-mon
 
 ## Requirements
 
-- Linux with `/proc` (the tool reads `pane_current_path` from tmux, no procfs needed for state — but `/proc` mappings are documented in the source for future disambiguation).
+- Linux with `/proc` (used to walk each tmux pane's process tree to its `pi` descendant; pi's start time is read from `/proc/<pid>/stat` to disambiguate panes that share a cwd).
 - tmux ≥ 3.2 with `set -g mouse on`.
 - A pi install that writes session files to the default location (`~/.pi/agent/sessions/`).
 
@@ -107,8 +107,7 @@ Press `m` in the TUI to mute / unmute. The setting persists in `~/.config/pi-mon
 - pi sessions started with `--no-session` produce no JSONL and show as `?`.
 - pi sessions launched with a custom `--session-dir` are not detected.
 - pi running over ssh inside a pane is not detected (the pane shows `cmd=ssh`).
-- **Multi-pi-same-cwd ambiguity:** if two tmux panes are both at the same `pane_current_path` (e.g. several panes in the same project root), they share a session directory and will display the same state — whichever pi process most recently wrote wins. Workaround: `cd` into different worktree dirs before running pi.
-- macOS is not supported. The pane-borrowing flow is tmux-native and would work, but the `notify-send` integration assumes libnotify; macOS support would need an `osascript` notifier.
+- macOS is not supported. The pane-borrowing flow is tmux-native and would work, but the `notify-send` integration assumes libnotify and the `/proc`-based pi-pid resolution would need an `lsof`/`ps` fallback.
 
 ## License
 

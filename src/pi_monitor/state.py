@@ -5,15 +5,19 @@ message entry from the pane's session file and looking at the file's mtime.
 We never scrape `tmux capture-pane`; the JSONL plus mtime is sufficient.
 
 Pane → JSONL mapping: pi stores sessions per cwd at
-`~/.pi/agent/sessions/--<cwd-with-/-replaced-by->--/<timestamp>_<uuid>.jsonl`.
-We map a tmux pane to its session by encoding the pane's `pane_current_path`
-(the shell's cwd, which is the cwd pi was launched from) and picking the
-most recently modified jsonl in that directory.
+`~/.pi/agent/sessions/--<cwd-with-/-replaced-by->--/<timestamp>_<uuid>.jsonl`,
+but multiple pi processes can share a cwd (and therefore a session directory).
+Pi opens-writes-closes the file on every append, so `/proc/<pid>/fd` does
+NOT reveal which JSONL belongs to which pi. We disambiguate by:
 
-Limitation: if two tmux panes have the same `pane_current_path`, they share
-a session directory and we'll show identical state for both panes (whichever
-pi most recently wrote wins). This is documented as a v1 limitation; future
-versions could disambiguate via process start time matching.
+  1. Walking the pane's process tree to find the live `pi` descendant pid.
+  2. Reading that pid's start time from `/proc/<pid>/stat` + `/proc/uptime`.
+  3. For each pi pane in start-time-DESC order, claiming the most recently
+     modified unclaimed JSONL whose mtime falls within that pi's lifetime.
+  4. Falling back to the most recently modified unclaimed JSONL in the cwd
+     when no file has been written during the pi's lifetime yet.
+
+Greedy claim resolution prevents two panes from binding to the same JSONL.
 """
 
 from __future__ import annotations
@@ -149,7 +153,9 @@ def _scan_lines(blob: bytes, mtime: float) -> JsonlSnapshot:
             tool_ids = {
                 item.get("id")
                 for item in content
-                if isinstance(item, dict) and item.get("type") == "toolCall" and item.get("id")
+                if isinstance(item, dict)
+                and item.get("type") == "toolCall"
+                and item.get("id")
             }
             if last_stop_reason == "toolUse":
                 # New tool-use turn supersedes any pending one from earlier.
@@ -189,19 +195,111 @@ def cwd_to_session_dir(cwd: str) -> Path:
     return SESSIONS_ROOT / f"--{cwd.lstrip('/').replace('/', '-')}--"
 
 
-def _newest_jsonl(directory: Path) -> Path | None:
+def _list_jsonl_with_mtime(directory: Path) -> list[tuple[Path, float]]:
     if not directory.exists():
+        return []
+    return [
+        (p, p.stat().st_mtime)
+        for p in directory.iterdir()
+        if p.suffix == ".jsonl"
+    ]
+
+
+_PROC = Path("/proc")
+
+
+def _proc_starttime(pid: int) -> float | None:
+    """Absolute unix time when `pid` was created, or None if pid is gone.
+
+    Reads field 22 (starttime, in clock ticks since boot) from /proc/<pid>/stat
+    and combines with /proc/uptime. The comm field can contain spaces and
+    parentheses, so we slice past the last `)` before splitting.
+    """
+    try:
+        stat = (_PROC / str(pid) / "stat").read_text()
+        rparen = stat.rfind(")")
+        if rparen == -1:
+            return None
+        fields = stat[rparen + 2 :].split()
+        # After comm, fields are state(3) ppid(4) ... starttime(22).
+        # We sliced past pid+comm, so starttime is index 19.
+        starttime_ticks = int(fields[19])
+        uptime_s = float((_PROC / "uptime").read_text().split()[0])
+    except (FileNotFoundError, ValueError, IndexError, PermissionError):
         return None
-    candidates = [p for p in directory.iterdir() if p.suffix == ".jsonl"]
+    boot_time = time.time() - uptime_s
+    clock_ticks = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+    return boot_time + (starttime_ticks / clock_ticks)
+
+
+def _walk_pi_descendant(root_pid: int, max_depth: int = 6) -> int | None:
+    """Find a descendant of `root_pid` whose comm is exactly 'pi'.
+
+    Iterative BFS with a depth cap so we never recurse forever on a corrupt
+    /proc snapshot. Returns the first matching pid or None.
+    """
+    queue: list[tuple[int, int]] = [(root_pid, 0)]
+    while queue:
+        pid, depth = queue.pop(0)
+        try:
+            comm = (_PROC / str(pid) / "comm").read_text().strip()
+        except (FileNotFoundError, PermissionError):
+            continue
+        if comm == "pi":
+            return pid
+        if depth >= max_depth:
+            continue
+        try:
+            children_raw = (
+                _PROC / str(pid) / "task" / str(pid) / "children"
+            ).read_text()
+        except (FileNotFoundError, PermissionError):
+            continue
+        for child_str in children_raw.split():
+            try:
+                queue.append((int(child_str), depth + 1))
+            except ValueError:
+                continue
+    return None
+
+
+def find_pi_pid_for_pane(pane_pid: int) -> int | None:
+    """Walk the process tree from a tmux pane's pid to find its `pi` descendant.
+
+    The pane_pid is typically the pane's shell (zsh/bash); pi runs as a child.
+    Returns None if no pi descendant is alive.
+    """
+    return _walk_pi_descendant(pane_pid)
+
+
+def _claim_session_file(
+    cwd: str,
+    pi_pid: int | None,
+    claimed: set[Path],
+) -> Path | None:
+    """Pick the JSONL most likely to belong to this pi, excluding already-
+    claimed files. Prefer files written during pi's lifetime; fall back to
+    most recently modified unclaimed file in the cwd's session dir."""
+    candidates = [
+        (p, m)
+        for p, m in _list_jsonl_with_mtime(cwd_to_session_dir(cwd))
+        if p not in claimed
+    ]
     if not candidates:
         return None
-    return max(candidates, key=lambda p: p.stat().st_mtime)
+    if pi_pid is not None:
+        start = _proc_starttime(pi_pid)
+        if start is not None:
+            in_window = [(p, m) for p, m in candidates if m >= start]
+            if in_window:
+                return max(in_window, key=lambda pm: pm[1])[0]
+    return max(candidates, key=lambda pm: pm[1])[0]
 
 
 def find_session_file_for_cwd(pane_cwd: str) -> Path | None:
-    """Most recently modified jsonl in the cwd's session directory, or None
-    if no session directory exists yet for that cwd."""
-    return _newest_jsonl(cwd_to_session_dir(pane_cwd))
+    """Convenience for single-pane callers / tests: most recently modified
+    jsonl in the cwd's session directory, ignoring claim resolution."""
+    return _claim_session_file(pane_cwd, pi_pid=None, claimed=set())
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +307,9 @@ def find_session_file_for_cwd(pane_cwd: str) -> Path | None:
 # ---------------------------------------------------------------------------
 
 
-def infer_state(snapshot: JsonlSnapshot | None, now: float | None = None) -> tuple[AgentState, float]:
+def infer_state(
+    snapshot: JsonlSnapshot | None, now: float | None = None
+) -> tuple[AgentState, float]:
     """Map a snapshot to an `AgentState` plus seconds since last write."""
     if snapshot is None:
         return AgentState.UNKNOWN, 0.0
@@ -243,34 +343,77 @@ def infer_state(snapshot: JsonlSnapshot | None, now: float | None = None) -> tup
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class PaneRef:
+    """Minimal info `StateResolver.resolve` needs about a pane.
+
+    Decoupled from `tmux.Pane` so this module has no tmux dependency.
+    """
+
+    pane_id: str
+    cwd: str
+    is_pi: bool
+    pane_pid: int  # the tmux pane's pid (typically a shell)
+
+
 @dataclass
 class StateResolver:
     """Combines per-pane jsonl discovery, JSONL caching, and state inference."""
 
     reader: JsonlReader = field(default_factory=JsonlReader)
 
-    def status_for_pane(
+    def resolve(
         self,
-        pane_id: str,
-        pane_cwd: str,
-        is_pi: bool,
+        refs: list[PaneRef],
         now: float | None = None,
-    ) -> PaneStatus:
-        if not is_pi:
-            return PaneStatus(pane_id=pane_id, state=AgentState.NO_PI)
+    ) -> dict[str, PaneStatus]:
+        """Resolve state for every pane in one pass with shared claim set.
 
-        # Always re-check the most recent jsonl: a new session can be
-        # started in the same cwd at any time.
-        session_file = find_session_file_for_cwd(pane_cwd)
-        if session_file is None:
-            return PaneStatus(pane_id=pane_id, state=AgentState.UNKNOWN)
+        Greedy assignment in pi-start-time-DESC order: newest pi picks first
+        from the most recently modified unclaimed JSONLs whose mtime falls
+        within its lifetime. Two panes can never bind to the same JSONL.
+        """
+        # Walk process trees once; cache (ref → pi_pid, start_time).
+        meta: dict[str, tuple[int | None, float | None]] = {}
+        for ref in refs:
+            if not ref.is_pi:
+                meta[ref.pane_id] = (None, None)
+                continue
+            pi_pid = find_pi_pid_for_pane(ref.pane_pid)
+            start = _proc_starttime(pi_pid) if pi_pid is not None else None
+            meta[ref.pane_id] = (pi_pid, start)
 
-        snapshot = self.reader.read(session_file)
-        state, idle_for = infer_state(snapshot, now=now)
-        return PaneStatus(
-            pane_id=pane_id,
-            state=state,
-            session_file=session_file,
-            snapshot=snapshot,
-            idle_seconds=idle_for,
+        # Sort pi panes by start time DESC (None last). Non-pi panes don't
+        # claim anything and are filled in afterwards.
+        pi_refs = [r for r in refs if r.is_pi]
+        pi_refs.sort(
+            key=lambda r: meta[r.pane_id][1] or float("-inf"),
+            reverse=True,
         )
+
+        claimed: set[Path] = set()
+        results: dict[str, PaneStatus] = {}
+        for ref in pi_refs:
+            pi_pid, _ = meta[ref.pane_id]
+            session_file = _claim_session_file(ref.cwd, pi_pid, claimed)
+            if session_file is None:
+                results[ref.pane_id] = PaneStatus(
+                    pane_id=ref.pane_id, state=AgentState.UNKNOWN
+                )
+                continue
+            claimed.add(session_file)
+            snapshot = self.reader.read(session_file)
+            state, idle_for = infer_state(snapshot, now=now)
+            results[ref.pane_id] = PaneStatus(
+                pane_id=ref.pane_id,
+                state=state,
+                session_file=session_file,
+                snapshot=snapshot,
+                idle_seconds=idle_for,
+            )
+        for ref in refs:
+            if ref.pane_id not in results:
+                results[ref.pane_id] = PaneStatus(
+                    pane_id=ref.pane_id, state=AgentState.NO_PI
+                )
+        return results

@@ -15,7 +15,7 @@ from textual.binding import Binding
 from textual.widgets import Footer, Header, Tree
 
 from .notify import Notifier, load_config, save_config
-from .state import AgentState, PaneStatus, StateResolver
+from .state import AgentState, PaneRef, PaneStatus, StateResolver
 from .tmux import (
     MONITOR_SESSION,
     Pane,
@@ -97,7 +97,12 @@ def fmt_status_widget(statuses: list[PaneStatus]) -> str:
     for s in statuses:
         counts[s.state] = counts.get(s.state, 0) + 1
     parts: list[str] = []
-    for state in (AgentState.ERROR, AgentState.IDLE, AgentState.STALLED, AgentState.WORKING):
+    for state in (
+        AgentState.ERROR,
+        AgentState.IDLE,
+        AgentState.STALLED,
+        AgentState.WORKING,
+    ):
         n = counts.get(state, 0)
         if n:
             parts.append(f"{STATE_GLYPHS[state]}{n}")
@@ -194,10 +199,19 @@ class PiMonitorApp(App):
                 # session.
                 visible.append(self._borrowed_origin)
 
-        statuses: list[tuple[Pane, PaneStatus]] = []
-        for pane in visible:
-            status = self.resolver.status_for_pane(pane.target, pane.cwd, pane.is_pi)
-            statuses.append((pane, status))
+        refs = [
+            PaneRef(
+                pane_id=p.target,
+                cwd=p.cwd,
+                is_pi=p.is_pi,
+                pane_pid=p.pid,
+            )
+            for p in visible
+        ]
+        resolved = self.resolver.resolve(refs)
+        statuses: list[tuple[Pane, PaneStatus]] = [
+            (p, resolved[p.target]) for p in visible
+        ]
 
         # Notifications: seed on first tick to avoid flooding with "idle".
         observations = [(p.target, s.state) for p, s in statuses]
@@ -376,9 +390,7 @@ class PiMonitorApp(App):
         # kill the monitor session out from under them.
         try:
             other = next(
-                p.session
-                for p in list_panes()
-                if p.session != MONITOR_SESSION
+                p.session for p in list_panes() if p.session != MONITOR_SESSION
             )
             _tmux("switch-client", "-t", other)
         except (StopIteration, TmuxError):

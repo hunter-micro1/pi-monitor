@@ -66,17 +66,19 @@ def list_panes() -> list[Pane]:
             continue
         pane_id, session, win, pidx, pid, cwd, title, cmd = parts
         try:
-            panes.append(Pane(
-                pane_id=pane_id,
-                target=f"{session}:{win}.{pidx}",
-                session=session,
-                window_index=int(win),
-                pane_index=int(pidx),
-                pid=int(pid),
-                cwd=cwd,
-                title=title,
-                command=cmd,
-            ))
+            panes.append(
+                Pane(
+                    pane_id=pane_id,
+                    target=f"{session}:{win}.{pidx}",
+                    session=session,
+                    window_index=int(win),
+                    pane_index=int(pidx),
+                    pid=int(pid),
+                    cwd=cwd,
+                    title=title,
+                    command=cmd,
+                )
+            )
         except ValueError:
             continue
     return panes
@@ -99,9 +101,12 @@ def server_running() -> bool:
 
 
 def session_exists(name: str) -> bool:
-    return subprocess.run(
-        ["tmux", "has-session", "-t", f"={name}"], capture_output=True
-    ).returncode == 0
+    return (
+        subprocess.run(
+            ["tmux", "has-session", "-t", f"={name}"], capture_output=True
+        ).returncode
+        == 0
+    )
 
 
 def ensure_monitor_session(left_command: str | None = None) -> None:
