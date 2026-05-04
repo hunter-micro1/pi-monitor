@@ -21,6 +21,7 @@ import subprocess
 from dataclasses import dataclass
 
 MONITOR_SESSION = "monitor"
+RESCUE_SESSION = "pi-monitor-rescued"
 RIGHT_SLOT = f"{MONITOR_SESSION}:0.1"
 LEFT_PANE = f"{MONITOR_SESSION}:0.0"
 
@@ -132,32 +133,58 @@ def kill_monitor_session() -> None:
         _tmux("kill-session", "-t", MONITOR_SESSION)
 
 
-def recover_orphan_panes() -> list[str]:
-    """If a previous monitor crashed mid-borrow, a real pi pane may be
-    parked in the monitor session's right slot. Break it out so it returns
-    to its origin window. We compare each pane's `pane_start_command` /
-    process command — if the right slot's pane is *not* the user's shell
-    we assume it's an orphan and break it out.
+def _ensure_rescue_session() -> None:
+    """Create a hidden rescue session orphans can be moved into. Idempotent."""
+    if not session_exists(RESCUE_SESSION):
+        _tmux("new-session", "-d", "-s", RESCUE_SESSION)
 
-    Returns the list of pane targets we recovered.
+
+def recover_orphan_panes() -> list[str]:
+    """Move any pi pane parked in the monitor session out into a dedicated
+    rescue session (`pi-monitor-rescued`). This MUST move panes out of the
+    monitor session entirely — not into a new window inside monitor — because
+    the monitor session can be `kill-session`d at quit time and would take
+    every pane in it down.
+
+    Returns the list of pane targets we recovered (now living in the rescue
+    session). Caller should surface this to the user.
     """
     if not session_exists(MONITOR_SESSION):
         return []
+    orphans = [
+        p
+        for p in list_panes()
+        if p.session == MONITOR_SESSION and p.pane_index != 0 and p.is_pi
+    ]
+    if not orphans:
+        return []
+    _ensure_rescue_session()
     recovered: list[str] = []
-    panes = [p for p in list_panes() if p.session == MONITOR_SESSION]
-    # The TUI pane (left) is the one running `pi-monitor`. Anything else
-    # in the monitor session that's a pi process is an orphan we need to
-    # eject before the new TUI starts.
-    for p in panes:
-        if p.pane_index == 0:
-            continue
-        if p.is_pi:
-            try:
-                _tmux("break-pane", "-d", "-s", p.pane_id)
-                recovered.append(p.target)
-            except TmuxError:
-                pass
+    for p in orphans:
+        try:
+            _tmux(
+                "break-pane",
+                "-d",
+                "-s", p.pane_id,
+                "-t", f"{RESCUE_SESSION}:",
+                "-n", p.title or "rescued",
+            )
+            recovered.append(p.target)
+        except TmuxError:
+            # Leave it where it is; better an orphan than a kill.
+            pass
     return recovered
+
+
+def monitor_has_pi_panes() -> bool:
+    """True iff any pane in the monitor session (other than the TUI at index 0)
+    is currently running pi. Used as a kill-session safety gate."""
+    if not session_exists(MONITOR_SESSION):
+        return False
+    return any(
+        p.session == MONITOR_SESSION and p.pane_index != 0 and p.is_pi
+        for p in list_panes()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -168,26 +195,43 @@ def recover_orphan_panes() -> list[str]:
 def borrow_pane(source_pane_id: str) -> None:
     """Move the source pane into the monitor's right slot.
 
-    We first kill whatever is in the right slot (typically the placeholder
-    shell), then `join-pane -h` the source pane. We address slots by index
-    because their tmux ids change as panes are joined/broken.
+    Safety: refuse to kill the existing right-slot pane if it currently
+    holds a pi pane (which would mean a previous return_pane silently
+    failed). Better to error loudly than silently destroy a borrowed agent.
     """
-    # Kill the current right-slot pane (placeholder or previously borrowed
-    # pane that hasn't been returned yet).
+    right_slot = next(
+        (p for p in list_panes() if p.target == RIGHT_SLOT), None
+    )
+    if right_slot is not None and right_slot.is_pi:
+        raise TmuxError(
+            "refusing to borrow: right slot still contains a pi pane "
+            f"({right_slot.title!r}). Quit pi-monitor with `q` (which will "
+            "refuse to kill the monitor session while pi panes are parked) "
+            "and rescue the pane manually."
+        )
     _tmux("kill-pane", "-t", RIGHT_SLOT)
-    # join-pane moves the source to the right of the surviving (left) pane.
     _tmux("join-pane", "-h", "-s", source_pane_id, "-t", LEFT_PANE)
 
 
-def return_pane(borrowed_pane_id: str) -> None:
-    """Send a borrowed pane back to a fresh window (origin window if tmux
-    can find it; otherwise a new window in the borrowed session). We use
-    `break-pane -d` so focus stays on the monitor."""
-    try:
-        _tmux("break-pane", "-d", "-s", borrowed_pane_id)
-    except TmuxError:
-        # Pane already gone (user closed it from inside) — nothing to do.
-        pass
+def return_pane(borrowed_pane_id: str, origin_session: str) -> None:
+    """Send a borrowed pane back to its origin SESSION as a new window.
+
+    Critical: `break-pane -d -s <pane_id>` (without `-t`) creates a new
+    window in the SOURCE pane's CURRENT session — which after a join-pane is
+    the monitor session. Returning a pane that way leaves it parked in
+    monitor, where the next kill-session destroys it. We MUST pass
+    `-t <origin_session>:` so the new window is created in the original
+    session.
+
+    Raises TmuxError if break-pane fails for any reason. The caller must
+    handle that and NOT kill the monitor session, or pi processes die.
+    """
+    _tmux(
+        "break-pane",
+        "-d",
+        "-s", borrowed_pane_id,
+        "-t", f"{origin_session}:",
+    )
     # After breaking out the borrowed pane, the right slot is now empty.
     # Recreate a placeholder shell so the layout doesn't collapse to a
     # single pane.

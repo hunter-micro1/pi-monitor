@@ -26,6 +26,7 @@ from .tmux import (
     focus_right_slot,
     kill_monitor_session,
     list_panes,
+    monitor_has_pi_panes,
     return_pane,
     set_status_widget,
     _tmux,
@@ -164,15 +165,18 @@ class PiMonitorApp(App):
     }
     """
 
-    # Tree handles j/k/up/down/space natively; we add app-wide bindings on
-    # top. `enter` becomes a TreeNodeSelected event we handle below.
+    # Tree handles j/k/up/down/space natively. We add vim-style hjkl on top:
+    # h collapses the current node (or moves to parent if already collapsed),
+    # l expands it (or steps into the first child if already expanded). Tab
+    # keeps its tmux-pane-focus job. `enter` -> TreeNodeSelected, handled below.
     BINDINGS = [
+        Binding("h", "tree_collapse_or_parent", "←", show=False),
+        Binding("l", "tree_expand_or_child", "→", show=False),
         Binding("tab", "focus_right", "→agent"),
-        Binding("l", "focus_right", "→agent", show=False),
         Binding("g", "go_top", "top", show=False),
         Binding("G", "go_bottom", "bottom", show=False),
         Binding("s", "cycle_sort", "sort"),
-        Binding("H", "toggle_show_non_pi", "show non-pi", show=False),
+        Binding("shift+h", "toggle_show_non_pi", "show non-pi", show=False),
         Binding("r", "refresh_now", "refresh", show=False),
         Binding("m", "toggle_mute", "mute"),
         Binding("q", "quit_monitor", "quit"),
@@ -483,6 +487,32 @@ class PiMonitorApp(App):
                     self._tree.select_node(leaf)
                     return
 
+    def action_tree_collapse_or_parent(self) -> None:
+        """Vim `h`: collapse the current node, or jump to its parent if it's
+        already collapsed (or it's a leaf)."""
+        node = self._tree.cursor_node
+        if node is None:
+            return
+        if node.allow_expand and node.is_expanded:
+            node.collapse()
+            return
+        parent = node.parent
+        if parent is not None and parent != self._tree.root:
+            self._tree.select_node(parent)
+
+    def action_tree_expand_or_child(self) -> None:
+        """Vim `l`: expand the current node, or step into the first child if
+        already expanded. No-op on a leaf with no children."""
+        node = self._tree.cursor_node
+        if node is None:
+            return
+        if node.allow_expand and not node.is_expanded:
+            node.expand()
+            return
+        children = list(node.children)
+        if children:
+            self._tree.select_node(children[0])
+
     def action_quit_monitor(self) -> None:
         self._cleanup_and_exit()
 
@@ -491,22 +521,34 @@ class PiMonitorApp(App):
     def _borrow(self, source_pane_id: str) -> None:
         if source_pane_id == self._borrowed_pane_id:
             return
-        # Find the pane object so we can cache its origin for re-rendering.
+        # Find the pane object so we can cache its origin for return_pane.
         try:
             origin = next(p for p in list_panes() if p.pane_id == source_pane_id)
         except (StopIteration, TmuxError):
             return
 
-        if self._borrowed_pane_id:
+        # Return any previously borrowed pane FIRST, before we kill the right
+        # slot in borrow_pane. If the return fails, we must NOT proceed —
+        # otherwise we'd kill a real pi pane.
+        if self._borrowed_pane_id and self._borrowed_origin is not None:
             try:
-                return_pane(self._borrowed_pane_id)
-            except TmuxError:
-                pass
+                return_pane(
+                    self._borrowed_pane_id, self._borrowed_origin.session
+                )
+            except TmuxError as exc:
+                self.notify(
+                    f"refusing to swap: could not return previous pane: {exc}",
+                    severity="error",
+                    timeout=10,
+                )
+                return
+            self._borrowed_pane_id = None
+            self._borrowed_origin = None
 
         try:
             borrow_pane(source_pane_id)
         except TmuxError as exc:
-            self.notify(f"borrow failed: {exc}", severity="error")
+            self.notify(f"borrow failed: {exc}", severity="error", timeout=10)
             return
 
         self._borrowed_pane_id = source_pane_id
@@ -514,12 +556,41 @@ class PiMonitorApp(App):
         self._tick()
 
     def _cleanup_and_exit(self) -> None:
-        if self._borrowed_pane_id:
+        # Step 1: try to return any borrowed pane to its origin.
+        if self._borrowed_pane_id and self._borrowed_origin is not None:
             try:
-                return_pane(self._borrowed_pane_id)
-            except TmuxError:
-                pass
-            self._borrowed_pane_id = None
+                return_pane(
+                    self._borrowed_pane_id, self._borrowed_origin.session
+                )
+                self._borrowed_pane_id = None
+                self._borrowed_origin = None
+            except TmuxError as exc:
+                # CRITICAL: do NOT kill the monitor session if the borrowed
+                # pane is still parked there. Better to leave it alive so
+                # the user can rescue manually than to silently destroy a
+                # real pi process.
+                self.notify(
+                    f"could not return borrowed pane: {exc}\n"
+                    "Leaving the monitor session alive so you can rescue "
+                    "manually with `tmux move-pane` or by attaching.",
+                    severity="error",
+                    timeout=15,
+                )
+                self.exit()
+                return
+
+        # Step 2: even after the explicit return above succeeded, double-check
+        # nothing pi-shaped is still parked in monitor (defense in depth).
+        if monitor_has_pi_panes():
+            self.notify(
+                "Monitor session still contains a pi pane after cleanup. "
+                "Leaving it alive; rescue manually with `tmux attach -t monitor`.",
+                severity="error",
+                timeout=15,
+            )
+            self.exit()
+            return
+
         clear_status_widget()
         # Hand the user's client to another existing session before we
         # kill the monitor session out from under them.
