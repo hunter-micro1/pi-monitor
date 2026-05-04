@@ -498,3 +498,163 @@ def test_resolve_unknown_when_no_session_files(
     refs = [PaneRef(pane_id="y:0.0", cwd="/no-sessions", is_pi=True, pane_pid=42)]
     out = resolver.resolve(refs)
     assert out["y:0.0"].state == AgentState.UNKNOWN
+
+
+# ---------------------------------------------------------------------------
+# InspectorReader: cumulative usage + last user message extraction
+# ---------------------------------------------------------------------------
+
+
+def _assistant(model: str, cost: float, in_tok: int, out_tok: int, **extra) -> dict:
+    return _msg(
+        "assistant",
+        content=extra.get("content", [{"type": "text", "text": "ok"}]),
+        model=model,
+        provider="anthropic",
+        stopReason=extra.get("stopReason", "stop"),
+        usage={
+            "input": in_tok,
+            "output": out_tok,
+            "cacheRead": extra.get("cache_read", 0),
+            "cacheWrite": extra.get("cache_write", 0),
+            "cost": {
+                "input": 0.0,
+                "output": 0.0,
+                "cacheRead": 0.0,
+                "cacheWrite": 0.0,
+                "total": cost,
+            },
+        },
+    )
+
+
+def test_inspector_full_scan_sums_cost_and_tokens(tmp_path: Path):
+    from pi_monitor.state import InspectorReader
+
+    f = tmp_path / "s.jsonl"
+    entries = [
+        {"type": "session", "version": 3, "id": "abc", "timestamp": "t", "cwd": "/x"},
+        _msg("user", content="first prompt"),
+        _assistant("claude-opus-4", 0.10, 100, 50),
+        _msg("user", content="second prompt"),
+        _assistant("claude-opus-4", 0.20, 200, 100),
+    ]
+    _write_jsonl(f, entries)
+
+    snap = InspectorReader().read(f)
+    assert snap.model == "claude-opus-4"
+    assert snap.provider == "anthropic"
+    assert snap.assistant_message_count == 2
+    assert snap.user_message_count == 2
+    assert snap.cumulative_input == 300
+    assert snap.cumulative_output == 150
+    assert snap.cumulative_cost == pytest.approx(0.30)
+    assert snap.last_user_message == "second prompt"
+
+
+def test_inspector_session_info_extracts_name(tmp_path: Path):
+    from pi_monitor.state import InspectorReader
+
+    f = tmp_path / "s.jsonl"
+    entries = [
+        {"type": "session", "version": 3, "id": "abc", "timestamp": "t", "cwd": "/x"},
+        _msg("user", content="hi"),
+        {
+            "type": "session_info",
+            "id": "n1",
+            "parentId": None,
+            "timestamp": "t",
+            "name": "Refactor auth",
+        },
+    ]
+    _write_jsonl(f, entries)
+
+    snap = InspectorReader().read(f)
+    assert snap.session_name == "Refactor auth"
+
+
+def test_inspector_incremental_scan_folds_new_bytes(tmp_path: Path):
+    """Append entries to an already-cached file; cumulative totals should grow."""
+    from pi_monitor.state import InspectorReader
+
+    f = tmp_path / "s.jsonl"
+    _write_jsonl(f, [_msg("user", content="hi"), _assistant("m", 0.10, 100, 50)])
+    reader = InspectorReader()
+    snap1 = reader.read(f)
+    assert snap1.cumulative_cost == pytest.approx(0.10)
+    assert snap1.assistant_message_count == 1
+
+    with f.open("a") as fp:
+        fp.write(json.dumps(_msg("user", content="more")) + "\n")
+        fp.write(json.dumps(_assistant("m", 0.50, 500, 200)) + "\n")
+
+    snap2 = reader.read(f)
+    assert snap2.cumulative_cost == pytest.approx(0.60)
+    assert snap2.cumulative_input == 600
+    assert snap2.cumulative_output == 250
+    assert snap2.assistant_message_count == 2
+    assert snap2.user_message_count == 2
+    assert snap2.last_user_message == "more"
+
+
+def test_inspector_current_tool_set_on_pending_tool_use(tmp_path: Path):
+    from pi_monitor.state import InspectorReader
+
+    f = tmp_path / "s.jsonl"
+    entries = [
+        _msg("user", content="run something"),
+        _assistant(
+            "m",
+            0.0,
+            10,
+            5,
+            content=[
+                {
+                    "type": "toolCall",
+                    "id": "t1",
+                    "name": "bash",
+                    "arguments": {"command": "ls"},
+                }
+            ],
+            stopReason="toolUse",
+        ),
+    ]
+    _write_jsonl(f, entries)
+
+    snap = InspectorReader().read(f)
+    assert snap.current_tool == "bash"
+
+
+def test_inspector_current_tool_cleared_after_tool_result(tmp_path: Path):
+    from pi_monitor.state import InspectorReader
+
+    f = tmp_path / "s.jsonl"
+    entries = [
+        _msg("user", content="run something"),
+        _assistant(
+            "m",
+            0.0,
+            10,
+            5,
+            content=[
+                {
+                    "type": "toolCall",
+                    "id": "t1",
+                    "name": "bash",
+                    "arguments": {},
+                }
+            ],
+            stopReason="toolUse",
+        ),
+        _msg(
+            "toolResult",
+            toolCallId="t1",
+            toolName="bash",
+            content=[{"type": "text", "text": "ok"}],
+            isError=False,
+        ),
+    ]
+    _write_jsonl(f, entries)
+
+    snap = InspectorReader().read(f)
+    assert snap.current_tool is None

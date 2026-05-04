@@ -14,10 +14,18 @@ from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container
+from textual.screen import ModalScreen
 from textual.widgets import Footer, Static, Tree
 
 from .notify import Notifier, load_config, save_config
-from .state import AgentState, PaneRef, PaneStatus, StateResolver
+from .state import (
+    AgentState,
+    InspectorReader,
+    InspectorSnapshot,
+    PaneRef,
+    PaneStatus,
+    StateResolver,
+)
 from .tmux import (
     MONITOR_SESSION,
     Pane,
@@ -61,6 +69,83 @@ STATE_TOAST_SEVERITY: dict[AgentState, str] = {
     AgentState.STALLED: "warning",
     AgentState.ERROR: "error",
 }
+
+HELP_TEXT = """\
+[bold #8abeb7]pi-monitor — keybindings[/bold #8abeb7]
+
+[bold]Navigation[/bold]
+  [#8abeb7]j[/#8abeb7] / [#8abeb7]↓[/#8abeb7]      down
+  [#8abeb7]k[/#8abeb7] / [#8abeb7]↑[/#8abeb7]      up
+  [#8abeb7]h[/#8abeb7] / [#8abeb7]←[/#8abeb7]      collapse / parent
+  [#8abeb7]l[/#8abeb7] / [#8abeb7]→[/#8abeb7]      expand / first child
+  [#8abeb7]g[/#8abeb7] / [#8abeb7]G[/#8abeb7]      top / bottom
+  [#8abeb7]1–9[/#8abeb7]        jump to Nth pane
+  [#8abeb7]Space[/#8abeb7]      expand / collapse session
+
+[bold]Borrow[/bold]
+  [#8abeb7]Enter[/#8abeb7]      borrow selected pane into right slot
+  [#8abeb7]Tab[/#8abeb7]        focus the borrowed pane (interact with agent)
+  tmux [#8abeb7]prefix ←[/#8abeb7]   back to the tree from inside the agent
+
+[bold]View[/bold]
+  [#8abeb7]s[/#8abeb7]          cycle sort: tmux ↔ needs-attention-first
+  [#8abeb7]Shift+H[/#8abeb7]    toggle showing non-pi panes
+  [#8abeb7]r[/#8abeb7]          force refresh
+
+[bold]Notifications[/bold]
+  [#8abeb7]m[/#8abeb7]          mute / unmute (desktop + in-app toasts)
+
+[bold]Exit[/bold]
+  [#8abeb7]q[/#8abeb7]          return borrowed pane, kill monitor session
+  [#8abeb7]?[/#8abeb7]          toggle this help
+
+[dim]press any key to dismiss[/dim]
+"""
+
+
+def _fmt_tokens(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.0f}k"
+    return str(n)
+
+
+def _truncate(text: str, limit: int) -> str:
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+class HelpScreen(ModalScreen):
+    """Modal overlay listing every keybinding. Any key dismisses."""
+
+    DEFAULT_CSS = """
+    HelpScreen {
+        align: center middle;
+        background: rgba(0,0,0,0.7);
+    }
+    HelpScreen > #help-dialog {
+        width: 60;
+        height: auto;
+        max-height: 80%;
+        padding: 1 2;
+        border: round #5f87ff;
+        background: #1e1e24;
+        color: white;
+    }
+    HelpScreen > #help-dialog > Static {
+        width: 100%;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Container(id="help-dialog"):
+            yield Static(HELP_TEXT)
+
+    def on_key(self, event) -> None:
+        self.dismiss()
 
 # Used only by the tmux status-line widget; emoji are dependable in tmux.
 STATE_GLYPHS: dict[AgentState, str] = {
@@ -208,7 +293,26 @@ class PiMonitorApp(App):
         background: $pi-card-bg;
         margin: 1 1 0 1;
         padding: 0;
-        height: 1fr;
+        height: 3fr;
+    }
+
+    #inspector-wrap {
+        border: round $pi-border-muted;
+        border-title-color: $pi-accent;
+        border-title-style: bold;
+        border-title-align: left;
+        background: $pi-card-bg;
+        margin: 0 1 0 1;
+        padding: 0;
+        height: 2fr;
+    }
+
+    #inspector {
+        background: $pi-card-bg;
+        color: white;
+        padding: 1 2;
+        width: 100%;
+        height: 100%;
     }
 
     Tree {
@@ -263,6 +367,7 @@ class PiMonitorApp(App):
         Binding("r", "refresh_now", "refresh", show=False),
         Binding("m", "toggle_mute", "mute"),
         Binding("q", "quit_monitor", "quit"),
+        Binding("?", "show_help", "help"),
         Binding("1", "jump(1)", show=False),
         Binding("2", "jump(2)", show=False),
         Binding("3", "jump(3)", show=False),
@@ -281,6 +386,7 @@ class PiMonitorApp(App):
             enabled=bool(self.config.get("notifications_enabled", True))
         )
         self.resolver = StateResolver()
+        self.inspector_reader = InspectorReader()
         self.show_non_pi = False
         self.sort_mode = self.config.get("sort_mode", "tmux")
         self._borrowed_pane_id: str | None = None
@@ -292,6 +398,10 @@ class PiMonitorApp(App):
         # Forces the next render to fully rebuild instead of diffing.
         # Set on user-initiated changes that re-order nodes (sort, filter).
         self._needs_full_rebuild = True
+        # Cache the latest snapshot per pane so the inspector can render
+        # without re-running resolve.
+        self._latest_statuses: dict[str, tuple[Pane, PaneStatus]] = {}
+        self._inspector_text: str = ""
 
     # -- Composition --------------------------------------------------------
 
@@ -300,16 +410,19 @@ class PiMonitorApp(App):
         yield Static("", id="attention-banner", classes="hidden")
         with Container(id="tree-wrap"):
             yield Tree("Sessions", id="tree")
+        with Container(id="inspector-wrap"):
+            yield Static("", id="inspector")
         yield Footer()
 
     def on_mount(self) -> None:
         self.title = "pi-monitor"
         self._title_bar: Static = self.query_one("#title-bar", Static)
-        self._attention_banner: Static = self.query_one(
-            "#attention-banner", Static
-        )
+        self._attention_banner: Static = self.query_one("#attention-banner", Static)
         self._tree_wrap: Container = self.query_one("#tree-wrap", Container)
         self._tree_wrap.border_title = "Sessions"
+        self._inspector_wrap: Container = self.query_one("#inspector-wrap", Container)
+        self._inspector_wrap.border_title = "Inspector"
+        self._inspector: Static = self.query_one("#inspector", Static)
         self._tree: Tree = self.query_one("#tree", Tree)
         self._tree.show_root = False
         self._tree.guide_depth = 2
@@ -318,6 +431,7 @@ class PiMonitorApp(App):
         self.notifier.on_transition = self._on_transition
         self.set_interval(POLL_INTERVAL_S, self._tick)
         self._tick()
+        self._refresh_inspector()
 
     def _on_transition(
         self,
@@ -388,9 +502,14 @@ class PiMonitorApp(App):
                     body=Path(pane.cwd).name or pane.cwd,
                 )
 
+        # Cache for inspector lookups. Key matches the tree-node data key
+        # (pane.pane_id, e.g. "%42"), which is stable across pane moves.
+        self._latest_statuses = {p.pane_id: (p, s) for p, s in statuses}
+
         set_status_widget(fmt_status_widget([s for _, s in statuses]))
         self._update_chrome([s for _, s in statuses])
         self._render(statuses)
+        self._refresh_inspector()
 
     def _update_chrome(self, all_statuses: list[PaneStatus]) -> None:
         """Refresh the title bar and the attention banner from current state."""
@@ -426,9 +545,7 @@ class PiMonitorApp(App):
             color = STATE_COLORS[state]
             parts.append(f"[{color}]● {n} {label}[/{color}]")
         msg = "  ·  ".join(parts)
-        self._attention_banner.update(
-            f"{msg}  [dim]· press 1–9 to jump[/dim]"
-        )
+        self._attention_banner.update(f"{msg}  [dim]· press 1–9 to jump[/dim]")
         self._attention_banner.remove_class("hidden")
 
     def _render(self, statuses: list[tuple[Pane, PaneStatus]]) -> None:
@@ -669,8 +786,133 @@ class PiMonitorApp(App):
         if children:
             self._tree.select_node(children[0])
 
+    def action_show_help(self) -> None:
+        self.push_screen(HelpScreen())
+
     def action_quit_monitor(self) -> None:
         self._cleanup_and_exit()
+
+    def on_tree_node_highlighted(self, event) -> None:
+        """Cursor moved to a different tree node; refresh the inspector."""
+        self._refresh_inspector()
+
+    # -- Inspector ----------------------------------------------------------
+
+    def _refresh_inspector(self) -> None:
+        if not hasattr(self, "_inspector"):
+            return
+        node = self._tree.cursor_node if hasattr(self, "_tree") else None
+        text = self._build_inspector_text(node)
+        if text != self._inspector_text:
+            self._inspector_text = text
+            self._inspector.update(text)
+
+    def _build_inspector_text(self, node) -> str:
+        if node is None or not node.data:
+            return "[dim]Cursor a pane to see details.[/dim]"
+        kind, key = node.data
+        if kind == "session":
+            sess_panes = [
+                (p, s)
+                for p, s in self._latest_statuses.values()
+                if p.session == key
+            ]
+            return self._render_session_inspector(key, sess_panes)
+        if kind == "pane":
+            entry = self._latest_statuses.get(key)
+            if entry is None:
+                return f"[dim]No data for pane {escape(str(key))}[/dim]"
+            pane, status = entry
+            return self._render_pane_inspector(pane, status)
+        return ""
+
+    def _render_session_inspector(
+        self, session_name: str, panes: list[tuple[Pane, PaneStatus]]
+    ) -> str:
+        if not panes:
+            return f"[bold {PI_ACCENT}]{escape(session_name)}[/bold {PI_ACCENT}]"
+        counts: dict[AgentState, int] = {}
+        for _, s in panes:
+            counts[s.state] = counts.get(s.state, 0) + 1
+        lines = [
+            f"[bold {PI_ACCENT}]{escape(session_name)}[/bold {PI_ACCENT}]",
+            "",
+            f"[dim]panes[/dim]      {len(panes)}",
+        ]
+        for state in (
+            AgentState.ERROR,
+            AgentState.STALLED,
+            AgentState.IDLE,
+            AgentState.WORKING,
+            AgentState.UNKNOWN,
+            AgentState.NO_PI,
+        ):
+            n = counts.get(state, 0)
+            if not n:
+                continue
+            color = STATE_COLORS[state]
+            lines.append(
+                f"[dim]{state.value:10s}[/dim] [{color}]●[/{color}] {n}"
+            )
+        return "\n".join(lines)
+
+    def _render_pane_inspector(self, pane: Pane, status: PaneStatus) -> str:
+        title = escape(pane.title or f"pane {pane.pane_index}")
+        cwd = escape(pane.cwd)
+        color = STATE_COLORS.get(status.state, PI_DIM)
+        idle_part = (
+            f" · [dim]{fmt_idle(status.idle_seconds)}[/dim]"
+            if status.idle_seconds >= 1
+            else ""
+        )
+        lines = [
+            f"[bold {PI_ACCENT}]{title}[/bold {PI_ACCENT}]",
+            f"[dim]· {escape(pane.session)}:{pane.window_index}.{pane.pane_index}[/dim]",
+            "",
+            f"[dim]state[/dim]      [{color}]●[/{color}] {status.state.value}{idle_part}",
+            f"[dim]cwd[/dim]        {cwd}",
+        ]
+
+        if status.session_file is None:
+            lines.append("")
+            lines.append("[dim](no pi session detected)[/dim]")
+            return "\n".join(lines)
+
+        snap: InspectorSnapshot | None = self.inspector_reader.read(
+            status.session_file
+        )
+        if snap is None:
+            return "\n".join(lines)
+
+        if snap.session_name:
+            lines.append(f"[dim]name[/dim]       {escape(snap.session_name)}")
+        if snap.model:
+            lines.append(f"[dim]model[/dim]      {escape(snap.model)}")
+        if snap.cumulative_input or snap.cumulative_output:
+            lines.append(
+                f"[dim]tokens[/dim]     {_fmt_tokens(snap.cumulative_input)} in "
+                f"· {_fmt_tokens(snap.cumulative_output)} out "
+                f"· [dim]{_fmt_tokens(snap.cumulative_cache_read)} cache[/dim]"
+            )
+        if snap.cumulative_cost:
+            lines.append(
+                f"[dim]cost[/dim]       [bold]${snap.cumulative_cost:.2f}[/bold]"
+            )
+        lines.append(
+            f"[dim]turns[/dim]      {snap.user_message_count} user "
+            f"· {snap.assistant_message_count} assistant"
+        )
+        if snap.current_tool:
+            lines.append(
+                f"[dim]tool[/dim]       [{PI_ACCENT}]{escape(snap.current_tool)}[/{PI_ACCENT}] running"
+            )
+
+        if snap.last_user_message:
+            preview = _truncate(snap.last_user_message, 240)
+            lines.append("")
+            lines.append("[dim]last user:[/dim]")
+            lines.append(f"[italic]{escape(preview)}[/italic]")
+        return "\n".join(lines)
 
     # -- Borrow / return ----------------------------------------------------
 

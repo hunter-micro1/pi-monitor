@@ -73,6 +73,31 @@ class PaneStatus:
     idle_seconds: float = 0.0  # seconds since last write (mtime distance)
 
 
+@dataclass
+class InspectorSnapshot:
+    """Richer view of a session JSONL for the on-cursor inspector panel.
+
+    Built by walking the entire JSONL once (then incrementally on growth).
+    Tracks cumulative usage (sum across all assistant messages) and the
+    latest user-message preview.
+    """
+
+    mtime: float
+    model: str | None = None
+    provider: str | None = None
+    cumulative_cost: float = 0.0
+    cumulative_input: int = 0
+    cumulative_output: int = 0
+    cumulative_cache_read: int = 0
+    cumulative_cache_write: int = 0
+    last_user_message: str | None = None
+    current_tool: str | None = None
+    message_count: int = 0
+    user_message_count: int = 0
+    assistant_message_count: int = 0
+    session_name: str | None = None  # from session_info entries
+
+
 # ---------------------------------------------------------------------------
 # JSONL reading
 # ---------------------------------------------------------------------------
@@ -123,6 +148,143 @@ class JsonlReader:
             blob = blob[nl + 1 :]
 
         return _scan_lines(blob, mtime)
+
+
+@dataclass
+class _CachedInspector:
+    size: int
+    snapshot: InspectorSnapshot
+
+
+class InspectorReader:
+    """Full-file JSONL parser used only for the cursored pane's inspector
+    panel. Caches per path; on size growth reads only the new tail and folds
+    new usage into the running totals.
+    """
+
+    def __init__(self) -> None:
+        self._cache: dict[str, _CachedInspector] = {}
+
+    def read(self, path: Path) -> InspectorSnapshot | None:
+        try:
+            st = path.stat()
+        except FileNotFoundError:
+            self._cache.pop(str(path), None)
+            return None
+        cached = self._cache.get(str(path))
+        if cached is not None and cached.size == st.st_size:
+            cached.snapshot.mtime = st.st_mtime
+            return cached.snapshot
+        if cached is None:
+            with path.open("rb") as f:
+                blob = f.read()
+            snap = _inspector_full_scan(blob, st.st_mtime)
+        else:
+            with path.open("rb") as f:
+                f.seek(cached.size)
+                new_blob = f.read()
+            snap = _inspector_incremental_scan(
+                new_blob, cached.snapshot, st.st_mtime
+            )
+        self._cache[str(path)] = _CachedInspector(size=st.st_size, snapshot=snap)
+        return snap
+
+
+def _inspector_apply_entry(snap: InspectorSnapshot, entry: dict) -> None:
+    """Fold one parsed JSONL entry into a running InspectorSnapshot."""
+    etype = entry.get("type")
+    if etype == "session_info":
+        name = entry.get("name")
+        if isinstance(name, str):
+            snap.session_name = name
+        return
+    if etype != "message":
+        return
+    msg = entry.get("message") or {}
+    role = msg.get("role")
+    snap.message_count += 1
+    if role == "assistant":
+        snap.assistant_message_count += 1
+        if isinstance(msg.get("model"), str):
+            snap.model = msg["model"]
+        if isinstance(msg.get("provider"), str):
+            snap.provider = msg["provider"]
+        usage = msg.get("usage") or {}
+        if isinstance(usage, dict):
+            snap.cumulative_input += int(usage.get("input") or 0)
+            snap.cumulative_output += int(usage.get("output") or 0)
+            snap.cumulative_cache_read += int(usage.get("cacheRead") or 0)
+            snap.cumulative_cache_write += int(usage.get("cacheWrite") or 0)
+            cost = usage.get("cost") or {}
+            if isinstance(cost, dict):
+                snap.cumulative_cost += float(cost.get("total") or 0.0)
+        # Track current tool only if this is a toolUse turn whose tool calls
+        # have not all been fulfilled yet (we can't know that without the
+        # follow-up toolResult; clear it here, set it again below if needed).
+        snap.current_tool = None
+        if msg.get("stopReason") == "toolUse":
+            content = msg.get("content") or []
+            for item in content:
+                if (
+                    isinstance(item, dict)
+                    and item.get("type") == "toolCall"
+                    and isinstance(item.get("name"), str)
+                ):
+                    snap.current_tool = item["name"]
+                    break
+    elif role == "user":
+        snap.user_message_count += 1
+        snap.last_user_message = _extract_user_text(msg.get("content"))
+        snap.current_tool = None  # user prompt clears any pending tool
+    elif role == "toolResult":
+        # A tool finished; clear the "current tool" hint.
+        snap.current_tool = None
+
+
+def _extract_user_text(content) -> str | None:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                t = item.get("text")
+                if isinstance(t, str):
+                    parts.append(t)
+        if parts:
+            return "\n".join(parts)
+    return None
+
+
+def _inspector_full_scan(blob: bytes, mtime: float) -> InspectorSnapshot:
+    snap = InspectorSnapshot(mtime=mtime)
+    for line in blob.splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        _inspector_apply_entry(snap, entry)
+    return snap
+
+
+def _inspector_incremental_scan(
+    new_blob: bytes, prior: InspectorSnapshot, mtime: float
+) -> InspectorSnapshot:
+    """Fold new bytes (since last read) into the prior snapshot in place.
+    The first line is dropped if it looks partial — but pi only appends whole
+    lines, so this should always start cleanly at a line boundary."""
+    prior.mtime = mtime
+    for line in new_blob.splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        _inspector_apply_entry(prior, entry)
+    return prior
 
 
 def _scan_lines(blob: bytes, mtime: float) -> JsonlSnapshot:
