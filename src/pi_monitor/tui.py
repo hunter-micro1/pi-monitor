@@ -978,8 +978,9 @@ class PiMonitorApp(App):
         """Enter on a row.
 
         - on `[+] new session`: open the new-session modal
-        - on a pane: borrow that agent into the right tmux pane and focus
-          the right pane so the user can immediately start typing into it
+        - on a pane: borrow that agent into the right tmux pane. Cursor
+          focus stays on the tree so the user can keep navigating; Tab
+          hands the keyboard to the right pane when they're ready.
         - on a session header: default tree expand/collapse (handled elsewhere)
         """
         node = event.node
@@ -1006,7 +1007,10 @@ class PiMonitorApp(App):
         3. If the right slot was attached to a different viewer (i.e. a
            different source session), respawn it with `tmux attach` to the
            new viewer, then kill the old viewer.
-        4. Focus the right tmux pane so the user can type immediately.
+
+        Cursor focus is intentionally left on the left TUI pane so the
+        user can keep navigating the tree. Tab (`action_focus_right`) is
+        the explicit handoff to the right pane.
         """
         try:
             viewer = ensure_linked_viewer(pane.session)
@@ -1017,8 +1021,6 @@ class PiMonitorApp(App):
                 if self._active_viewer is not None:
                     kill_linked_viewer(self._active_viewer)
                 self._active_viewer = viewer
-
-            focus_right_slot()
         except TmuxError as exc:
             self.notify(f"could not borrow: {exc}", severity="error", timeout=8)
 
@@ -1036,7 +1038,9 @@ class PiMonitorApp(App):
         try:
             focus_right_slot()
         except TmuxError as exc:
-            self.notify(f"could not focus right pane: {exc}", severity="error", timeout=8)
+            self.notify(
+                f"could not focus right pane: {exc}", severity="error", timeout=8
+            )
 
     def action_go_top(self) -> None:
         if self._tree.root.children:

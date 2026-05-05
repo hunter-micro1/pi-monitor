@@ -135,8 +135,8 @@ def _placeholder_cmd() -> str:
     a real `tmux attach` when the user picks an agent.
     """
     return (
-        "sh -c 'printf \"\\n  press Enter on a pane in the tree to "
-        'interact with it here\\n\\n"; tail -f /dev/null\''
+        "sh -c 'printf \"\\n  Enter on a tree row attaches an agent here"
+        "\\n  Tab hands the keyboard over\\n\\n\"; tail -f /dev/null'"
     )
 
 

@@ -66,21 +66,21 @@ uv tool install -e .
 
 ## Keybindings
 
-| Key                   | Action                                           |
-| --------------------- | ------------------------------------------------ |
-| `j` / `k` / `↓` / `↑` | Move selection                                   |
-| `Enter` (or click)    | Attach the selected agent to the right tmux pane and focus it |
-| `Tab`                 | Focus the right tmux pane (whatever's already attached)       |
-| tmux `prefix + ←`     | Native tmux nav back to the left tree pane                    |
-| `C-a` (in right pane) | Prefix for the inner viewer client (e.g. `C-a [` to scroll)   |
-| `Space`               | Expand / collapse a session header               |
-| `g` / `G`             | Jump to top / bottom                             |
-| `s`                   | Cycle sort: tmux-order ↔ needs-attention-first  |
-| `H`                   | Toggle showing non-pi panes                      |
-| `r`                   | Force refresh now                                |
-| `m`                   | Toggle desktop notifications (mute/unmute)       |
+| Key                   | Action                                                             |
+| --------------------- | ------------------------------------------------------------------ |
+| `j` / `k` / `↓` / `↑` | Move selection                                                     |
+| `Enter` (or click)    | Attach the selected agent to the right tmux pane (focus stays on the tree) |
+| `Tab`                 | Focus the right tmux pane (whatever's already attached)            |
+| tmux `prefix + ←`     | Native tmux nav back to the left tree pane                         |
+| `C-a` (in right pane) | Prefix for the inner viewer client (e.g. `C-a [` to scroll)        |
+| `Space`               | Expand / collapse a session header                                 |
+| `g` / `G`             | Jump to top / bottom                                               |
+| `s`                   | Cycle sort: tmux-order ↔ needs-attention-first                    |
+| `H`                   | Toggle showing non-pi panes                                        |
+| `r`                   | Force refresh now                                                  |
+| `m`                   | Toggle desktop notifications (mute/unmute)                         |
 | `q`                   | Quit: kill all `pi-monitor-view-*` sisters and the monitor session |
-| `1`–`9`               | Jump to the Nth pane in the tree                 |
+| `1`–`9`               | Jump to the Nth pane in the tree                                   |
 
 ## States
 
