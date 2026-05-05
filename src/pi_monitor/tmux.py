@@ -136,7 +136,7 @@ def _placeholder_cmd() -> str:
     """
     return (
         "sh -c 'printf \"\\n  Enter on a tree row fullscreens an agent here"
-        "\\n  outer tmux prefix+z to unzoom; prefix+<- for the tree\\n\\n\"; "
+        "\\n  press f from the tree to bring the split back\\n\\n\"; "
         "tail -f /dev/null'"
     )
 
@@ -332,14 +332,20 @@ def focus_left_slot() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Right-slot zoom (focus mode)
+# Focus-mode layout (TUI shrinks to a sliver so the agent dominates)
 # ---------------------------------------------------------------------------
+#
+# We use plain `resize-pane -x N` instead of tmux's window-zoom (-Z) so the
+# TUI pane stays in the layout and keeps receiving keystrokes. That lets
+# the user press `f` from inside the TUI to come back to the split layout
+# without going through any tmux prefix.
+
+TUI_FOCUS_WIDTH = 4  # cols when the TUI is shrunk to a sliver
+SAVED_TUI_WIDTH_OPT = "@pi-monitor-tui-width"
 
 
-def is_monitor_window_zoomed() -> bool:
-    """True when the monitor window has any zoomed pane (tmux window-zoom).
-    The flag is per-window; the monitor only has one window so this answers
-    'is the right pane currently fullscreen?' for our purposes."""
+def _tui_pane_width() -> int:
+    """Current width in cells of the monitor's TUI pane, or 0 on error."""
     try:
         out = _tmux(
             "display-message",
@@ -347,26 +353,76 @@ def is_monitor_window_zoomed() -> bool:
             "-t",
             TUI_PANE,
             "-F",
-            "#{window_zoomed_flag}",
+            "#{pane_width}",
             capture=True,
         ).strip()
+        return int(out)
+    except (TmuxError, ValueError):
+        return 0
+
+
+def _monitor_window_width() -> int:
+    """Total width of the monitor window in cells, or 0 on error."""
+    try:
+        out = _tmux(
+            "display-message",
+            "-p",
+            "-t",
+            TUI_PANE,
+            "-F",
+            "#{window_width}",
+            capture=True,
+        ).strip()
+        return int(out)
+    except (TmuxError, ValueError):
+        return 0
+
+
+def is_in_focus_layout() -> bool:
+    """True when the TUI pane has been shrunk to a sliver (focus mode).
+    Tolerates a couple of cells of jitter from tmux border accounting."""
+    return 0 < _tui_pane_width() <= TUI_FOCUS_WIDTH + 2
+
+
+def enter_focus_layout() -> None:
+    """Shrink the TUI pane to TUI_FOCUS_WIDTH cells so the right pane
+    fills the rest of the monitor window. Idempotent. The current TUI
+    width is stashed in `SAVED_TUI_WIDTH_OPT` so the next exit restores
+    whatever proportions the user had."""
+    if is_in_focus_layout():
+        return
+    cur_w = _tui_pane_width()
+    if cur_w > TUI_FOCUS_WIDTH + 2:
+        try:
+            _tmux("set-option", "-gq", SAVED_TUI_WIDTH_OPT, str(cur_w))
+        except TmuxError:
+            pass
+    try:
+        _tmux("resize-pane", "-t", TUI_PANE, "-x", str(TUI_FOCUS_WIDTH))
     except TmuxError:
-        return False
-    return out == "1"
+        pass
 
 
-def toggle_right_slot_zoom() -> None:
-    """Toggle tmux window-zoom centered on the right pane. When unzoomed,
-    tmux remembers the original split sizes and restores them on the next
-    toggle."""
-    _tmux("resize-pane", "-Z", "-t", RIGHT_SLOT)
-
-
-def zoom_right_slot() -> None:
-    """Idempotent: ensure the right pane is tmux-zoomed (fullscreen).
-    No-op if the window is already zoomed."""
-    if not is_monitor_window_zoomed():
-        _tmux("resize-pane", "-Z", "-t", RIGHT_SLOT)
+def exit_focus_layout() -> None:
+    """Restore the TUI pane to the saved width (or ~40% of the window
+    width as a fallback). Idempotent — no-op if already in split."""
+    if not is_in_focus_layout():
+        return
+    target_w = 0
+    try:
+        out = _tmux(
+            "show-option", "-gv", SAVED_TUI_WIDTH_OPT, capture=True
+        ).strip()
+        target_w = int(out) if out else 0
+    except (TmuxError, ValueError):
+        target_w = 0
+    if target_w <= TUI_FOCUS_WIDTH + 2:
+        win_w = _monitor_window_width()
+        target_w = max(20, win_w * 40 // 100) if win_w else 80
+    try:
+        _tmux("resize-pane", "-t", TUI_PANE, "-x", str(target_w))
+    except TmuxError:
+        pass
 
 
 # ---------------------------------------------------------------------------
