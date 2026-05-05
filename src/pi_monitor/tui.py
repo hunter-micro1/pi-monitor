@@ -142,13 +142,11 @@ HELP_TEXT = """\
   [#8abeb7]Space[/#8abeb7]      expand / collapse session
 
 [bold]Interact[/bold]
-  [#8abeb7]Enter[/#8abeb7]      attach the cursored agent to the right
-              pane and zoom it inside the viewer so
-              only that pi is shown (non-pi siblings
-              sharing the source window are hidden).
-              Split stays visible; cursor stays on tree.
-  [#8abeb7]Tab[/#8abeb7]        focus the right pane (so keys go to
-              the agent already attached there)
+  [#8abeb7]j[/#8abeb7] / [#8abeb7]k[/#8abeb7]      hovering a pi row previews it live
+              in the right pane (cursor stays here).
+  [#8abeb7]Enter[/#8abeb7]      commit — hand keyboard focus to the
+              right pane so keys go to the agent.
+  [#8abeb7]Tab[/#8abeb7]        same as Enter for a pane row.
   [#8abeb7]prefix+←[/#8abeb7]   tmux nav back to the tree pane
   [#8abeb7]C-a z[/#8abeb7]      inner viewer: unzoom to see siblings
   [#8abeb7]C-a " / C-a %[/#8abeb7]
@@ -978,13 +976,32 @@ class PiMonitorApp(App):
 
     # -- Tree event ---------------------------------------------------------
 
+    def on_tree_node_highlighted(self, event) -> None:
+        """Cursor moved to a row — preview the hovered agent in the right
+        pane while keyboard focus stays on the tree.
+
+        Pane rows trigger an attach (idempotent if it's the same source
+        session). Session headers and the `[+] new session` row are
+        no-ops; the right pane keeps showing whatever was last previewed
+        so the user can navigate around without losing context.
+        """
+        node = event.node
+        if not node.data:
+            return
+        if node.data[0] != "pane":
+            return
+        entry = self._latest_statuses.get(node.data[1])
+        if entry is None:
+            return
+        self._borrow_into_right_slot(entry[0])
+
     def on_tree_node_selected(self, event) -> None:
-        """Enter on a row.
+        """Enter (or click) on a row.
 
         - on `[+] new session`: open the new-session modal
-        - on a pane: borrow that agent into the right tmux pane. Cursor
-          focus stays on the tree so the user can keep navigating; Tab
-          hands the keyboard to the right pane when they're ready.
+        - on a pane: hand keyboard focus to the right pane so the user
+          can type to the agent. The agent itself was already attached
+          on hover (see `on_tree_node_highlighted`).
         - on a session header: default tree expand/collapse (handled elsewhere)
         """
         node = event.node
@@ -995,10 +1012,21 @@ class PiMonitorApp(App):
             self._open_new_session()
             return
         if kind == "pane":
+            # Make sure the preview is current (covers a rare race where
+            # the user clicks a row their cursor never highlighted).
             entry = self._latest_statuses.get(node.data[1])
-            if entry is None:
+            if entry is not None:
+                self._borrow_into_right_slot(entry[0])
+            if self._active_viewer is None:
                 return
-            self._borrow_into_right_slot(entry[0])
+            try:
+                focus_right_slot()
+            except TmuxError as exc:
+                self.notify(
+                    f"could not focus right pane: {exc}",
+                    severity="error",
+                    timeout=8,
+                )
 
     # -- Right slot management ---------------------------------------------
 
