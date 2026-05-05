@@ -50,10 +50,7 @@ from .tmux import (
     cleanup_orphan_viewers,
     clear_status_widget,
     ensure_linked_viewer,
-    enter_focus_layout,
-    exit_focus_layout,
     focus_right_slot,
-    is_in_focus_layout,
     is_viewer_session,
     kill_linked_viewer,
     kill_monitor_session,
@@ -145,16 +142,13 @@ HELP_TEXT = """\
 
 [bold]Interact[/bold]
   [#8abeb7]Enter[/#8abeb7]      attach the cursored agent to the right
-              pane and shrink the tree to a sliver so
-              the agent fills the rest. Source pane
-              stays put in its origin session.
-  [#8abeb7]f[/#8abeb7]          toggle focus mode (sliver ↔ split).
-              Works directly from the tree — no tmux
-              prefix needed.
+              pane (live, fully interactive). Source
+              pane stays put in its origin session.
+              The 2-pane split stays visible; cursor
+              focus stays on the tree.
   [#8abeb7]Tab[/#8abeb7]        focus the right pane (so keys go to
               the agent already attached there)
-  [#8abeb7]prefix+←[/#8abeb7]   tmux nav back to the tree pane (only
-              needed if you Tab'd to the agent)
+  [#8abeb7]prefix+←[/#8abeb7]   tmux nav back to the tree pane
   [#8abeb7]C-a[/#8abeb7]        prefix for the inner viewer
               (the right pane is a nested tmux client)
 
@@ -588,7 +582,6 @@ class PiMonitorApp(App):
         Binding("k", "tree_cursor_up", "↑", show=False),
         Binding("l", "tree_expand_or_child", "→", show=False),
         Binding("tab", "focus_right", "→agent"),
-        Binding("f", "toggle_focus", "fullscreen"),
         Binding("g", "go_top", "top", show=False),
         Binding("G", "go_bottom", "bottom", show=False),
         Binding("s", "cycle_sort", "sort"),
@@ -1008,19 +1001,19 @@ class PiMonitorApp(App):
     # -- Right slot management ---------------------------------------------
 
     def _borrow_into_right_slot(self, pane: Pane) -> None:
-        """Make the right tmux pane show `pane` fullscreen and interactive,
-        without moving the source pane. We:
+        """Make the right tmux pane show `pane` interactively, without
+        moving the source pane. We:
 
         1. Ensure a session-group sister of `pane.session` exists.
         2. Set that viewer's current window+pane to `pane`'s coordinates.
         3. If the right slot was attached to a different viewer (i.e. a
            different source session), respawn it with `tmux attach` to the
            new viewer, then kill the old viewer.
-        4. Shrink the TUI pane to a sliver so the agent fills the rest of
-           the monitor window. Idempotent — no-op if already in focus.
 
-        Cursor focus stays on the (now-narrow) TUI pane, so pressing `f`
-        from inside the TUI brings the split back. No tmux prefix needed.
+        The 2-pane monitor split (tree on the left, agent on the right)
+        stays as configured. Cursor focus stays on the tree so the user
+        can keep navigating; Tab (`action_focus_right`) is the explicit
+        handoff to the right pane when they're ready to type.
         """
         try:
             viewer = ensure_linked_viewer(pane.session)
@@ -1031,34 +1024,8 @@ class PiMonitorApp(App):
                 if self._active_viewer is not None:
                     kill_linked_viewer(self._active_viewer)
                 self._active_viewer = viewer
-
-            # Auto-fullscreen on every Enter: the user wants "navigate,
-            # press Enter, see the agent" without a second keystroke.
-            enter_focus_layout()
         except TmuxError as exc:
             self.notify(f"could not borrow: {exc}", severity="error", timeout=8)
-
-    def action_toggle_focus(self) -> None:
-        """f: toggle the focus-mode layout (TUI sliver ↔ default split).
-        Works directly from inside the TUI — no outer tmux prefix needed.
-        If the user has Tab'd into the right pane, `f` won't reach this
-        action; nav back with `prefix + ←` first."""
-        if self._active_viewer is None:
-            self.notify(
-                "no agent attached yet — Enter on a pane first",
-                severity="warning",
-                timeout=4,
-            )
-            return
-        try:
-            if is_in_focus_layout():
-                exit_focus_layout()
-            else:
-                enter_focus_layout()
-        except TmuxError as exc:
-            self.notify(
-                f"could not toggle focus: {exc}", severity="error", timeout=8
-            )
 
     def action_focus_right(self) -> None:
         """Tab: hand the keyboard to the right tmux pane (whatever's
