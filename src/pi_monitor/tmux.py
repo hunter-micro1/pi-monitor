@@ -135,8 +135,9 @@ def _placeholder_cmd() -> str:
     a real `tmux attach` when the user picks an agent.
     """
     return (
-        "sh -c 'printf \"\\n  Enter on a tree row attaches an agent here"
-        "\\n  Tab hands the keyboard over\\n\\n\"; tail -f /dev/null'"
+        "sh -c 'printf \"\\n  Enter on a tree row fullscreens an agent here"
+        "\\n  outer tmux prefix+z to unzoom; prefix+<- for the tree\\n\\n\"; "
+        "tail -f /dev/null'"
     )
 
 
@@ -361,10 +362,10 @@ def toggle_right_slot_zoom() -> None:
     _tmux("resize-pane", "-Z", "-t", RIGHT_SLOT)
 
 
-def unzoom_monitor_window() -> None:
-    """Force the monitor window back to its split layout. No-op if the
-    window isn't currently zoomed."""
-    if is_monitor_window_zoomed():
+def zoom_right_slot() -> None:
+    """Idempotent: ensure the right pane is tmux-zoomed (fullscreen).
+    No-op if the window is already zoomed."""
+    if not is_monitor_window_zoomed():
         _tmux("resize-pane", "-Z", "-t", RIGHT_SLOT)
 
 
