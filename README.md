@@ -69,10 +69,10 @@ uv tool install -e .
 | Key                   | Action                                                             |
 | --------------------- | ------------------------------------------------------------------ |
 | `j` / `k` / `↓` / `↑` | Move selection                                                     |
-| `Enter` (or click)    | Attach the selected agent to the right tmux pane and fullscreen it. Use outer tmux `prefix + z` to unzoom and bring the tree back. |
-| `Tab`                 | Focus the right tmux pane (when not zoomed)                        |
-| `f`                   | Manual fullscreen toggle (Enter already zooms; only useful after you've manually unzoomed via `prefix + z`). |
-| tmux `prefix + ←`     | Native tmux nav back to the left tree pane                         |
+| `Enter` (or click)    | Attach the selected agent to the right tmux pane and shrink the tree to a sliver so the agent fills the rest. Press `f` from the tree to bring the split back. |
+| `f`                   | Toggle focus mode (tree sliver ↔ default split). Works directly from the tree — no tmux prefix needed. |
+| `Tab`                 | Focus the right tmux pane (so keys go to the agent)                |
+| tmux `prefix + ←`     | Tmux nav back to the tree pane (only needed if you Tab'd into the agent) |
 | `C-a` (in right pane) | Prefix for the inner viewer client (e.g. `C-a [` to scroll)        |
 | `Space`               | Expand / collapse a session header                                 |
 | `g` / `G`             | Jump to top / bottom                                               |

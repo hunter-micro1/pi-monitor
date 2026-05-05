@@ -50,16 +50,17 @@ from .tmux import (
     cleanup_orphan_viewers,
     clear_status_widget,
     ensure_linked_viewer,
+    enter_focus_layout,
+    exit_focus_layout,
     focus_right_slot,
+    is_in_focus_layout,
     is_viewer_session,
     kill_linked_viewer,
     kill_monitor_session,
     list_panes,
     reset_right_slot_to_placeholder,
     set_status_widget,
-    toggle_right_slot_zoom,
     viewer_focus_pane,
-    zoom_right_slot,
     _tmux,
 )
 
@@ -144,12 +145,16 @@ HELP_TEXT = """\
 
 [bold]Interact[/bold]
   [#8abeb7]Enter[/#8abeb7]      attach the cursored agent to the right
-              pane and fullscreen it. The source pane
+              pane and shrink the tree to a sliver so
+              the agent fills the rest. Source pane
               stays put in its origin session.
-  [#8abeb7]prefix+z[/#8abeb7]   outer tmux: unzoom to bring the tree back
-  [#8abeb7]prefix+←[/#8abeb7]   outer tmux: focus the tree pane
-  [#8abeb7]Tab[/#8abeb7]        focus the right pane (when not zoomed)
-  [#8abeb7]f[/#8abeb7]          manual zoom toggle (Enter already zooms)
+  [#8abeb7]f[/#8abeb7]          toggle focus mode (sliver ↔ split).
+              Works directly from the tree — no tmux
+              prefix needed.
+  [#8abeb7]Tab[/#8abeb7]        focus the right pane (so keys go to
+              the agent already attached there)
+  [#8abeb7]prefix+←[/#8abeb7]   tmux nav back to the tree pane (only
+              needed if you Tab'd to the agent)
   [#8abeb7]C-a[/#8abeb7]        prefix for the inner viewer
               (the right pane is a nested tmux client)
 
@@ -1011,12 +1016,11 @@ class PiMonitorApp(App):
         3. If the right slot was attached to a different viewer (i.e. a
            different source session), respawn it with `tmux attach` to the
            new viewer, then kill the old viewer.
-        4. Tmux-zoom the right pane so the agent fills the whole monitor
-           window. Idempotent — no-op if already zoomed.
+        4. Shrink the TUI pane to a sliver so the agent fills the rest of
+           the monitor window. Idempotent — no-op if already in focus.
 
-        To return to the tree, use the outer tmux's `prefix + z` (unzoom)
-        or `prefix + ←` (focus the tree pane). The `f` binding offers an
-        in-TUI manual toggle once the tree is back in focus.
+        Cursor focus stays on the (now-narrow) TUI pane, so pressing `f`
+        from inside the TUI brings the split back. No tmux prefix needed.
         """
         try:
             viewer = ensure_linked_viewer(pane.session)
@@ -1030,15 +1034,15 @@ class PiMonitorApp(App):
 
             # Auto-fullscreen on every Enter: the user wants "navigate,
             # press Enter, see the agent" without a second keystroke.
-            zoom_right_slot()
+            enter_focus_layout()
         except TmuxError as exc:
             self.notify(f"could not borrow: {exc}", severity="error", timeout=8)
 
     def action_toggle_focus(self) -> None:
-        """f: toggle tmux window-zoom on the right pane (fullscreen ↔ split).
-        Once zoomed, tmux routes keystrokes to the right pane, so to come
-        back use the outer tmux's `prefix + z` (or `prefix + ←` to land
-        on the tree pane and then `f` again)."""
+        """f: toggle the focus-mode layout (TUI sliver ↔ default split).
+        Works directly from inside the TUI — no outer tmux prefix needed.
+        If the user has Tab'd into the right pane, `f` won't reach this
+        action; nav back with `prefix + ←` first."""
         if self._active_viewer is None:
             self.notify(
                 "no agent attached yet — Enter on a pane first",
@@ -1047,7 +1051,10 @@ class PiMonitorApp(App):
             )
             return
         try:
-            toggle_right_slot_zoom()
+            if is_in_focus_layout():
+                exit_focus_layout()
+            else:
+                enter_focus_layout()
         except TmuxError as exc:
             self.notify(
                 f"could not toggle focus: {exc}", severity="error", timeout=8
