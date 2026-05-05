@@ -71,6 +71,7 @@ uv tool install -e .
 | `j` / `k` / `↓` / `↑` | Move selection                                                     |
 | `Enter` (or click)    | Attach the selected agent to the right tmux pane (focus stays on the tree) |
 | `Tab`                 | Focus the right tmux pane (whatever's already attached)            |
+| `f`                   | Toggle fullscreen on the right pane (auto-resets when you switch agents). Escape with outer tmux `prefix + z`. |
 | tmux `prefix + ←`     | Native tmux nav back to the left tree pane                         |
 | `C-a` (in right pane) | Prefix for the inner viewer client (e.g. `C-a [` to scroll)        |
 | `Space`               | Expand / collapse a session header                                 |

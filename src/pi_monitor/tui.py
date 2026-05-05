@@ -57,6 +57,8 @@ from .tmux import (
     list_panes,
     reset_right_slot_to_placeholder,
     set_status_widget,
+    toggle_right_slot_zoom,
+    unzoom_monitor_window,
     viewer_focus_pane,
     _tmux,
 )
@@ -146,6 +148,9 @@ HELP_TEXT = """\
               source pane stays in its origin session.
   [#8abeb7]Tab[/#8abeb7]        focus the right tmux pane (so keys
               go to the agent already attached there)
+  [#8abeb7]f[/#8abeb7]          toggle fullscreen on the right pane.
+              Switching agents auto-resets to split.
+              Escape with outer tmux [#8abeb7]prefix+z[/#8abeb7].
   [#8abeb7]prefix+←[/#8abeb7]   tmux nav back to this tree
   [#8abeb7]C-a[/#8abeb7]        prefix for the inner viewer
               (the right pane is a nested tmux client)
@@ -580,6 +585,7 @@ class PiMonitorApp(App):
         Binding("k", "tree_cursor_up", "↑", show=False),
         Binding("l", "tree_expand_or_child", "→", show=False),
         Binding("tab", "focus_right", "→agent"),
+        Binding("f", "toggle_focus", "fullscreen"),
         Binding("g", "go_top", "top", show=False),
         Binding("G", "go_bottom", "bottom", show=False),
         Binding("s", "cycle_sort", "sort"),
@@ -1017,12 +1023,35 @@ class PiMonitorApp(App):
             viewer_focus_pane(viewer, pane.window_index, pane.pane_index)
 
             if self._active_viewer != viewer:
+                # Reset the monitor layout to the default side-by-side
+                # split before swapping in a new agent — every agent
+                # switch should start from the unzoomed state.
+                unzoom_monitor_window()
                 attach_right_slot_to_viewer(viewer)
                 if self._active_viewer is not None:
                     kill_linked_viewer(self._active_viewer)
                 self._active_viewer = viewer
         except TmuxError as exc:
             self.notify(f"could not borrow: {exc}", severity="error", timeout=8)
+
+    def action_toggle_focus(self) -> None:
+        """f: toggle tmux window-zoom on the right pane (fullscreen ↔ split).
+        Once zoomed, tmux routes keystrokes to the right pane, so to come
+        back use the outer tmux's `prefix + z` (or `prefix + ←` to land
+        on the tree pane and then `f` again)."""
+        if self._active_viewer is None:
+            self.notify(
+                "no agent attached yet — Enter on a pane first",
+                severity="warning",
+                timeout=4,
+            )
+            return
+        try:
+            toggle_right_slot_zoom()
+        except TmuxError as exc:
+            self.notify(
+                f"could not toggle focus: {exc}", severity="error", timeout=8
+            )
 
     def action_focus_right(self) -> None:
         """Tab: hand the keyboard to the right tmux pane (whatever's
