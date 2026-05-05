@@ -69,9 +69,11 @@ uv tool install -e .
 | Key                   | Action                                                             |
 | --------------------- | ------------------------------------------------------------------ |
 | `j` / `k` / `↓` / `↑` | Move selection                                                     |
-| `Enter` (or click)    | Attach the selected agent to the right tmux pane. Source pane stays put; the 2-pane split stays visible; focus stays on the tree. |
+| `Enter` (or click)    | Attach the selected agent to the right tmux pane and zoom it so non-pi siblings sharing the source window are hidden. Source pane stays put; split stays visible; focus stays on the tree. |
 | `Tab`                 | Focus the right tmux pane so keys go to the agent                  |
 | tmux `prefix + ←`     | Native tmux nav back to the tree pane                              |
+| `C-a z` (in right pane) | Inner viewer: unzoom to see the source window's other panes      |
+| `C-a "` / `C-a %`     | Inner viewer: split inside the right slot                          |
 | `C-a` (in right pane) | Prefix for the inner viewer client (e.g. `C-a [` to scroll)        |
 | `Space`               | Expand / collapse a session header                                 |
 | `g` / `G`             | Jump to top / bottom                                               |
