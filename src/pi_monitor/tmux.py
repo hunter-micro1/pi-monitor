@@ -331,6 +331,44 @@ def focus_left_slot() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Right-slot zoom (focus mode)
+# ---------------------------------------------------------------------------
+
+
+def is_monitor_window_zoomed() -> bool:
+    """True when the monitor window has any zoomed pane (tmux window-zoom).
+    The flag is per-window; the monitor only has one window so this answers
+    'is the right pane currently fullscreen?' for our purposes."""
+    try:
+        out = _tmux(
+            "display-message",
+            "-p",
+            "-t",
+            TUI_PANE,
+            "-F",
+            "#{window_zoomed_flag}",
+            capture=True,
+        ).strip()
+    except TmuxError:
+        return False
+    return out == "1"
+
+
+def toggle_right_slot_zoom() -> None:
+    """Toggle tmux window-zoom centered on the right pane. When unzoomed,
+    tmux remembers the original split sizes and restores them on the next
+    toggle."""
+    _tmux("resize-pane", "-Z", "-t", RIGHT_SLOT)
+
+
+def unzoom_monitor_window() -> None:
+    """Force the monitor window back to its split layout. No-op if the
+    window isn't currently zoomed."""
+    if is_monitor_window_zoomed():
+        _tmux("resize-pane", "-Z", "-t", RIGHT_SLOT)
+
+
+# ---------------------------------------------------------------------------
 # Spawning new pi agents
 # ---------------------------------------------------------------------------
 
