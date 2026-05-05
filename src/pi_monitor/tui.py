@@ -58,8 +58,8 @@ from .tmux import (
     reset_right_slot_to_placeholder,
     set_status_widget,
     toggle_right_slot_zoom,
-    unzoom_monitor_window,
     viewer_focus_pane,
+    zoom_right_slot,
     _tmux,
 )
 
@@ -144,14 +144,12 @@ HELP_TEXT = """\
 
 [bold]Interact[/bold]
   [#8abeb7]Enter[/#8abeb7]      attach the cursored agent to the right
-              tmux pane (live, fully interactive). The
-              source pane stays in its origin session.
-  [#8abeb7]Tab[/#8abeb7]        focus the right tmux pane (so keys
-              go to the agent already attached there)
-  [#8abeb7]f[/#8abeb7]          toggle fullscreen on the right pane.
-              Switching agents auto-resets to split.
-              Escape with outer tmux [#8abeb7]prefix+z[/#8abeb7].
-  [#8abeb7]prefix+←[/#8abeb7]   tmux nav back to this tree
+              pane and fullscreen it. The source pane
+              stays put in its origin session.
+  [#8abeb7]prefix+z[/#8abeb7]   outer tmux: unzoom to bring the tree back
+  [#8abeb7]prefix+←[/#8abeb7]   outer tmux: focus the tree pane
+  [#8abeb7]Tab[/#8abeb7]        focus the right pane (when not zoomed)
+  [#8abeb7]f[/#8abeb7]          manual zoom toggle (Enter already zooms)
   [#8abeb7]C-a[/#8abeb7]        prefix for the inner viewer
               (the right pane is a nested tmux client)
 
@@ -1005,32 +1003,34 @@ class PiMonitorApp(App):
     # -- Right slot management ---------------------------------------------
 
     def _borrow_into_right_slot(self, pane: Pane) -> None:
-        """Make the right tmux pane show `pane` interactively, without
-        moving the source pane. We:
+        """Make the right tmux pane show `pane` fullscreen and interactive,
+        without moving the source pane. We:
 
         1. Ensure a session-group sister of `pane.session` exists.
         2. Set that viewer's current window+pane to `pane`'s coordinates.
         3. If the right slot was attached to a different viewer (i.e. a
            different source session), respawn it with `tmux attach` to the
            new viewer, then kill the old viewer.
+        4. Tmux-zoom the right pane so the agent fills the whole monitor
+           window. Idempotent — no-op if already zoomed.
 
-        Cursor focus is intentionally left on the left TUI pane so the
-        user can keep navigating the tree. Tab (`action_focus_right`) is
-        the explicit handoff to the right pane.
+        To return to the tree, use the outer tmux's `prefix + z` (unzoom)
+        or `prefix + ←` (focus the tree pane). The `f` binding offers an
+        in-TUI manual toggle once the tree is back in focus.
         """
         try:
             viewer = ensure_linked_viewer(pane.session)
             viewer_focus_pane(viewer, pane.window_index, pane.pane_index)
 
             if self._active_viewer != viewer:
-                # Reset the monitor layout to the default side-by-side
-                # split before swapping in a new agent — every agent
-                # switch should start from the unzoomed state.
-                unzoom_monitor_window()
                 attach_right_slot_to_viewer(viewer)
                 if self._active_viewer is not None:
                     kill_linked_viewer(self._active_viewer)
                 self._active_viewer = viewer
+
+            # Auto-fullscreen on every Enter: the user wants "navigate,
+            # press Enter, see the agent" without a second keystroke.
+            zoom_right_slot()
         except TmuxError as exc:
             self.notify(f"could not borrow: {exc}", severity="error", timeout=8)
 
