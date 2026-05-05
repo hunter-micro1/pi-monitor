@@ -1,23 +1,24 @@
 """Textual TUI for pi-monitor.
 
-Layout:
-    ┌──────────────────────────────────────────────────────────┐
-    │ title-bar (one line)                                     │
-    │ attention-banner (auto-hides when nothing needs help)    │
-    │ ╭─ Sessions ───╮  ╭─ <pane title> · model · cost ─────╮  │
-    │ │ tree         │  │ preview-header                    │  │
-    │ │              │  │ ─────────────────────────────────  │  │
-    │ │              │  │ live capture-pane mirror of the   │  │
-    │ │              │  │ cursored agent (ANSI-rendered)    │  │
-    │ ╰──────────────╯  ╰───────────────────────────────────╯  │
-    │ footer (key hints)                                       │
-    └──────────────────────────────────────────────────────────┘
+The monitor session is a tmux 2-pane window. This file owns only the LEFT
+pane: a tree of every pi pane on the tmux server with live status badges.
 
-The right side is a pure Textual widget; we never `tmux join-pane` user
-panes anywhere. To actually interact with the cursored agent the user
-presses Tab — which `tmux switch-client`s them into the agent's pane
-full-screen. Coming back is whatever they bound the launcher hotkey to
-(typically `prefix + M` running `pi-monitor`).
+The RIGHT pane is owned by tmux: when the user hits Enter (or Tab) on a
+pane row, we ensure a session-group sister of that pane's source session
+exists ("linked viewer"), focus the agent's window+pane in the viewer,
+then `respawn-pane` the right slot with `tmux attach -t <viewer>`. The
+result is a real, fully interactive tmux client showing the agent — with
+zero pane-moving on the source side.
+
+Layout (inside the LEFT tmux pane):
+    ┌──────────────────────────────────────────┐
+    │ title-bar                                │
+    │ attention-banner (auto-hides)            │
+    │ ╭─ Sessions ─────────────────────────╮   │
+    │ │ tree                                │   │
+    │ ╰────────────────────────────────────╯   │
+    │ footer (key hints)                       │
+    └──────────────────────────────────────────┘
 """
 
 from __future__ import annotations
@@ -28,18 +29,15 @@ import time
 from pathlib import Path
 
 from rich.markup import escape
-from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal
+from textual.containers import Container
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Input, Static, Tree
 
 from .notify import Notifier, load_config, save_config
 from .state import (
     AgentState,
-    InspectorReader,
-    InspectorSnapshot,
     PaneRef,
     PaneStatus,
     StateResolver,
@@ -48,12 +46,18 @@ from .tmux import (
     MONITOR_SESSION,
     Pane,
     TmuxError,
-    capture_pane,
+    attach_right_slot_to_viewer,
+    cleanup_orphan_viewers,
     clear_status_widget,
+    ensure_linked_viewer,
+    focus_right_slot,
+    is_viewer_session,
+    kill_linked_viewer,
     kill_monitor_session,
     list_panes,
+    reset_right_slot_to_placeholder,
     set_status_widget,
-    switch_client_to_pane,
+    viewer_focus_pane,
     _tmux,
 )
 
@@ -137,15 +141,19 @@ HELP_TEXT = """\
   [#8abeb7]Space[/#8abeb7]      expand / collapse session
 
 [bold]Interact[/bold]
-  [#8abeb7]Enter[/#8abeb7] / [#8abeb7]Tab[/#8abeb7]   switch tmux client to the cursored
-                  agent (full-screen). Re-launch
-                  pi-monitor (e.g. [#8abeb7]prefix+M[/#8abeb7]) to come back.
+  [#8abeb7]Enter[/#8abeb7]      attach the cursored agent to the right
+              tmux pane (live, fully interactive). The
+              source pane stays in its origin session.
+  [#8abeb7]Tab[/#8abeb7]        focus the right tmux pane (so keys
+              go to the agent already attached there)
+  [#8abeb7]prefix+←[/#8abeb7]   tmux nav back to this tree
+  [#8abeb7]C-a[/#8abeb7]        prefix for the inner viewer
+              (the right pane is a nested tmux client)
 
 [bold]Spawn[/bold]
   [#8abeb7]o[/#8abeb7]          context-sensitive launch:
               · on [+] new session row → new tmux session
               · on session header / pane → split that session
-  [#8abeb7]Enter[/#8abeb7]      same as `o` on the [+] new session row
 
 [bold]View[/bold]
   [#8abeb7]s[/#8abeb7]          cycle sort: tmux ↔ needs-attention-first
@@ -156,19 +164,11 @@ HELP_TEXT = """\
   [#8abeb7]m[/#8abeb7]          mute / unmute (desktop + in-app toasts)
 
 [bold]Exit[/bold]
-  [#8abeb7]q[/#8abeb7]          kill monitor session
+  [#8abeb7]q[/#8abeb7]          kill monitor session + all viewers
   [#8abeb7]?[/#8abeb7]          toggle this help
 
 [dim]press any key to dismiss[/dim]
 """
-
-
-def _fmt_tokens(n: int) -> str:
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.0f}k"
-    return str(n)
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -484,8 +484,9 @@ def fmt_status_widget(statuses: list[PaneStatus]) -> str:
 class PiMonitorApp(App):
     """The pi-monitor TUI.
 
-    Single-screen layout: title-bar, attention-banner, horizontal split of
-    tree (left, fixed-width) + preview (right, flexible), footer.
+    Renders the Sessions tree in the LEFT tmux pane of the monitor session.
+    The RIGHT tmux pane is owned by tmux and reset/respawned via this class
+    when the user picks an agent (see `_borrow_into_right_slot`).
     """
 
     CSS = """
@@ -528,25 +529,9 @@ class PiMonitorApp(App):
         display: none;
     }
 
-    #main-row {
-        layout: horizontal;
+    #tree-wrap {
         height: 1fr;
         width: 100%;
-    }
-
-    #tree-wrap {
-        width: 38;
-        border: round $pi-border-muted;
-        border-title-color: $pi-accent;
-        border-title-style: bold;
-        border-title-align: left;
-        background: $pi-card-bg;
-        margin: 1 0 0 1;
-        padding: 0;
-    }
-
-    #preview-wrap {
-        width: 1fr;
         border: round $pi-border-muted;
         border-title-color: $pi-accent;
         border-title-style: bold;
@@ -554,21 +539,6 @@ class PiMonitorApp(App):
         background: $pi-card-bg;
         margin: 1 1 0 1;
         padding: 0;
-    }
-
-    #preview-header {
-        height: 3;
-        padding: 0 1;
-        background: $pi-card-bg;
-        color: white;
-    }
-
-    #preview-body {
-        background: $pi-card-bg;
-        color: white;
-        padding: 0 1;
-        width: 100%;
-        height: 1fr;
     }
 
     Tree {
@@ -609,7 +579,7 @@ class PiMonitorApp(App):
         Binding("j", "tree_cursor_down", "↓", show=False),
         Binding("k", "tree_cursor_up", "↑", show=False),
         Binding("l", "tree_expand_or_child", "→", show=False),
-        Binding("tab", "interact", "→agent"),
+        Binding("tab", "focus_right", "→agent"),
         Binding("g", "go_top", "top", show=False),
         Binding("G", "go_bottom", "bottom", show=False),
         Binding("s", "cycle_sort", "sort"),
@@ -637,17 +607,16 @@ class PiMonitorApp(App):
             enabled=bool(self.config.get("notifications_enabled", True))
         )
         self.resolver = StateResolver()
-        self.inspector_reader = InspectorReader()
         self.show_non_pi = False
         self.sort_mode = self.config.get("sort_mode", "tmux")
         self._first_tick = True
         self._last_labels: dict[tuple[str, str], str] = {}
         self._needs_full_rebuild = True
         self._latest_statuses: dict[str, tuple[Pane, PaneStatus]] = {}
-        # Last preview content cached so we skip redraws when nothing changed.
-        self._last_preview_target: str | None = None
-        self._last_preview_capture: str = ""
-        # Animation state: spinner frame counter + last computed pulse color.
+        # The viewer session currently attached in the right tmux pane (or
+        # None when the right pane is at its placeholder).
+        self._active_viewer: str | None = None
+        # Animation state: spinner frame counter.
         self._spinner_frame = 0
 
     # -- Composition --------------------------------------------------------
@@ -655,12 +624,8 @@ class PiMonitorApp(App):
     def compose(self) -> ComposeResult:
         yield Static("pi-monitor", id="title-bar")
         yield Static("", id="attention-banner", classes="hidden")
-        with Horizontal(id="main-row"):
-            with Container(id="tree-wrap"):
-                yield Tree("Sessions", id="tree")
-            with Container(id="preview-wrap"):
-                yield Static("", id="preview-header")
-                yield Static("", id="preview-body")
+        with Container(id="tree-wrap"):
+            yield Tree("Sessions", id="tree")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -669,10 +634,6 @@ class PiMonitorApp(App):
         self._attention_banner: Static = self.query_one("#attention-banner", Static)
         self._tree_wrap: Container = self.query_one("#tree-wrap", Container)
         self._tree_wrap.border_title = "Sessions"
-        self._preview_wrap: Container = self.query_one("#preview-wrap", Container)
-        self._preview_wrap.border_title = "Preview"
-        self._preview_header: Static = self.query_one("#preview-header", Static)
-        self._preview_body: Static = self.query_one("#preview-body", Static)
         self._tree: Tree = self.query_one("#tree", Tree)
         self._tree.show_root = False
         self._tree.guide_depth = 2
@@ -681,7 +642,6 @@ class PiMonitorApp(App):
         self.set_interval(POLL_INTERVAL_S, self._tick)
         self.set_interval(SPINNER_INTERVAL_S, self._animate_working_rows)
         self._tick()
-        self._refresh_preview()
 
     # -- Animation ---------------------------------------------------------
 
@@ -751,7 +711,14 @@ class PiMonitorApp(App):
         except TmuxError:
             return
 
-        visible = [p for p in all_panes if p.session != MONITOR_SESSION]
+        # Hide our own monitor session AND any viewer session-group sisters
+        # we created — viewer sessions surface the same shared windows under
+        # a different session name and would otherwise show as duplicates.
+        visible = [
+            p
+            for p in all_panes
+            if p.session != MONITOR_SESSION and not is_viewer_session(p.session)
+        ]
         if not self.show_non_pi:
             visible = [p for p in visible if p.is_pi]
 
@@ -787,7 +754,33 @@ class PiMonitorApp(App):
         set_status_widget(fmt_status_widget([s for _, s in statuses]))
         self._update_chrome([s for _, s in statuses])
         self._render(statuses)
-        self._refresh_preview()
+        self._reconcile_active_viewer(visible)
+
+    def _reconcile_active_viewer(self, visible_panes: list[Pane]) -> None:
+        """If the source session for the currently-attached viewer is gone
+        (user killed it externally), reset the right slot back to its
+        placeholder so we don't keep a zombie pane alive."""
+        if self._active_viewer is None:
+            return
+        live_sources = {
+            p.session for p in visible_panes if not is_viewer_session(p.session)
+        }
+        # Reverse-engineer the source name from the viewer name. We only
+        # accept the match if a live pane in that source is actually present;
+        # otherwise the source is gone.
+        prefix = "pi-monitor-view-"
+        if not self._active_viewer.startswith(prefix):
+            return
+        suspected = self._active_viewer[len(prefix) :]
+        if suspected in live_sources:
+            return
+        # Source vanished — clean up.
+        kill_linked_viewer(self._active_viewer)
+        try:
+            reset_right_slot_to_placeholder()
+        except TmuxError:
+            pass
+        self._active_viewer = None
 
     def _update_chrome(self, all_statuses: list[PaneStatus]) -> None:
         counts: dict[AgentState, int] = {}
@@ -985,8 +978,9 @@ class PiMonitorApp(App):
         """Enter on a row.
 
         - on `[+] new session`: open the new-session modal
-        - on a pane: switch tmux client to that pane (full-screen)
-        - on a session header: default tree expand/collapse (no-op here)
+        - on a pane: borrow that agent into the right tmux pane and focus
+          the right pane so the user can immediately start typing into it
+        - on a session header: default tree expand/collapse (handled elsewhere)
         """
         node = event.node
         if not node.data:
@@ -996,161 +990,53 @@ class PiMonitorApp(App):
             self._open_new_session()
             return
         if kind == "pane":
-            self._jump_to_pane(node.data[1])
-
-    def on_tree_node_highlighted(self, event) -> None:
-        """Cursor moved; refresh the preview for the new selection."""
-        self._refresh_preview()
-
-    # -- Preview ------------------------------------------------------------
-
-    def _refresh_preview(self) -> None:
-        if not hasattr(self, "_preview_body"):
-            return
-        node = self._tree.cursor_node if hasattr(self, "_tree") else None
-        if node is None or not node.data:
-            self._render_preview_placeholder("Cursor a pane to preview its agent.")
-            return
-        kind, key = node.data
-        if kind == "session":
-            sess_panes = [
-                (p, s) for p, s in self._latest_statuses.values() if p.session == key
-            ]
-            self._render_preview_session(key, sess_panes)
-            return
-        if kind == "pane":
-            entry = self._latest_statuses.get(key)
+            entry = self._latest_statuses.get(node.data[1])
             if entry is None:
-                self._render_preview_placeholder(f"No data for pane {escape(str(key))}")
                 return
-            pane, status = entry
-            self._render_preview_pane(pane, status)
+            self._borrow_into_right_slot(entry[0])
 
-    def _render_preview_placeholder(self, msg: str) -> None:
-        self._preview_wrap.border_title = "Preview"
-        self._preview_header.update("")
-        self._preview_body.update(f"[dim]{msg}[/dim]")
-        self._last_preview_target = None
-        self._last_preview_capture = ""
+    # -- Right slot management ---------------------------------------------
 
-    def _render_preview_session(
-        self, session_name: str, panes: list[tuple[Pane, PaneStatus]]
-    ) -> None:
-        self._preview_wrap.border_title = f"Preview · {escape(session_name)}"
-        if not panes:
-            self._preview_header.update("")
-            self._preview_body.update(
-                f"[dim]Session {escape(session_name)} has no visible panes.[/dim]"
-            )
-            return
+    def _borrow_into_right_slot(self, pane: Pane) -> None:
+        """Make the right tmux pane show `pane` interactively, without
+        moving the source pane. We:
 
-        counts: dict[AgentState, int] = {}
-        for _, s in panes:
-            counts[s.state] = counts.get(s.state, 0) + 1
-
-        header_line = f"[bold {PI_ACCENT}]{escape(session_name)}[/bold {PI_ACCENT}]"
-        sub_parts = [f"{len(panes)} panes"]
-        for state in (
-            AgentState.ERROR,
-            AgentState.IDLE,
-            AgentState.WORKING,
-        ):
-            n = counts.get(state, 0)
-            if n:
-                color = STATE_COLORS[state]
-                sub_parts.append(f"[{color}]{n} {state.value}[/{color}]")
-        self._preview_header.update(
-            f"{header_line}\n[dim]{'  ·  '.join(sub_parts)}[/dim]"
-        )
-        self._preview_body.update(
-            "[dim]Select a pane to see its live agent screen.[/dim]"
-        )
-        self._last_preview_target = None
-        self._last_preview_capture = ""
-
-    def _render_preview_pane(self, pane: Pane, status: PaneStatus) -> None:
-        # Header: title + tmux address + state · model · cost · tool
-        title = escape(pane.title or f"pane {pane.pane_index}")
-        color = STATE_COLORS.get(status.state, PI_DIM)
-        state_seg = f"[bold {color}]{status.state.value}[/bold {color}]"
-        idle = fmt_idle(status.idle_seconds)
-
-        snap: InspectorSnapshot | None = (
-            self.inspector_reader.read(status.session_file)
-            if status.session_file
-            else None
-        )
-
-        meta_parts = [state_seg]
-        if idle:
-            meta_parts.append(f"[dim]{idle}[/dim]")
-        if snap and snap.model:
-            meta_parts.append(f"[dim]·[/dim] [dim]{escape(snap.model)}[/dim]")
-        if snap and snap.cumulative_cost:
-            meta_parts.append(f"[dim]·[/dim] [bold]${snap.cumulative_cost:.2f}[/bold]")
-        if snap and (snap.cumulative_input or snap.cumulative_output):
-            meta_parts.append(
-                f"[dim]·[/dim] [dim]{_fmt_tokens(snap.cumulative_input)} / "
-                f"{_fmt_tokens(snap.cumulative_output)} tokens[/dim]"
-            )
-        if snap and snap.current_tool:
-            meta_parts.append(
-                f"[dim]·[/dim] [{PI_ACCENT}]{escape(snap.current_tool)}[/{PI_ACCENT}] running"
-            )
-
-        line1 = f"[bold {PI_ACCENT}]{title}[/bold {PI_ACCENT}]  [dim]· {escape(pane.target)}[/dim]"
-        line2 = "  ".join(meta_parts)
-        self._preview_wrap.border_title = (
-            f"Preview · {escape(pane.title or pane.target)}"
-        )
-        self._preview_header.update(f"{line1}\n{line2}")
-
-        # Body: live capture-pane mirror.
+        1. Ensure a session-group sister of `pane.session` exists.
+        2. Set that viewer's current window+pane to `pane`'s coordinates.
+        3. If the right slot was attached to a different viewer (i.e. a
+           different source session), respawn it with `tmux attach` to the
+           new viewer, then kill the old viewer.
+        4. Focus the right tmux pane so the user can type immediately.
+        """
         try:
-            captured = capture_pane(pane.target)
-        except TmuxError:
-            self._preview_body.update("[dim](could not capture pane)[/dim]")
-            self._last_preview_target = pane.target
-            self._last_preview_capture = ""
-            return
+            viewer = ensure_linked_viewer(pane.session)
+            viewer_focus_pane(viewer, pane.window_index, pane.pane_index)
 
-        # Skip the redraw if nothing changed since last tick (cheap).
-        if (
-            self._last_preview_target == pane.target
-            and captured == self._last_preview_capture
-        ):
-            return
-        self._last_preview_target = pane.target
-        self._last_preview_capture = captured
+            if self._active_viewer != viewer:
+                attach_right_slot_to_viewer(viewer)
+                if self._active_viewer is not None:
+                    kill_linked_viewer(self._active_viewer)
+                self._active_viewer = viewer
 
-        # Strip trailing blank lines for a tighter visual.
-        body_text = captured.rstrip()
-        if not body_text:
-            self._preview_body.update("[dim](empty pane)[/dim]")
-            return
-        self._preview_body.update(Text.from_ansi(body_text))
-
-    # -- Actions ------------------------------------------------------------
-
-    def action_interact(self) -> None:
-        """Tab: switch tmux client to the cursored pane (full-screen)."""
-        node = self._tree.cursor_node
-        if node is None or not node.data:
-            return
-        kind, key = node.data
-        if kind != "pane":
-            return
-        self._jump_to_pane(key)
-
-    def _jump_to_pane(self, pane_id: str) -> None:
-        entry = self._latest_statuses.get(pane_id)
-        if entry is None:
-            return
-        pane, _ = entry
-        try:
-            switch_client_to_pane(pane)
+            focus_right_slot()
         except TmuxError as exc:
-            self.notify(f"could not switch: {exc}", severity="error", timeout=8)
+            self.notify(f"could not borrow: {exc}", severity="error", timeout=8)
+
+    def action_focus_right(self) -> None:
+        """Tab: hand the keyboard to the right tmux pane (whatever's
+        attached there). If the right slot is still at the placeholder we
+        skip — the user has nothing to interact with yet."""
+        if self._active_viewer is None:
+            self.notify(
+                "no agent attached yet — Enter on a pane first",
+                severity="warning",
+                timeout=4,
+            )
+            return
+        try:
+            focus_right_slot()
+        except TmuxError as exc:
+            self.notify(f"could not focus right pane: {exc}", severity="error", timeout=8)
 
     def action_go_top(self) -> None:
         if self._tree.root.children:
@@ -1342,15 +1228,23 @@ class PiMonitorApp(App):
 
     def _cleanup_and_exit(self) -> None:
         clear_status_widget()
-        # Hand the user's client to another existing session before we
-        # kill the monitor session out from under them.
+        # Hand the user's client to a real session before we kill monitor.
+        # Skip viewer sisters (they're our own bookkeeping).
         try:
             other = next(
-                p.session for p in list_panes() if p.session != MONITOR_SESSION
+                p.session
+                for p in list_panes()
+                if p.session != MONITOR_SESSION and not is_viewer_session(p.session)
             )
             _tmux("switch-client", "-t", other)
         except (StopIteration, TmuxError):
             pass
+        # Kill the active viewer first so its inner tmux client detaches
+        # cleanly, then sweep up any orphans before nuking monitor itself.
+        if self._active_viewer is not None:
+            kill_linked_viewer(self._active_viewer)
+            self._active_viewer = None
+        cleanup_orphan_viewers()
         try:
             kill_monitor_session()
         except TmuxError:

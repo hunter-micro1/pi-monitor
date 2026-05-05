@@ -2,7 +2,7 @@
 
 Live, tmux-aware status monitor for [pi](https://github.com/badlogic/pi-mono) coding agents.
 
-When you run several pi sessions across multiple tmux sessions and panes, it's hard to tell at a glance which agents are streaming, which are stalled, and which are idle waiting for your next prompt. `pi-monitor` gives you a single split view: a tree of every pi pane on the left with live status badges, and the actually-interactive borrowed pane on the right.
+When you run several pi sessions across multiple tmux sessions and panes, it's hard to tell at a glance which agents are streaming, which are stalled, and which are idle waiting for your next prompt. `pi-monitor` gives you a single split view: a tree of every pi pane on the left with live status badges, and a real, fully-interactive view of the agent you picked on the right — without ever moving the source pane out of its origin tmux session.
 
 ```
 ┌──────────────────────────────┬───────────────────────────────────┐
@@ -56,27 +56,30 @@ uv tool install -e .
 
 ## How it works
 
-- A dedicated `monitor` tmux session is created on first run, with two panes side by side: the TUI on the left, an empty "borrow slot" on the right.
-- Pressing `Enter` on a pane row uses `tmux join-pane` to _move_ that pane into the right slot — it's the real, fully interactive pi agent. Selecting a different pane returns the previous one to its origin window and pulls the new one in.
+- A dedicated `monitor` tmux session is created on first run with two panes side by side: the Textual TUI on the left, an idle "right slot" on the right.
+- Pressing `Enter` on a pane row creates (or reuses) a `tmux new-session -t <source>` session-group sister of that pane's source session, focuses the agent's window+pane in that sister, then `respawn-pane`s the right slot with `env -u TMUX tmux attach -t <sister>`. The right slot is now a real, fully interactive nested tmux client. The source pane is **never moved** — your project session's split is left alone.
+- Picking an agent in a different source session swaps the right slot to a fresh sister and kills the previous one. Picking another agent in the same source session just retargets the existing sister.
+- Because the right slot is a nested tmux client, its prefix is set to **`C-a`** (the outer monitor session keeps the default `C-b`), so the two clients' keybindings don't collide.
 - Status is inferred from each pane's pi session JSONL file (`~/.pi/agent/sessions/`) plus its mtime. No screen scraping.
 - Aggregate counts (`🔴N 🟡N 🟢N`) are pushed to a tmux user option `@pi-monitor-status` every 500ms while the TUI runs, so your `status-right` shows them in every session.
-- Crash-safe: if the TUI dies while a pane is borrowed, the next launch breaks the orphan back out before opening.
+- Crash-safe: every launch sweeps any leftover `pi-monitor-view-*` sister sessions before opening, and the right slot is always reset to its placeholder.
 
 ## Keybindings
 
 | Key                   | Action                                           |
 | --------------------- | ------------------------------------------------ |
 | `j` / `k` / `↓` / `↑` | Move selection                                   |
-| `Enter` (or click)    | Borrow the selected pane into the right slot     |
-| `Tab` (or `l`)        | Focus the right pane to interact with the agent  |
-| tmux `prefix + ←`     | Native tmux nav back to the tree                 |
+| `Enter` (or click)    | Attach the selected agent to the right tmux pane and focus it |
+| `Tab`                 | Focus the right tmux pane (whatever's already attached)       |
+| tmux `prefix + ←`     | Native tmux nav back to the left tree pane                    |
+| `C-a` (in right pane) | Prefix for the inner viewer client (e.g. `C-a [` to scroll)   |
 | `Space`               | Expand / collapse a session header               |
 | `g` / `G`             | Jump to top / bottom                             |
 | `s`                   | Cycle sort: tmux-order ↔ needs-attention-first  |
 | `H`                   | Toggle showing non-pi panes                      |
 | `r`                   | Force refresh now                                |
 | `m`                   | Toggle desktop notifications (mute/unmute)       |
-| `q`                   | Quit: return borrowed pane, kill monitor session |
+| `q`                   | Quit: kill all `pi-monitor-view-*` sisters and the monitor session |
 | `1`–`9`               | Jump to the Nth pane in the tree                 |
 
 ## States
@@ -107,7 +110,8 @@ Press `m` in the TUI to mute / unmute. The setting persists in `~/.config/pi-mon
 - pi sessions started with `--no-session` produce no JSONL and show as `?`.
 - pi sessions launched with a custom `--session-dir` are not detected.
 - pi running over ssh inside a pane is not detected (the pane shows `cmd=ssh`).
-- macOS is not supported. The pane-borrowing flow is tmux-native and would work, but the `notify-send` integration assumes libnotify and the `/proc`-based pi-pid resolution would need an `lsof`/`ps` fallback.
+- The right slot shares the source session's window with all of its other panes. If your source window is split, the right slot mirrors that split — input still goes to the cursored pane (we set `select-pane` in the sister), but you'll see the neighbouring panes shrunk alongside.
+- macOS is not supported. The linked-session flow is tmux-native and would work, but the `notify-send` integration assumes libnotify and the `/proc`-based pi-pid resolution would need an `lsof`/`ps` fallback.
 
 ## License
 
