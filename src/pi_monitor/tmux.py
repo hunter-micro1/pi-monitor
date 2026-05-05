@@ -310,6 +310,57 @@ def viewer_focus_pane(viewer: str, window_index: int, pane_index: int) -> None:
         pass
 
 
+def viewer_zoom_to_pane(viewer: str, window_index: int, pane_index: int) -> None:
+    """Tmux-zoom the given pane within the viewer's window so it fills the
+    viewer's frame and any sibling panes are hidden. Idempotent — no-op if
+    the window is already zoomed on the target pane.
+
+    Lets the right slot show only the selected pi pane even when the
+    source window has non-pi cohabitants (a shell, an editor, etc.).
+    The user can press the inner viewer's `prefix + z` (configured to
+    `C-a z`) to unzoom and see siblings, then `C-a \"` / `C-a %` to add
+    their own splits inside the right slot.
+
+    Caveat: tmux's window-zoom flag lives on the window object, and the
+    viewer's window is shared with the source session via session group.
+    So this zoom propagates to the source session too — if the user is
+    also looking at that source in another tmux client, they'll see the
+    same zoom there. Standard `prefix + z` in that client unzooms it.
+    """
+    target_window = f"{viewer}:{window_index}"
+    target_pane = f"{target_window}.{pane_index}"
+
+    try:
+        out = _tmux(
+            "display-message",
+            "-p",
+            "-t",
+            target_window,
+            "-F",
+            "#{window_zoomed_flag},#{pane_index}",
+            capture=True,
+        ).strip()
+        flag, active = out.split(",", 1)
+    except (TmuxError, ValueError):
+        flag, active = "0", ""
+
+    if flag == "1" and active == str(pane_index):
+        return  # already zoomed on the right pane
+
+    if flag == "1":
+        # Zoomed on the wrong pane — unzoom so we can re-zoom on target.
+        try:
+            _tmux("resize-pane", "-Z", "-t", target_window)
+        except TmuxError:
+            return
+
+    try:
+        _tmux("select-pane", "-t", target_pane)
+        _tmux("resize-pane", "-Z", "-t", target_pane)
+    except TmuxError:
+        pass
+
+
 def attach_right_slot_to_viewer(viewer: str) -> None:
     """Respawn the monitor's right pane with a tmux client attached to
     `viewer`. The `env -u TMUX` prefix unsets the inherited `$TMUX` so the

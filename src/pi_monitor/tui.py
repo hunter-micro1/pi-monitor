@@ -58,6 +58,7 @@ from .tmux import (
     reset_right_slot_to_placeholder,
     set_status_widget,
     viewer_focus_pane,
+    viewer_zoom_to_pane,
     _tmux,
 )
 
@@ -142,15 +143,16 @@ HELP_TEXT = """\
 
 [bold]Interact[/bold]
   [#8abeb7]Enter[/#8abeb7]      attach the cursored agent to the right
-              pane (live, fully interactive). Source
-              pane stays put in its origin session.
-              The 2-pane split stays visible; cursor
-              focus stays on the tree.
+              pane and zoom it inside the viewer so
+              only that pi is shown (non-pi siblings
+              sharing the source window are hidden).
+              Split stays visible; cursor stays on tree.
   [#8abeb7]Tab[/#8abeb7]        focus the right pane (so keys go to
               the agent already attached there)
   [#8abeb7]prefix+←[/#8abeb7]   tmux nav back to the tree pane
-  [#8abeb7]C-a[/#8abeb7]        prefix for the inner viewer
-              (the right pane is a nested tmux client)
+  [#8abeb7]C-a z[/#8abeb7]      inner viewer: unzoom to see siblings
+  [#8abeb7]C-a " / C-a %[/#8abeb7]
+              inner viewer: split inside the right slot
 
 [bold]Spawn[/bold]
   [#8abeb7]o[/#8abeb7]          context-sensitive launch:
@@ -1006,18 +1008,27 @@ class PiMonitorApp(App):
 
         1. Ensure a session-group sister of `pane.session` exists.
         2. Set that viewer's current window+pane to `pane`'s coordinates.
-        3. If the right slot was attached to a different viewer (i.e. a
-           different source session), respawn it with `tmux attach` to the
-           new viewer, then kill the old viewer.
+        3. Tmux-zoom the selected pane in the viewer's window so any
+           non-pi siblings (a shell, an editor, ...) sharing the same
+           tmux window are hidden. Idempotent.
+        4. If the right slot was attached to a different viewer (i.e. a
+           different source session), respawn it with `tmux attach` to
+           the new viewer, then kill the old viewer.
 
         The 2-pane monitor split (tree on the left, agent on the right)
         stays as configured. Cursor focus stays on the tree so the user
         can keep navigating; Tab (`action_focus_right`) is the explicit
         handoff to the right pane when they're ready to type.
+
+        To temporarily see the source window's other panes, the user can
+        press the inner viewer's `prefix + z` (configured to `C-a z`) to
+        unzoom. Splits added via `C-a \"` / `C-a %` will be created
+        inside the right slot's frame.
         """
         try:
             viewer = ensure_linked_viewer(pane.session)
             viewer_focus_pane(viewer, pane.window_index, pane.pane_index)
+            viewer_zoom_to_pane(viewer, pane.window_index, pane.pane_index)
 
             if self._active_viewer != viewer:
                 attach_right_slot_to_viewer(viewer)
