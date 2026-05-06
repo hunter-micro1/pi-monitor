@@ -95,6 +95,7 @@ get the slightly less accurate v1 classification.
 | `Space`               | Expand / collapse a session header                                 |
 | `g` / `G`             | Jump to top / bottom                                               |
 | `s`                   | Cycle sort: tmux-order ↔ needs-attention-first                    |
+| `t`                   | Cycle theme (textual-dark, tokyo-night, catppuccin-mocha, dracula, nord, gruvbox, monokai, solarized-dark, textual-light, solarized-light) |
 | `H`                   | Toggle showing non-pi panes                                        |
 | `r`                   | Force refresh now                                                  |
 | `m`                   | Toggle desktop notifications (mute/unmute)                         |
@@ -112,6 +113,12 @@ get the slightly less accurate v1 classification.
 | 🔵    | retrying — pi is auto-retrying a transient API error (heartbeat extension only; no notification)     |
 | ❓    | unknown — pane runs pi but no JSONL detected and no heartbeat                                        |
 | ⚫    | no pi running in this pane                                                                           |
+
+## Theming
+
+Press `t` to cycle through the curated theme list. The choice persists in `~/.config/pi-monitor/config.json` and the state colors (working / idle / error) automatically follow the active theme's `success` / `warning` / `error` palette.
+
+The Screen, title bar, footer, and attention banner are rendered with `background: transparent`, so any translucency you have configured in your terminal emulator (kitty `background_opacity`, alacritty `window.opacity`, GNOME Terminal transparency, ...) shows through. The tree card and modal dialogs keep a themed `$surface` so text always lands on a readable backing.
 
 ## Notifications
 

@@ -12,13 +12,18 @@ zero pane-moving on the source side.
 
 Layout (inside the LEFT tmux pane):
     ┌──────────────────────────────────────────┐
-    │ title-bar                                │
+    │ title-bar  (brand · counts · sort · mute)│
     │ attention-banner (auto-hides)            │
     │ ╭─ Sessions ─────────────────────────╮   │
     │ │ tree                                │   │
     │ ╰────────────────────────────────────╯   │
     │ footer (key hints)                       │
     └──────────────────────────────────────────┘
+
+The Screen and chrome bars use `background: transparent` so any
+translucency the user has configured in their terminal shows through.
+The tree card and modal dialogs keep a themed `$surface` so text stays
+legible against whatever's behind the terminal.
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ from textual.containers import Container
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Input, Static, Tree
 
-from .notify import Notifier, load_config, save_config
+from .notify import ATTENTION_STATES, Notifier, load_config, save_config
 from .state import (
     AgentState,
     PaneRef,
@@ -72,34 +77,55 @@ SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇",
 # Pulse period for working-state text color (sine wave between bright and dim).
 PULSE_PERIOD_S = 1.5
 
-# Pi's `dark` theme color tokens, from
-# pi-coding-agent/dist/modes/interactive/theme/dark.json. Used as Rich
-# markup colors and as Textual CSS variables in the layout.
-PI_ACCENT = "#8abeb7"  # teal
-PI_SUCCESS = "#b5bd68"  # green
-PI_ERROR = "#cc6666"  # red
-PI_WARNING = "#ffff00"  # yellow
-PI_MUTED = "#808080"
-PI_DIM = "#666666"
-# Dim end of the working-state pulse. ~50% darker than PI_SUCCESS, but still
-# readable. Picked manually to keep mid-pulse text legible on the card-bg.
-PI_SUCCESS_DIM = "#7d8347"
+# Curated subset of Textual's built-in themes. Press `t` to cycle.
+# Order is intentional: dark themes first, then a couple of light ones at
+# the end so users who want light just keep tapping past the dark set.
+THEMES: tuple[str, ...] = (
+    "textual-dark",
+    "tokyo-night",
+    "catppuccin-mocha",
+    "dracula",
+    "nord",
+    "gruvbox",
+    "monokai",
+    "solarized-dark",
+    "textual-light",
+    "solarized-light",
+)
+DEFAULT_THEME = "textual-dark"
 
-# Per-state colors. Traffic-light semantics:
-#   working  = green   (good, leave alone)
-#   idle     = yellow  (waiting for you)
-#   error    = red     (broken)
-#   waiting  = orange  (heartbeat-only: agent blocked on a user decision)
-#   retrying = blue    (heartbeat-only: pi auto-retrying a transient API error)
+# Per-state colors are derived from the active Textual theme on every
+# theme switch. Traffic-light semantics:
+#   working  = success (good, leave alone)
+#   idle     = warning (waiting for you)
+#   error    = error   (broken)
+#   waiting  = accent  (heartbeat-only: agent blocked on a user decision)
+#   retrying = primary (heartbeat-only: pi auto-retrying a transient API error)
+#
+# These module globals (STATE_COLORS, WORKING_PULSE_DIM, ACCENT) are
+# MUTATED by PiMonitorApp._refresh_state_colors so that bare format helpers
+# (fmt_row, fmt_session_header, _help_text, ...) stay theme-aware without
+# being threaded with an app reference. Tests that need the defaults should
+# import them at top of the test, not after instantiating the App.
+#
+# The static values below are the pre-theme-refresh fallback (used during
+# module import, before the App mounts). _refresh_state_colors overwrites
+# them on mount and on every `t` cycle.
 STATE_COLORS: dict[AgentState, str] = {
-    AgentState.WORKING: PI_SUCCESS,
-    AgentState.IDLE: PI_WARNING,
-    AgentState.ERROR: PI_ERROR,
+    AgentState.WORKING: "#4EBF71",
+    AgentState.IDLE: "#FFA62B",
+    AgentState.ERROR: "#BA3C5B",
     AgentState.WAITING: "#de935f",  # warm orange — calls attention
     AgentState.RETRYING: "#81a2be",  # steel blue — "automated, ongoing"
-    AgentState.UNKNOWN: PI_DIM,
+    AgentState.UNKNOWN: "#808080",
     AgentState.NO_PI: "#505050",
 }
+# Dim end of the working-state pulse. Recomputed from the active theme
+# whenever it changes (see _refresh_state_colors).
+WORKING_PULSE_DIM: str = "#2f7544"
+# Accent color used for brand text and key hints in Rich markup. Kept in
+# sync with the live theme's `primary` color.
+ACCENT: str = "#0178D4"
 
 # Severity passed to Textual's in-TUI toast on transitions. WAITING is a
 # real attention state (user must respond), so it gets a warning toast.
@@ -121,13 +147,25 @@ STATE_GLYPHS: dict[AgentState, str] = {
     AgentState.NO_PI: "⚫",
 }
 
+# In-app glyphs for the always-on counts in the title bar. Single-cell
+# Unicode shapes (NOT emoji) so they line up cleanly across terminals
+# and inherit the theme's foreground color when un-tagged.
+CHIP_GLYPHS: dict[AgentState, str] = {
+    AgentState.WORKING: "●",
+    AgentState.IDLE: "●",
+    AgentState.ERROR: "●",
+    AgentState.UNKNOWN: "○",
+}
+
 # Width to which we pad state labels in the tree. Longest is 'working' (7).
 STATE_LABEL_WIDTH = 8
 
-# Synthetic top-of-tree row that, when activated, opens the new-session
-# modal. Always present so the user has an explicit, discoverable way to
-# create a tmux session without it being context-sensitive.
-NEW_SESSION_LABEL = "[bold #8abeb7][+] new session[/bold #8abeb7]"
+
+def _new_session_label() -> str:
+    """Top-of-tree affordance to open the new-session modal. Re-rendered on
+    theme change so the accent color stays in sync with the active theme."""
+    return f"[bold {ACCENT}]+  new session[/bold {ACCENT}]"
+
 
 # Lower number = higher attention priority. WAITING slots above IDLE
 # (the user is being asked something specific). RETRYING is below IDLE
@@ -142,56 +180,66 @@ STATE_PRIORITY: dict[AgentState, int] = {
     AgentState.NO_PI: 6,
 }
 
-HELP_TEXT = """\
-[bold #8abeb7]pi-monitor — keybindings[/bold #8abeb7]
+HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    (
+        "Navigation",
+        (
+            ("j / ↓", "down"),
+            ("k / ↑", "up"),
+            ("h / ←", "collapse / parent"),
+            ("l / →", "expand / first child"),
+            ("g / G", "top / bottom"),
+            ("1–9", "jump to Nth pane"),
+            ("Space", "expand / collapse session"),
+        ),
+    ),
+    (
+        "Interact",
+        (
+            ("j / k", "hover previews the agent live in the right pane"),
+            ("Enter", "commit — focus the right pane so keys go to the agent"),
+            ("Tab", "same as Enter for a pane row"),
+            ("prefix+←", "tmux nav back to the tree pane"),
+            ("C-a z", "inner viewer: unzoom to see siblings"),
+            ('C-a " / %', "inner viewer: split inside the right slot"),
+        ),
+    ),
+    (
+        "Spawn",
+        (("o", "new session (on +) or new window (on session/pane)"),),
+    ),
+    (
+        "View",
+        (
+            ("t", "cycle theme"),
+            ("s", "cycle sort: tmux ↔ needs-attention-first"),
+            ("Shift+H", "toggle non-pi panes"),
+            ("r", "force refresh"),
+        ),
+    ),
+    (
+        "Notifications",
+        (("m", "mute / unmute (desktop + in-app toasts)"),),
+    ),
+    (
+        "Exit",
+        (
+            ("q", "kill monitor session + all viewers"),
+            ("?", "toggle this help"),
+        ),
+    ),
+)
 
-[bold]Navigation[/bold]
-  [#8abeb7]j[/#8abeb7] / [#8abeb7]↓[/#8abeb7]      down
-  [#8abeb7]k[/#8abeb7] / [#8abeb7]↑[/#8abeb7]      up
-  [#8abeb7]h[/#8abeb7] / [#8abeb7]←[/#8abeb7]      collapse / parent
-  [#8abeb7]l[/#8abeb7] / [#8abeb7]→[/#8abeb7]      expand / first child
-  [#8abeb7]g[/#8abeb7] / [#8abeb7]G[/#8abeb7]      top / bottom
-  [#8abeb7]1–9[/#8abeb7]        jump to Nth pane
-  [#8abeb7]Space[/#8abeb7]      expand / collapse session
 
-[bold]Interact[/bold]
-  [#8abeb7]j[/#8abeb7] / [#8abeb7]k[/#8abeb7]      hovering a pi row previews it live
-              in the right pane (cursor stays here).
-  [#8abeb7]Enter[/#8abeb7]      commit — hand keyboard focus to the
-              right pane so keys go to the agent.
-  [#8abeb7]Tab[/#8abeb7]        same as Enter for a pane row.
-  [#8abeb7]prefix+←[/#8abeb7]   tmux nav back to the tree pane
-  [#8abeb7]C-a z[/#8abeb7]      inner viewer: unzoom to see siblings
-  [#8abeb7]C-a " / C-a %[/#8abeb7]
-              inner viewer: split inside the right slot
-
-[bold]Spawn[/bold]
-  [#8abeb7]o[/#8abeb7]          context-sensitive launch:
-              · on [+] new session row → new tmux session
-              · on session header / pane → new pi window
-                in that session (each agent is isolated)
-
-[bold]View[/bold]
-  [#8abeb7]s[/#8abeb7]          cycle sort: tmux ↔ needs-attention-first
-  [#8abeb7]Shift+H[/#8abeb7]    toggle showing non-pi panes
-  [#8abeb7]r[/#8abeb7]          force refresh
-
-[bold]Notifications[/bold]
-  [#8abeb7]m[/#8abeb7]          mute / unmute (desktop + in-app toasts)
-
-[bold]Exit[/bold]
-  [#8abeb7]q[/#8abeb7]          kill monitor session + all viewers
-  [#8abeb7]?[/#8abeb7]          toggle this help
-
-[dim]press any key to dismiss[/dim]
-"""
-
-
-def _truncate(text: str, limit: int) -> str:
-    text = text.strip()
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rstrip() + "…"
+def _help_text() -> str:
+    """Render the help overlay using the live accent color."""
+    out = [f"[bold {ACCENT}]pi-monitor — keybindings[/bold {ACCENT}]"]
+    for header, rows in HELP_SECTIONS:
+        out.append(f"\n[bold]{header}[/bold]")
+        for key, desc in rows:
+            out.append(f"  [{ACCENT}]{key.ljust(11)}[/{ACCENT}]  {desc}")
+    out.append("\n[dim]press any key to dismiss[/dim]")
+    return "\n".join(out)
 
 
 class HelpScreen(ModalScreen):
@@ -200,16 +248,16 @@ class HelpScreen(ModalScreen):
     DEFAULT_CSS = """
     HelpScreen {
         align: center middle;
-        background: rgba(0,0,0,0.7);
+        background: $background 60%;
     }
     HelpScreen > #help-dialog {
-        width: 60;
+        width: 64;
         height: auto;
         max-height: 80%;
         padding: 1 2;
-        border: round #5f87ff;
-        background: #1e1e24;
-        color: white;
+        border: round $primary;
+        background: $surface;
+        color: $foreground;
     }
     HelpScreen > #help-dialog > Static {
         width: 100%;
@@ -218,7 +266,7 @@ class HelpScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Container(id="help-dialog"):
-            yield Static(HELP_TEXT)
+            yield Static(_help_text())
 
     def on_key(self, event) -> None:
         self.dismiss()
@@ -235,39 +283,39 @@ class NewPiScreen(ModalScreen):
     DEFAULT_CSS = """
     NewPiScreen {
         align: center middle;
-        background: rgba(0,0,0,0.7);
+        background: $background 60%;
     }
     NewPiScreen > #new-pi-dialog {
-        width: 70;
+        width: 72;
         height: auto;
         padding: 1 2;
-        border: round #5f87ff;
-        background: #1e1e24;
-        color: white;
+        border: round $primary;
+        background: $surface;
+        color: $foreground;
     }
     NewPiScreen #new-pi-title {
-        color: #8abeb7;
+        color: $primary;
         text-style: bold;
     }
     NewPiScreen #new-pi-matches {
-        color: #808080;
+        color: $foreground-muted;
         height: auto;
         max-height: 5;
         margin-top: 1;
         padding: 0;
     }
     NewPiScreen #new-pi-hint {
-        color: #808080;
+        color: $foreground-muted;
         margin-top: 1;
     }
     NewPiScreen Input {
         margin-top: 1;
-        background: #18181e;
-        color: white;
-        border: tall #505050;
+        background: $boost;
+        color: $foreground;
+        border: tall $surface-lighten-1;
     }
     NewPiScreen Input:focus {
-        border: tall #8abeb7;
+        border: tall $primary;
     }
     """
 
@@ -507,40 +555,35 @@ class PiMonitorApp(App):
     when the user picks an agent (see `_borrow_into_right_slot`).
     """
 
+    # Layout uses Textual's theme variables ($primary, $accent, $surface,
+    # $foreground, $foreground-muted, ...) so swapping the active theme
+    # rethemes the whole UI for free. The Screen and chrome bars are
+    # transparent on purpose: a translucent terminal will let the user's
+    # wallpaper / blurred desktop show through. The tree card and modals
+    # keep $surface so text never lands on a busy backdrop.
     CSS = """
-    /* Pi `dark` theme tokens, mirrored into Textual CSS vars. */
-    $pi-bg: #18181e;
-    $pi-card-bg: #1e1e24;
-    $pi-accent: #8abeb7;
-    $pi-border: #5f87ff;
-    $pi-border-accent: #00d7ff;
-    $pi-border-muted: #505050;
-    $pi-success: #b5bd68;
-    $pi-error: #cc6666;
-    $pi-warning: #ffff00;
-    $pi-muted: #808080;
-    $pi-dim: #666666;
-    $pi-selected-bg: #3a3a4a;
-
     Screen {
-        background: $pi-bg;
-        color: white;
+        background: transparent;
+        color: $foreground;
         layout: vertical;
     }
 
     #title-bar {
         height: 1;
         padding: 0 2;
-        background: $pi-bg;
-        color: $pi-accent;
-        text-style: bold;
+        background: transparent;
+        color: $foreground;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
 
     #attention-banner {
         height: 1;
         padding: 0 2;
-        background: $pi-card-bg;
-        color: $pi-warning;
+        background: transparent;
+        color: $foreground-muted;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
 
     #attention-banner.hidden {
@@ -550,45 +593,52 @@ class PiMonitorApp(App):
     #tree-wrap {
         height: 1fr;
         width: 100%;
-        border: round $pi-border-muted;
-        border-title-color: $pi-accent;
+        border: round $primary 50%;
+        border-title-color: $primary;
         border-title-style: bold;
         border-title-align: left;
-        background: $pi-card-bg;
+        background: $surface;
         margin: 1 1 0 1;
         padding: 0;
     }
 
+    #tree-wrap:focus-within {
+        border: round $primary;
+    }
+
     Tree {
-        background: $pi-card-bg;
-        color: white;
+        background: $surface;
+        color: $foreground;
         padding: 1 1;
     }
 
     Tree > .tree--cursor {
-        background: $pi-selected-bg;
-        color: white;
+        background: $primary 30%;
+        color: $foreground;
         text-style: bold;
     }
 
     Tree > .tree--guides {
-        color: $pi-border-muted;
+        color: $foreground-muted 50%;
     }
 
     Footer {
-        background: $pi-bg;
-        color: $pi-muted;
+        background: transparent;
+        color: $foreground-muted;
     }
 
-    Footer > .footer-key--key {
-        background: $pi-bg;
-        color: $pi-accent;
+    /* In Textual 8.x the Footer DOM is Footer > KeyGroup > FooterKey, so the
+       component classes live two levels deep and cannot be matched with a
+       direct-child selector from Footer. Use unscoped class selectors. */
+    .footer-key--key {
+        background: transparent;
+        color: $primary;
         text-style: bold;
     }
 
-    Footer > .footer-key--description {
-        background: $pi-bg;
-        color: $pi-muted;
+    .footer-key--description {
+        background: transparent;
+        color: $foreground-muted;
     }
     """
 
@@ -601,6 +651,7 @@ class PiMonitorApp(App):
         Binding("g", "go_top", "top", show=False),
         Binding("G", "go_bottom", "bottom", show=False),
         Binding("s", "cycle_sort", "sort"),
+        Binding("t", "cycle_theme", "theme"),
         Binding("shift+h", "toggle_show_non_pi", "show non-pi", show=False),
         Binding("r", "refresh_now", "refresh", show=False),
         Binding("m", "toggle_mute", "mute"),
@@ -627,6 +678,14 @@ class PiMonitorApp(App):
         self.resolver = StateResolver()
         self.show_non_pi = False
         self.sort_mode = self.config.get("sort_mode", "tmux")
+        saved_theme = self.config.get("theme", DEFAULT_THEME)
+        self._theme_name = self._resolve_theme(saved_theme)
+        # If the saved theme name didn't match anything in our curated
+        # list (typo, removed theme, theme from a Textual we don't ship),
+        # remember the bad value so on_mount can toast about it once.
+        self._stale_saved_theme: str | None = (
+            saved_theme if saved_theme != self._theme_name else None
+        )
         self._first_tick = True
         self._last_labels: dict[tuple[str, str], str] = {}
         self._needs_full_rebuild = True
@@ -636,6 +695,13 @@ class PiMonitorApp(App):
         self._active_viewer: str | None = None
         # Animation state: spinner frame counter.
         self._spinner_frame = 0
+
+    @staticmethod
+    def _resolve_theme(name: str) -> str:
+        """Validate a theme name from config; fall back to default if it
+        isn't a built-in (e.g. user pinned a Textual theme that's been
+        removed in a later version)."""
+        return name if name in THEMES else DEFAULT_THEME
 
     # -- Composition --------------------------------------------------------
 
@@ -657,9 +723,87 @@ class PiMonitorApp(App):
         self._tree.guide_depth = 2
         self._tree.focus()
         self.notifier.on_transition = self._on_transition
+        # Pull initial palette from the saved theme before the first tick
+        # so the very first render uses the right colors.
+        self.theme = self._theme_name
+        self._refresh_state_colors()
+        # Surface bad config values once, after the UI is up. We persist
+        # the corrected value so we don't nag on every launch.
+        if self._stale_saved_theme is not None:
+            self.notify(
+                f"unknown theme '{self._stale_saved_theme}', using {self._theme_name}",
+                severity="warning",
+                timeout=4,
+            )
+            self.config["theme"] = self._theme_name
+            save_config(self.config)
+            self._stale_saved_theme = None
         self.set_interval(POLL_INTERVAL_S, self._tick)
         self.set_interval(SPINNER_INTERVAL_S, self._animate_working_rows)
         self._tick()
+
+    def _refresh_state_colors(self) -> None:
+        """Pull the live theme's colors into our module-level color tables.
+        Called on mount and on every theme cycle so existing format helpers
+        stay theme-aware without being threaded with an app reference.
+
+        Mutating the module globals is the simplest path: STATE_COLORS is
+        already a mutable dict that fmt_* helpers read at call time, and
+        ACCENT / WORKING_PULSE_DIM are only read by helpers in this file.
+        """
+        global ACCENT, WORKING_PULSE_DIM
+        # If the saved theme isn't registered any more (Textual dropped it,
+        # config has a typo, ...) recover deterministically: log once via a
+        # toast, fall back to the default, and keep going.
+        if self._theme_name not in self.available_themes:
+            self.notify(
+                f"unknown theme '{self._theme_name}', using {DEFAULT_THEME}",
+                severity="warning",
+                timeout=4,
+            )
+            self._theme_name = DEFAULT_THEME
+            self.theme = DEFAULT_THEME
+            self.config["theme"] = DEFAULT_THEME
+            save_config(self.config)
+        # Use the *resolved* CSS variables rather than the raw `Theme.success`
+        # attributes, because raw attributes are sometimes None (textual-dark
+        # leaves `background` for Textual to derive, textual-light leaves
+        # `foreground` likewise). The resolver fills those in.
+        palette = self.current_theme.to_color_system().generate()
+        surface_solid = palette["surface"][:7]
+        STATE_COLORS[AgentState.WORKING] = palette["success"]
+        STATE_COLORS[AgentState.IDLE] = palette["warning"]
+        STATE_COLORS[AgentState.ERROR] = palette["error"]
+        # Heartbeat-only states (only set when the pi-monitor-heartbeat
+        # extension is installed). Map to theme palette so they stay
+        # legible on every theme:
+        #   waiting  → accent  (distinct from warning, demands attention)
+        #   retrying → primary (calm, "system is handling this")
+        # The slight overlap between RETRYING and ACCENT (which also pulls
+        # from `primary`) is intentional and harmless: ACCENT is used in
+        # chrome (key hints, new-session row); RETRYING is used in pane
+        # rows. Different visual contexts, same hue.
+        STATE_COLORS[AgentState.WAITING] = palette["accent"]
+        STATE_COLORS[AgentState.RETRYING] = palette["primary"]
+        # Use Textual's own muted foreground for UNKNOWN — it's contrast-
+        # correct against `$surface` on light themes too. The value carries
+        # an `#RRGGBBAA` alpha suffix; **Textual's** Static renderer strips
+        # the alpha at print time, so the on-screen color is the RGB
+        # component. (Pure Rich would fail to parse it — don't reuse this
+        # outside a Textual render path.)
+        STATE_COLORS[AgentState.UNKNOWN] = palette["foreground-muted"]
+        # NO_PI used to be the same RGB as UNKNOWN with only the alpha
+        # different, which Textual ignores. Blend it halfway toward
+        # `$surface` so the two states are *visually* distinguishable
+        # while staying clearly de-emphasized.
+        STATE_COLORS[AgentState.NO_PI] = _lerp_color(
+            palette["foreground-disabled"][:7], surface_solid, 0.5
+        )
+        ACCENT = palette["primary"]
+        # Pulse dim end: blend success with $surface (the tree card's bg) at
+        # 50% so the dim end of the working animation stays legible across
+        # light AND dark themes. Strip alpha defensively before lerping.
+        WORKING_PULSE_DIM = _lerp_color(palette["success"][:7], surface_solid, 0.5)
 
     # -- Animation ---------------------------------------------------------
 
@@ -674,7 +818,9 @@ class PiMonitorApp(App):
             fraction = 0.0
         elif fraction > 1:
             fraction = 1.0
-        pulse_color = _lerp_color(PI_SUCCESS_DIM, PI_SUCCESS, fraction)
+        pulse_color = _lerp_color(
+            WORKING_PULSE_DIM, STATE_COLORS[AgentState.WORKING], fraction
+        )
         return spinner_char, pulse_color
 
     def _animate_working_rows(self) -> None:
@@ -764,9 +910,7 @@ class PiMonitorApp(App):
                 # auto-retry blips. snapshot is None for STARTING / NO_PI
                 # / UNKNOWN panes; treat that as no error.
                 err_msg = (
-                    status.snapshot.last_error
-                    if status.snapshot is not None
-                    else None
+                    status.snapshot.last_error if status.snapshot is not None else None
                 )
                 self.notifier.transition(
                     pane.target,
@@ -782,7 +926,7 @@ class PiMonitorApp(App):
         self._latest_statuses = {p.pane_id: (p, s) for p, s in statuses}
 
         set_status_widget(fmt_status_widget([s for _, s in statuses]))
-        self._update_chrome([s for _, s in statuses])
+        self._update_chrome(statuses)
         self._render(statuses)
         self._reconcile_active_viewer(visible)
 
@@ -812,18 +956,73 @@ class PiMonitorApp(App):
             pass
         self._active_viewer = None
 
-    def _update_chrome(self, all_statuses: list[PaneStatus]) -> None:
-        counts: dict[AgentState, int] = {}
-        for s in all_statuses:
-            counts[s.state] = counts.get(s.state, 0) + 1
+    def _update_chrome(self, statuses: list[tuple[Pane, PaneStatus]]) -> None:
+        """Render the title bar (brand + always-on stat chips + view info)
+        and the attention banner (top issue + count of the rest).
 
+        Once any pane exists the title-bar layout is stable so the eye
+        doesn't have to chase moving content: zero-counts render in dim.
+        With zero panes total we drop the chips entirely and let the tree's
+        empty-state hint do the talking.
+        """
+        counts: dict[AgentState, int] = {}
+        for _, s in statuses:
+            counts[s.state] = counts.get(s.state, 0) + 1
         total = sum(counts.values())
-        mute_tag = "" if self.notifier.enabled else "  · muted"
-        sort_tag = f"sort:{self.sort_mode}"
+
+        brand = f"[bold {ACCENT}]pi-monitor[/bold {ACCENT}]"
+        if total == 0:
+            # Empty state: brand + the same hint the tree shows, so users
+            # see the next action no matter where their eye lands.
+            self._title_bar.update(
+                f"{brand}   [dim]no pi sessions yet · press [/dim]"
+                f"[bold {ACCENT}]o[/bold {ACCENT}][dim] to launch one[/dim]"
+            )
+            self._tree_wrap.border_title = "Sessions"
+            self._update_attention_banner(statuses, counts)
+            return
+
+        # Stat chips: working / idle / error, colored from the live theme.
+        # Zero rows render in dim so the layout is stable while panes come
+        # and go.
+        chips: list[str] = []
+        for state in (AgentState.WORKING, AgentState.IDLE, AgentState.ERROR):
+            n = counts.get(state, 0)
+            color = STATE_COLORS[state] if n else "grey50"
+            chips.append(f"[{color}]{CHIP_GLYPHS[state]} {n}[/{color}]")
+        chips_str = "  ".join(chips)
+
+        info_bits = [
+            f"{total} pane{'s' if total != 1 else ''}",
+            f"sort:{self.sort_mode}",
+            self._theme_name,
+        ]
+        if not self.notifier.enabled:
+            info_bits.append("muted")
+        info = "  [dim]·[/dim]  ".join(info_bits)
+
         self._title_bar.update(
-            f"pi-monitor  ·  {total} pane{'s' if total != 1 else ''}  ·  {sort_tag}{mute_tag}"
+            f"{brand}   {chips_str}   [dim]·[/dim]   [dim]{info}[/dim]"
         )
 
+        # Border title shows section name + live total so the card itself
+        # tells you how much it's showing without having to scan the chips.
+        self._tree_wrap.border_title = f"Sessions  ·  {total}"
+
+        self._update_attention_banner(statuses, counts)
+
+    def _update_attention_banner(
+        self,
+        statuses: list[tuple[Pane, PaneStatus]],
+        counts: dict[AgentState, int],
+    ) -> None:
+        """Surface the single most-attention-needing pane by name. If more
+        panes also need attention, append `+N more`. Hide entirely when
+        nothing's stuck.
+
+        Highest priority wins: ERROR > IDLE. Among the same state we pick
+        the longest-idle pane (oldest issue first).
+        """
         attention_total = sum(
             counts.get(s, 0)
             for s in (AgentState.ERROR, AgentState.WAITING, AgentState.IDLE)
@@ -833,19 +1032,41 @@ class PiMonitorApp(App):
             self._attention_banner.update("")
             return
 
-        parts: list[str] = []
-        for state, label in (
-            (AgentState.ERROR, "error"),
-            (AgentState.WAITING, "waiting"),
-            (AgentState.IDLE, "idle"),
-        ):
-            n = counts.get(state, 0)
-            if not n:
-                continue
-            color = STATE_COLORS[state]
-            parts.append(f"[bold {color}]{n} {label}[/bold {color}]")
-        msg = "  [dim]·[/dim]  ".join(parts)
-        self._attention_banner.update(f"{msg}  [dim]· press 1–9 to jump[/dim]")
+        # Pick the worst case: errors first, then waiting, then idle,
+        # oldest within state.
+        candidates: list[tuple[Pane, PaneStatus]] = [
+            (p, s) for p, s in statuses if s.state in ATTENTION_STATES
+        ]
+        candidates.sort(
+            key=lambda ps: (
+                STATE_PRIORITY.get(ps[1].state, 99),
+                -ps[1].idle_seconds,
+            )
+        )
+        top_pane, top_status = candidates[0]
+        color = STATE_COLORS[top_status.state]
+        # Per-state verb. Default fallback handles any future ATTENTION
+        # state we forget to map here.
+        verb = {
+            AgentState.ERROR: "errored",
+            AgentState.WAITING: "waiting",
+            AgentState.IDLE: "idle",
+        }.get(top_status.state, top_status.state.value)
+        idle_tag = fmt_idle(top_status.idle_seconds)
+        idle_part = f" {idle_tag}" if idle_tag else ""
+        target = escape(f"{top_pane.session}/{top_pane.title or top_pane.pane_index}")
+        rest = attention_total - 1
+        rest_part = f"  [dim]· +{rest} more[/dim]" if rest else ""
+        # CHIP_GLYPHS only covers the four "primary" states (working/idle/
+        # error/unknown). For WAITING, fall back to STATE_GLYPHS' tmux glyph.
+        chip = CHIP_GLYPHS.get(
+            top_status.state, STATE_GLYPHS.get(top_status.state, "○")
+        )
+        self._attention_banner.update(
+            f"[bold {color}]{chip}[/bold {color}] "
+            f"[bold]{target}[/bold] [{color}]{verb}{idle_part}[/{color}]"
+            f"{rest_part}  [dim]· press 1–9 to jump[/dim]"
+        )
         self._attention_banner.remove_class("hidden")
 
     def _render(self, statuses: list[tuple[Pane, PaneStatus]]) -> None:
@@ -870,6 +1091,31 @@ class PiMonitorApp(App):
             self._needs_full_rebuild = False
         else:
             self._diff_update(by_session, desired_sessions)
+        self._sync_empty_hint(not desired_sessions)
+
+    def _sync_empty_hint(self, empty: bool) -> None:
+        """Show or hide the first-run hint leaf below `+ new session`.
+
+        The hint is a sibling root-level leaf (not a child of the new-
+        session row). Called after both the full and diff rebuild paths
+        so users see "no pi sessions yet · press o to launch one" when
+        their tree is otherwise blank, regardless of how we got there.
+        """
+        hint_key = ("hint", None)
+        existing = next(
+            (c for c in self._tree.root.children if c.data == hint_key), None
+        )
+        if empty and existing is None:
+            label = (
+                "  [dim]no pi sessions yet · press [/dim]"
+                f"[bold {ACCENT}]o[/bold {ACCENT}]"
+                "[dim] to launch one[/dim]"
+            )
+            self._tree.root.add_leaf(label, data=hint_key)
+            self._last_labels[hint_key] = label
+        elif not empty and existing is not None:
+            existing.remove()
+            self._last_labels.pop(hint_key, None)
 
     def _full_rebuild(
         self,
@@ -886,7 +1132,7 @@ class PiMonitorApp(App):
         self._last_labels.clear()
 
         # Synthetic 'new session' affordance always at the top of the tree.
-        new_label = NEW_SESSION_LABEL
+        new_label = _new_session_label()
         new_key = ("new", None)
         self._tree.root.add_leaf(new_label, data=new_key)
         self._last_labels[new_key] = new_label
@@ -993,15 +1239,23 @@ class PiMonitorApp(App):
                     self._last_labels[pane_key] = label
 
     def _restore_cursor(self, target_data) -> None:
+        """Re-cursor to a row identified by its `data` key after a rebuild.
+
+        Uses `move_cursor` (cursor-only) instead of `select_node`, because
+        select_node also posts a `NodeSelected` event — which we wired to
+        side-effects like opening the new-session modal or focusing the
+        right tmux pane. A passive rebuild must never trigger user-action
+        side-effects.
+        """
         if target_data is None:
             return
         for sess_node in self._tree.root.children:
             if sess_node.data == target_data:
-                self._tree.select_node(sess_node)
+                self._tree.move_cursor(sess_node)
                 return
             for leaf in sess_node.children:
                 if leaf.data == target_data:
-                    self._tree.select_node(leaf)
+                    self._tree.move_cursor(leaf)
                     return
 
     # -- Tree event ---------------------------------------------------------
@@ -1137,6 +1391,20 @@ class PiMonitorApp(App):
         save_config(self.config)
         self._needs_full_rebuild = True
         self._tick()
+
+    def action_cycle_theme(self) -> None:
+        """Cycle through the curated theme list, persist the choice, and
+        force a full tree rebuild so cached row labels pick up the new
+        accent / state colors."""
+        idx = THEMES.index(self._theme_name) if self._theme_name in THEMES else 0
+        self._theme_name = THEMES[(idx + 1) % len(THEMES)]
+        self.theme = self._theme_name
+        self.config["theme"] = self._theme_name
+        save_config(self.config)
+        self._refresh_state_colors()
+        self._needs_full_rebuild = True
+        self._tick()
+        self.notify(f"theme: {self._theme_name}", timeout=2)
 
     def action_toggle_show_non_pi(self) -> None:
         self.show_non_pi = not self.show_non_pi

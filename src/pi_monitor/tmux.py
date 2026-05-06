@@ -136,7 +136,7 @@ def _placeholder_cmd() -> str:
     """
     return (
         "sh -c 'printf \"\\n  hover a pi row in the tree (j/k) to preview an agent here"
-        "\\n  Enter or Tab focuses this pane so keys go to the agent\\n\\n\"; "
+        '\\n  Enter or Tab focuses this pane so keys go to the agent\\n\\n"; '
         "tail -f /dev/null'"
     )
 
