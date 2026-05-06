@@ -1042,7 +1042,9 @@ class PiMonitorApp(App):
            tmux window are hidden. Idempotent.
         4. If the right slot was attached to a different viewer (i.e. a
            different source session), respawn it with `tmux attach` to
-           the new viewer, then kill the old viewer.
+           the new viewer (passing the agent's `cwd` so any user-
+           initiated split of the right pane lands in the agent's
+           directory), then kill the old viewer.
 
         The 2-pane monitor split (tree on the left, agent on the right)
         stays as configured. Cursor focus stays on the tree so the user
@@ -1060,7 +1062,7 @@ class PiMonitorApp(App):
             viewer_zoom_to_pane(viewer, pane.window_index, pane.pane_index)
 
             if self._active_viewer != viewer:
-                attach_right_slot_to_viewer(viewer)
+                attach_right_slot_to_viewer(viewer, cwd=pane.cwd)
                 if self._active_viewer is not None:
                     kill_linked_viewer(self._active_viewer)
                 self._active_viewer = viewer
