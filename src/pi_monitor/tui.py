@@ -907,7 +907,18 @@ class PiMonitorApp(App):
     ]
 
     def __init__(self) -> None:
-        super().__init__()
+        # ansi_color=True activates Textual's `:ansi` pseudo-class on the
+        # App, which switches the root background from the theme's RGB
+        # `$background` to the special `ansi_default` value. That value
+        # is emitted as the ANSI "default background" escape (\e[49m) on
+        # every transparent-resolved cell, which is what makes the
+        # terminal honor its own (translucent) default background
+        # instead of an opaque RGB block. Without this, every cell
+        # ultimately resolves to the theme's $background as a concrete
+        # RGB and the terminal can't alpha-blend it with the wallpaper.
+        # State colors keep their explicit RGB hex values, so working /
+        # idle / error tints survive unchanged.
+        super().__init__(ansi_color=True)
         self.config = load_config()
         self.notifier = Notifier(
             enabled=bool(self.config.get("notifications_enabled", True))
