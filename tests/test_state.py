@@ -369,13 +369,19 @@ def test_claim_session_file_picks_most_recent_unclaimed(
     from pi_monitor.state import _claim_session_file
 
     claimed: set[Path] = set()
-    first = _claim_session_file("/proj", pi_pid=None, claimed=claimed)
+    first = _claim_session_file(
+        "/proj", pi_start=None, next_pi_start=None, claimed=claimed
+    )
     assert first == newer
     claimed.add(first)
-    second = _claim_session_file("/proj", pi_pid=None, claimed=claimed)
+    second = _claim_session_file(
+        "/proj", pi_start=None, next_pi_start=None, claimed=claimed
+    )
     assert second == older
     claimed.add(second)
-    third = _claim_session_file("/proj", pi_pid=None, claimed=claimed)
+    third = _claim_session_file(
+        "/proj", pi_start=None, next_pi_start=None, claimed=claimed
+    )
     assert third is None
 
 
@@ -491,6 +497,117 @@ def test_resolve_unknown_when_no_session_files(
     refs = [PaneRef(pane_id="y:0.0", cwd="/no-sessions", is_pi=True, pane_pid=42)]
     out = resolver.resolve(refs)
     assert out["y:0.0"].state == AgentState.UNKNOWN
+
+
+# ---------------------------------------------------------------------------
+# Filename-timestamp parser
+# ---------------------------------------------------------------------------
+
+
+def test_filename_starttime_parses_iso_prefix():
+    from datetime import datetime, timezone
+
+    from pi_monitor.state import _filename_starttime
+
+    p = Path(
+        "2026-05-03T20-37-34-005Z_019def8f-86b5-77ac-96f5-302472f17757.jsonl"
+    )
+    expected = datetime(
+        2026, 5, 3, 20, 37, 34, 5_000, tzinfo=timezone.utc
+    ).timestamp()
+    assert _filename_starttime(p) == pytest.approx(expected)
+
+
+def test_filename_starttime_returns_none_for_non_iso_filename():
+    from pi_monitor.state import _filename_starttime
+
+    assert _filename_starttime(Path("hello.jsonl")) is None
+    assert _filename_starttime(Path("2026-01-02_no-T.jsonl")) is None
+    assert _filename_starttime(Path("live.jsonl")) is None
+
+
+# ---------------------------------------------------------------------------
+# Cohabitation swap regression: a freshly-launched idle pi must not steal
+# an older pi's actively-written session.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_does_not_swap_when_idle_pi_starts_alongside_working_pi(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Bug regression. Setup: two pi panes share `/proj`. P_A started first,
+    is mid-toolUse, and is appending to its timestamped JSONL right now.
+    P_B just launched in another window and hasn't written its JSONL yet
+    (pi only flushes on the first assistant message).
+
+    Pre-fix behaviour: the resolver sorted P_B (newest) first and let it
+    claim P_A's actively-written file because mtime > P_B.start, then P_A
+    fell back to a stale idle session — statuses swapped.
+
+    Post-fix: filename timestamp of P_A's file is < P_B.start, so it falls
+    outside P_B's owned window. ASC ordering means P_A claims it first,
+    P_B is left with no file at all.
+    """
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr("pi_monitor.state.SESSIONS_ROOT", tmp_path)
+    sess = tmp_path / "--proj--"
+    sess.mkdir()
+
+    # P_A's session, created at 00:01:40Z and currently being appended to.
+    file_a = sess / "2026-01-01T00-01-40-000Z_aaaaaaaa.jsonl"
+    _write_jsonl(
+        file_a,
+        [
+            _msg(
+                "assistant",
+                content=[
+                    {
+                        "type": "toolCall",
+                        "id": "t1",
+                        "name": "bash",
+                        "arguments": {},
+                    }
+                ],
+                stopReason="toolUse",
+            )
+        ],
+    )
+    file_a_ts = datetime(
+        2026, 1, 1, 0, 1, 40, tzinfo=timezone.utc
+    ).timestamp()
+    _stamp(file_a, file_a_ts + 200.0)  # mtime: "now", well after creation
+
+    p_a_start = file_a_ts - 0.2  # P_A booted just before creating its file
+    p_b_start = file_a_ts + 60.0  # P_B booted a minute later, no file yet
+
+    monkeypatch.setattr(
+        "pi_monitor.state.find_pi_pid_for_pane",
+        lambda pid: {1: 1001, 2: 1002}.get(pid),
+    )
+    monkeypatch.setattr(
+        "pi_monitor.state._proc_starttime",
+        lambda pid: {1001: p_a_start, 1002: p_b_start}.get(pid),
+    )
+
+    from pi_monitor.state import AgentState, PaneRef, StateResolver
+
+    resolver = StateResolver()
+    refs = [
+        # Order them with the NEW pi first to make sure the resolver sorts
+        # by start time and not by input order.
+        PaneRef(pane_id="new", cwd="/proj", is_pi=True, pane_pid=2),
+        PaneRef(pane_id="old", cwd="/proj", is_pi=True, pane_pid=1),
+    ]
+    out = resolver.resolve(refs, now=p_b_start + 1.0)
+
+    # Old pi keeps its actively-written file and reports WORKING.
+    assert out["old"].session_file == file_a
+    assert out["old"].state == AgentState.WORKING
+
+    # New pi has no file of its own — must not steal old pi's session.
+    assert out["new"].session_file is None
+    assert out["new"].state == AgentState.UNKNOWN
 
 
 # ---------------------------------------------------------------------------
