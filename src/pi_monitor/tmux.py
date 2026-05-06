@@ -417,18 +417,20 @@ def create_pi_session(cwd: str, name: str | None = None) -> str:
     return final_name
 
 
-def split_pi_pane(target_window: str, cwd: str) -> None:
-    """Split the target window with a new pane running `pi` in `cwd`.
+def create_pi_window(target_session: str, cwd: str) -> None:
+    """Create a new window in `target_session` running `pi` in `cwd`.
 
-    `target_window` is in `<session>:<window_index>` form (e.g. `contracts:0`).
-    The split is horizontal so the new pane appears beside its sibling.
+    Each pi agent gets its own window (tab) inside the session, instead
+    of sharing a window with the existing pi pane. That keeps every pi
+    agent isolated — no non-pi cohabitants — and the user can split a
+    window themselves later if they want.
     """
     import os
 
     cwd = os.path.expanduser(cwd)
     if not os.path.isdir(cwd):
         raise TmuxError(f"directory not found: {cwd}")
-    _tmux("split-window", "-h", "-t", target_window, "-c", cwd, "pi")
+    _tmux("new-window", "-t", target_session, "-c", cwd, "pi")
 
 
 # ---------------------------------------------------------------------------
