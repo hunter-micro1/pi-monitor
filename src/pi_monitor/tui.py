@@ -17,26 +17,43 @@ Layout (inside the LEFT tmux pane):
     │ title-bar  (brand · counts · sort · mute)│
     │ attention-banner (auto-hides)            │
     │ +  new session                           │
-    │                                          │
-    │ contracts                                │
-    │ PSP7-gateway · feature/auth     working  │
-    │ POWERBI      · feature/billing  idle 12s │
-    │                                          │
-    │ cape                                     │
-    │ ANALYST      · main             error 12s│
+    │ ╭─ contracts ────────────────────╮│
+    │ │ PSP7-gateway · feature/auth   working││
+    │ │ POWERBI · feature/billing     idle 12s││
+    │ ╰───────────────────────────────╯│
+    │ ╭─ cape ─────────────────────────╮│
+    │ │ ANALYST · main                 error 12s││
+    │ ╰───────────────────────────────╯│
     │ footer (key hints)                       │
     └──────────────────────────────────────────┘
 
 Visual rules the code depends on:
 
-- Everything is `background: transparent`. The terminal's translucency
-  shows through end-to-end; no widget paints its own surface.
+- Translucency end-to-end. The App is constructed with
+  `ansi_color=True`, which activates Textual's `:ansi` pseudo-class on
+  the App and switches the root background from the theme's RGB
+  `$background` to the special `ansi_default` value. That value is
+  emitted as the ANSI default-bg escape (ESC[49m) on every transparent-
+  resolved cell, so the terminal honors its own (translucent) default
+  background instead of an opaque RGB block.
 
-- No decorative glyphs. State is conveyed by color (the title pulses in
-  the success color on WORKING rows, gets the warning/error color on
-  IDLE/ERROR/etc.) and by a right-aligned state word (`working`, `idle
-  4m`, `error`, `waiting`, `retrying`). Plain `+` and `·` are kept as
-  typography, not iconography.
+- Each session is wrapped in a rounded `SessionGroup` border with the
+  session name as the colored border title. The border is the only
+  thing that paints between sessions; group fill stays transparent so
+  the wallpaper shows through inside the box.
+
+- No decorative glyphs in row content. State is conveyed by color
+  (the title pulses in the success color on WORKING rows, gets the
+  warning/error color on IDLE/ERROR/etc.) and by a right-aligned state
+  word (`working`, `idle 4m`, `error`, `waiting`, `retrying`). The box-
+  drawing characters from `border: round` are structural — they're
+  there to demarcate sessions, not to decorate them.
+
+- Selection uses `background: ansi_bright_black` (an ANSI palette
+  color) instead of an alpha-blended theme color. With the root bg
+  resolved to `ansi_default` an alpha-tinted bg has no concrete RGB
+  base to mix against and turns into mud; the ANSI palette color the
+  terminal renders consistently is the predictable choice.
 
 - Horizontal flex inside each row: `name · branch` takes all available
   width and ellipsizes; the state word floats right. So agent names and
@@ -670,13 +687,19 @@ class PaneRow(Container):
         height: 1;
         width: 100%;
         layout: horizontal;
-        padding: 0 2;
+        padding: 0 1;
         background: transparent;
         color: $foreground;
         transition: background 180ms in_out_cubic;
     }
     PaneRow.selected {
-        background: $primary 18%;
+        /* ansi_bright_black is an ANSI palette color; the terminal
+           renders it as its "bright black" (gray) consistently across
+           themes and — critically — doesn't depend on alpha-blending
+           against ansi_default, which is what made the previous
+           `$primary 18%` selection look muddy.
+        */
+        background: ansi_bright_black;
     }
     PaneRow > #row-main {
         width: 1fr;
@@ -722,49 +745,43 @@ class PaneRow(Container):
 
 
 class SessionGroup(Container):
-    """One session group. No border, no chip, no disclosure arrow — just
-    a bold name header with a 1-row top margin to separate it from the
-    previous group, and the PaneRow children flowing beneath.
+    """One session group, drawn as a rounded box with the session name
+    in its border title.
 
-    Visual structure is carried by negative space alone, matching the
-    Mux/Warp sidebar pattern of "list with strong typography, not boxed
-    cards".
+    The flat-list version of this widget lost too much visual structure
+    once everything went translucent — sessions ran into each other
+    against the wallpaper. We're back to a bordered card per session
+    so the eye can land on "this is one group" at a glance, but the
+    fill is transparent so the wallpaper still shows through inside
+    the box.
     """
 
     DEFAULT_CSS = """
     SessionGroup {
         height: auto;
         width: 100%;
-        margin: 1 0 0 0;
-        padding: 0;
+        margin: 1 1 0 1;
+        padding: 0 1;
+        border: round $primary 60%;
+        border-title-color: $primary;
+        border-title-style: bold;
+        border-title-align: left;
         background: transparent;
-    }
-    SessionGroup > .session-header {
-        height: 1;
-        padding: 0 2;
-        background: transparent;
-        text-style: bold;
     }
     """
 
     def __init__(self, session: str) -> None:
-        # Empty Container; the App's render path mounts the header
-        # explicitly right after mounting the group so it's queued
-        # before any rows. (Yielding the header from `compose` or
-        # passing it to Container.__init__ races against the explicit
-        # row mounts and ends up appended last.)
         super().__init__()
         self.session = session
-        self._header = Static(
-            fmt_session_header(session),
-            classes="session-header",
-            markup=True,
-        )
+        # Set the border title once at construction so it's there on
+        # the first paint. We refresh it on theme change so the accent
+        # color tracks the active palette.
+        self.border_title = fmt_session_header(session)
 
-    def refresh_header(self) -> None:
-        """Re-render the session-header label — used after a theme cycle
-        so the accent color tracks the new palette."""
-        self._header.update(fmt_session_header(self.session))
+    def refresh_title(self) -> None:
+        """Re-render the border title — used after a theme cycle so the
+        accent color tracks the new palette."""
+        self.border_title = fmt_session_header(self.session)
 
 
 # ---------------------------------------------------------------------------
@@ -838,7 +855,7 @@ class PiMonitorApp(App):
     }
 
     #new-session-affordance.selected {
-        background: $primary 18%;
+        background: ansi_bright_black;
         text-style: bold;
     }
 
@@ -1347,11 +1364,6 @@ class PiMonitorApp(App):
                 # Mount before the empty-hint sentinel so groups stack
                 # above it; the hint sits at the very bottom of the list.
                 self._session_list.mount(group, before=self._empty_hint)
-                # Queue the header right after, so subsequent row mounts
-                # land below it. Textual flushes mount() calls FIFO
-                # within a turn, so this preserves header-first order
-                # without needing to await each AwaitMount.
-                group.mount(group._header)
             else:
                 group = self._groups[name]
 
@@ -1687,10 +1699,10 @@ class PiMonitorApp(App):
         self.config["theme"] = self._theme_name
         save_config(self.config)
         self._refresh_state_colors()
-        # Re-render group headers (their accent color comes from the live
-        # ACCENT and we just bumped it).
+        # Re-render group border titles (their accent color comes from
+        # the live ACCENT and we just bumped it).
         for group in self._groups.values():
-            group.refresh_header()
+            group.refresh_title()
         self._tick()
         self.notify(f"theme: {self._theme_name}", timeout=2)
 
