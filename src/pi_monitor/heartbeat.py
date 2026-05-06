@@ -77,15 +77,11 @@ def read_heartbeat(
     """Read and parse the heartbeat for `pid`, returning `None` when the
     file is missing, malformed, or stale.
 
-    Stale = `now - heartbeat.ts > HEARTBEAT_FRESHNESS_S`. We use the
-    payload's own `ts` (set inside pi on each event) rather than the
-    file's mtime so a long-running tool doesn't make a perfectly valid
-    heartbeat look stale just because no events fired during the tool.
-    Wait — actually it would. Tool execution start *does* fire an event
-    and bumps ts. The file's mtime and the payload ts are nearly
-    identical in practice; using the payload value is the more correct
-    one (it's the moment pi observed the event, not the moment the OS
-    finished the write).
+    Stale = `now - heartbeat.ts > HEARTBEAT_FRESHNESS_S`. We trust the
+    payload's `ts` (set by pi the moment it observed the event) rather
+    than the file's mtime, which records when the OS finished writing.
+    The two are almost always within a millisecond, but the payload
+    value is more semantically accurate.
     """
     path = heartbeat_path_for_pid(pid)
     try:
