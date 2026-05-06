@@ -8,24 +8,41 @@ Pane → JSONL mapping: pi stores sessions per cwd at
 `~/.pi/agent/sessions/--<cwd-with-/-replaced-by->--/<timestamp>_<uuid>.jsonl`,
 but multiple pi processes can share a cwd (and therefore a session directory).
 Pi opens-writes-closes the file on every append, so `/proc/<pid>/fd` does
-NOT reveal which JSONL belongs to which pi. We disambiguate by:
+NOT reveal which JSONL belongs to which pi. The filename embeds an ISO
+timestamp captured the moment pi created the session, which is the only
+reliable per-process anchor we have from outside.
 
-  1. Walking the pane's process tree to find the live `pi` descendant pid.
+We disambiguate per-cwd by:
+
+  1. Walking each pane's process tree to find its live `pi` descendant pid.
   2. Reading that pid's start time from `/proc/<pid>/stat` + `/proc/uptime`.
-  3. For each pi pane in start-time-DESC order, claiming the most recently
-     modified unclaimed JSONL whose mtime falls within that pi's lifetime.
-  4. Falling back to the most recently modified unclaimed JSONL in the cwd
-     when no file has been written during the pi's lifetime yet.
+  3. Sorting the cwd's pi panes by start time ASC (oldest first) and, for
+     each pi P, claiming an unclaimed JSONL by:
+       a. **Owned** — filename timestamp ∈ [P.start − ε, next_P.start − ε)
+          (`+∞` for the youngest pi). This is a session P created (initial
+          or via `/new`). Pick max by mtime so an active /new'd file beats
+          its abandoned predecessor.
+       b. **Resumed** — filename timestamp predates P (P loaded it via
+          `--session`) AND mtime ≥ P.start (P has actually written to it).
+          Pick max by mtime.
+  4. Pis whose pid lookup failed have no lifetime info; they fall back to
+     plain mtime-DESC greedy assignment so single-pane cases keep working.
 
-Greedy claim resolution prevents two panes from binding to the same JSONL.
+Greedy claim resolution prevents two panes from binding to the same JSONL,
+and the bounded ownership window prevents a freshly-launched (file-less)
+pi from stealing an older pi's actively-written session — the bug that
+used to flip statuses whenever a new agent started in a tmux window next
+to a working one.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
@@ -357,6 +374,42 @@ def cwd_to_session_dir(cwd: str) -> Path:
     return SESSIONS_ROOT / f"--{cwd.lstrip('/').replace('/', '-')}--"
 
 
+# Session filenames look like
+# `2026-05-03T20-37-34-005Z_019def8f-86b5-77ac-96f5-302472f17757.jsonl`.
+# Pi builds the prefix by replacing `:` and `.` in an ISO timestamp with
+# `-`, so we have to put them back before parsing. We anchor at the start
+# of the filename and stop at the `_<uuid>` separator.
+_FILENAME_TS_RE = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2})T"
+    r"(?P<h>\d{2})-(?P<m>\d{2})-(?P<s>\d{2})-(?P<ms>\d{3})Z_"
+)
+
+# Slack we allow when comparing a filename timestamp to a pi process's
+# start time. Pi calls `new Date()` a few ticks after the kernel created
+# the process, so filename_ts > pi.start in practice; the epsilon just
+# guards against `_proc_starttime`'s clock-tick rounding (~10ms) and any
+# latent clock skew.
+_FILENAME_TS_EPSILON_S = 1.0
+
+
+def _filename_starttime(path: Path) -> float | None:
+    """Parse the ISO timestamp pi embeds in a session filename, returning a
+    unix timestamp. Returns None for filenames that don't match the
+    expected pattern (e.g. test fixtures with arbitrary names) so callers
+    can fall back to mtime-based heuristics."""
+    match = _FILENAME_TS_RE.match(path.name)
+    if match is None:
+        return None
+    iso = (
+        f"{match['date']}T{match['h']}:{match['m']}:{match['s']}.{match['ms']}"
+        "+00:00"
+    )
+    try:
+        return datetime.fromisoformat(iso).timestamp()
+    except ValueError:
+        return None
+
+
 def _list_jsonl_with_mtime(directory: Path) -> list[tuple[Path, float]]:
     if not directory.exists():
         return []
@@ -432,12 +485,37 @@ def find_pi_pid_for_pane(pane_pid: int) -> int | None:
 
 def _claim_session_file(
     cwd: str,
-    pi_pid: int | None,
+    pi_start: float | None,
+    next_pi_start: float | None,
     claimed: set[Path],
 ) -> Path | None:
-    """Pick the JSONL most likely to belong to this pi, excluding already-
-    claimed files. Prefer files written during pi's lifetime; fall back to
-    most recently modified unclaimed file in the cwd's session dir."""
+    """Pick the JSONL belonging to a single pi process in `cwd`.
+
+    The strong signal is the filename's embedded ISO timestamp — it's the
+    moment pi created the session and is the only per-process anchor we
+    can read from outside (pi opens-writes-closes on every append, so
+    /proc/fd is empty between turns).
+
+    Selection order, highest priority first:
+
+      1. **Owned**: filename timestamp ∈ [pi_start − ε, next_pi_start − ε).
+         A file pi created during its lifetime, before any younger sibling
+         pi in the same cwd was born. `next_pi_start=None` means "no
+         younger pi" → unbounded above. Pick max by mtime so an active
+         /new'd file beats its abandoned predecessor.
+      2. **Resumed**: filename timestamp predates pi (so it's not pi's own
+         creation) AND mtime ≥ pi_start (pi has actually written to it,
+         which is what `--session` does). Pick max by mtime.
+      3. **No-info fallback** (only when `pi_start is None`): max-by-mtime
+         unclaimed file in the cwd. Used by `find_session_file_for_cwd`
+         and by panes whose pid lookup failed.
+
+    Returns `None` (not a guess) when we know pi's start time but no file
+    matches — e.g. a freshly-launched idle pi that hasn't written yet.
+    This is the fix for the cohabitation swap bug: the prior code fell
+    back to "most recent file in cwd" here, which silently re-bound the
+    new pi to another pi's actively-written session.
+    """
     candidates = [
         (p, m)
         for p, m in _list_jsonl_with_mtime(cwd_to_session_dir(cwd))
@@ -445,19 +523,41 @@ def _claim_session_file(
     ]
     if not candidates:
         return None
-    if pi_pid is not None:
-        start = _proc_starttime(pi_pid)
-        if start is not None:
-            in_window = [(p, m) for p, m in candidates if m >= start]
-            if in_window:
-                return max(in_window, key=lambda pm: pm[1])[0]
-    return max(candidates, key=lambda pm: pm[1])[0]
+
+    if pi_start is None:
+        return max(candidates, key=lambda pm: pm[1])[0]
+
+    eps = _FILENAME_TS_EPSILON_S
+    upper = (next_pi_start - eps) if next_pi_start is not None else float("inf")
+    lower = pi_start - eps
+
+    owned: list[tuple[Path, float]] = []
+    older_filename: list[tuple[Path, float]] = []
+    for p, m in candidates:
+        fts = _filename_starttime(p)
+        if fts is not None and lower <= fts < upper:
+            owned.append((p, m))
+        elif fts is None or fts < lower:
+            # Either a non-standard name (test fixtures) or a file created
+            # before pi was born. Eligible for the resumed-session path,
+            # which additionally requires mtime ≥ pi_start.
+            older_filename.append((p, m))
+    if owned:
+        return max(owned, key=lambda pm: pm[1])[0]
+
+    resumed = [(p, m) for p, m in older_filename if m >= pi_start]
+    if resumed:
+        return max(resumed, key=lambda pm: pm[1])[0]
+
+    return None
 
 
 def find_session_file_for_cwd(pane_cwd: str) -> Path | None:
     """Convenience for single-pane callers / tests: most recently modified
     jsonl in the cwd's session directory, ignoring claim resolution."""
-    return _claim_session_file(pane_cwd, pi_pid=None, claimed=set())
+    return _claim_session_file(
+        pane_cwd, pi_start=None, next_pi_start=None, claimed=set()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -529,50 +629,64 @@ class StateResolver:
     ) -> dict[str, PaneStatus]:
         """Resolve state for every pane in one pass with shared claim set.
 
-        Greedy assignment in pi-start-time-DESC order: newest pi picks first
-        from the most recently modified unclaimed JSONLs whose mtime falls
-        within its lifetime. Two panes can never bind to the same JSONL.
+        Pis are grouped by cwd (different cwds use different session dirs
+        so they never compete) and processed start-time-ASC within each
+        group. The ASC order means each pi knows the next-younger sibling's
+        start time, which bounds its filename ownership window above. This
+        prevents a freshly-launched pi from stealing an older pi's actively-
+        written file.
+
+        Two panes can never bind to the same JSONL.
         """
         if now is None:
             now = time.time()
-        # Walk process trees once; cache (ref → pi_pid, start_time).
-        meta: dict[str, tuple[int | None, float | None]] = {}
+        # Walk process trees once; cache (ref → pi_start_time). We only
+        # need start time downstream, so drop the pid after the lookup.
+        starts: dict[str, float | None] = {}
         for ref in refs:
             if not ref.is_pi:
-                meta[ref.pane_id] = (None, None)
                 continue
             pi_pid = find_pi_pid_for_pane(ref.pane_pid)
-            start = _proc_starttime(pi_pid) if pi_pid is not None else None
-            meta[ref.pane_id] = (pi_pid, start)
+            starts[ref.pane_id] = (
+                _proc_starttime(pi_pid) if pi_pid is not None else None
+            )
 
-        # Sort pi panes by start time DESC (None last). Non-pi panes don't
-        # claim anything and are filled in afterwards.
-        pi_refs = [r for r in refs if r.is_pi]
-        pi_refs.sort(
-            key=lambda r: meta[r.pane_id][1] or float("-inf"),
-            reverse=True,
-        )
+        # Group pi panes by cwd. Within each group sort by start time ASC
+        # (None first — those panes have no lifetime info and use the
+        # plain mtime-DESC fallback, which is order-independent).
+        groups: dict[str, list[PaneRef]] = {}
+        for ref in refs:
+            if ref.is_pi:
+                groups.setdefault(ref.cwd, []).append(ref)
+        for group in groups.values():
+            group.sort(key=lambda r: starts[r.pane_id] or float("-inf"))
 
         claimed: set[Path] = set()
         results: dict[str, PaneStatus] = {}
-        for ref in pi_refs:
-            pi_pid, _ = meta[ref.pane_id]
-            session_file = _claim_session_file(ref.cwd, pi_pid, claimed)
-            if session_file is None:
-                results[ref.pane_id] = PaneStatus(
-                    pane_id=ref.pane_id, state=AgentState.UNKNOWN
+        for group in groups.values():
+            for i, ref in enumerate(group):
+                pi_start = starts[ref.pane_id]
+                next_pi_start = (
+                    starts[group[i + 1].pane_id] if i + 1 < len(group) else None
                 )
-                continue
-            claimed.add(session_file)
-            snapshot = self.reader.read(session_file)
-            state, idle_for = infer_state(snapshot, now=now)
-            results[ref.pane_id] = PaneStatus(
-                pane_id=ref.pane_id,
-                state=state,
-                session_file=session_file,
-                snapshot=snapshot,
-                idle_seconds=idle_for,
-            )
+                session_file = _claim_session_file(
+                    ref.cwd, pi_start, next_pi_start, claimed
+                )
+                if session_file is None:
+                    results[ref.pane_id] = PaneStatus(
+                        pane_id=ref.pane_id, state=AgentState.UNKNOWN
+                    )
+                    continue
+                claimed.add(session_file)
+                snapshot = self.reader.read(session_file)
+                state, idle_for = infer_state(snapshot, now=now)
+                results[ref.pane_id] = PaneStatus(
+                    pane_id=ref.pane_id,
+                    state=state,
+                    session_file=session_file,
+                    snapshot=snapshot,
+                    idle_seconds=idle_for,
+                )
         for ref in refs:
             if ref.pane_id not in results:
                 results[ref.pane_id] = PaneStatus(
