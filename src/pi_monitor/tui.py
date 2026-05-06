@@ -1,7 +1,9 @@
 """Textual TUI for pi-monitor.
 
 The monitor session is a tmux 2-pane window. This file owns only the LEFT
-pane: a tree of every pi pane on the tmux server with live status badges.
+pane: a flat list of pi sessions, each with its panes shown as one-line
+rows that surface the agent name, the git branch they're working in, and
+their live state.
 
 The RIGHT pane is owned by tmux: when the user hits Enter (or Tab) on a
 pane row, we ensure a session-group sister of that pane's source session
@@ -14,31 +16,55 @@ Layout (inside the LEFT tmux pane):
     ┌──────────────────────────────────────────┐
     │ title-bar  (brand · counts · sort · mute)│
     │ attention-banner (auto-hides)            │
-    │ ╭─ Sessions ─────────────────────────╮   │
-    │ │ tree                                │   │
-    │ ╰────────────────────────────────────╯   │
+    │ +  new session                           │
+    │                                          │
+    │ contracts                                │
+    │ PSP7-gateway · feature/auth     working  │
+    │ POWERBI      · feature/billing  idle 12s │
+    │                                          │
+    │ cape                                     │
+    │ ANALYST      · main             error 12s│
     │ footer (key hints)                       │
     └──────────────────────────────────────────┘
 
-The Screen and chrome bars use `background: transparent` so any
-translucency the user has configured in their terminal shows through.
-The tree card and modal dialogs keep a themed `$surface` so text stays
-legible against whatever's behind the terminal.
+Visual rules the code depends on:
+
+- Everything is `background: transparent`. The terminal's translucency
+  shows through end-to-end; no widget paints its own surface.
+
+- No decorative glyphs. State is conveyed by color (the title pulses in
+  the success color on WORKING rows, gets the warning/error color on
+  IDLE/ERROR/etc.) and by a right-aligned state word (`working`, `idle
+  4m`, `error`, `waiting`, `retrying`). Plain `+` and `·` are kept as
+  typography, not iconography.
+
+- Horizontal flex inside each row: `name · branch` takes all available
+  width and ellipsizes; the state word floats right. So agent names and
+  branch names get every cell we can spare on narrow tmux panes.
+
+- Selection fades in/out via a CSS `transition: background` on PaneRow,
+  which is the only motion besides the WORKING-color pulse. Keeps the
+  feel "alive" without the busyness of a spinning glyph.
+
+Modal dialogs use a lightly-tinted `$surface 70%` so dense input/help
+text stays legible over busy backdrops while still reading as a frosted
+panel.
 """
 
 from __future__ import annotations
 
 import math
 import os
+import subprocess
 import time
 from pathlib import Path
 
 from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container
+from textual.containers import Container, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Footer, Input, Static, Tree
+from textual.widgets import Footer, Input, Static
 
 from .notify import ATTENTION_STATES, Notifier, load_config, save_config
 from .state import (
@@ -69,11 +95,12 @@ from .tmux import (
 
 POLL_INTERVAL_S = 0.5
 
-# Spinner / pulse animation cadence. 80ms ~ 12 fps which is what npm, yarn,
-# kubectl etc. use; smooth without burning cycles.
-SPINNER_INTERVAL_S = 0.08
-# Standard braille rotation (10 frames). Each frame is one cell wide.
-SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+# Color-pulse cadence for WORKING rows. 80ms ~ 12 fps which is what npm,
+# yarn, kubectl etc. use; smooth without burning cycles. This is the only
+# animation timer left after the spinner-glyph pass — it now drives the
+# title color pulse on working rows so motion lives in the typography
+# itself rather than a side glyph.
+PULSE_INTERVAL_S = 0.08
 # Pulse period for working-state text color (sine wave between bright and dim).
 PULSE_PERIOD_S = 1.5
 
@@ -104,9 +131,9 @@ DEFAULT_THEME = "textual-dark"
 #
 # These module globals (STATE_COLORS, WORKING_PULSE_DIM, ACCENT) are
 # MUTATED by PiMonitorApp._refresh_state_colors so that bare format helpers
-# (fmt_row, fmt_session_header, _help_text, ...) stay theme-aware without
-# being threaded with an app reference. Tests that need the defaults should
-# import them at top of the test, not after instantiating the App.
+# (fmt_row_main, fmt_row_tag, _help_text, ...) stay theme-aware without
+# being threaded with an app reference. Tests that need the defaults
+# should import them at top of the test, not after instantiating the App.
 #
 # The static values below are the pre-theme-refresh fallback (used during
 # module import, before the App mounts). _refresh_state_colors overwrites
@@ -137,6 +164,7 @@ STATE_TOAST_SEVERITY: dict[AgentState, str] = {
 }
 
 # Used only by the tmux status-line widget; emoji are dependable in tmux.
+# These are NOT used inside the TUI (the TUI is glyph-free).
 STATE_GLYPHS: dict[AgentState, str] = {
     AgentState.IDLE: "🔴",
     AgentState.WORKING: "🟢",
@@ -147,31 +175,11 @@ STATE_GLYPHS: dict[AgentState, str] = {
     AgentState.NO_PI: "⚫",
 }
 
-# In-app glyphs for the always-on counts in the title bar. Single-cell
-# Unicode shapes (NOT emoji) so they line up cleanly across terminals
-# and inherit the theme's foreground color when un-tagged.
-CHIP_GLYPHS: dict[AgentState, str] = {
-    AgentState.WORKING: "●",
-    AgentState.IDLE: "●",
-    AgentState.ERROR: "●",
-    AgentState.UNKNOWN: "○",
-}
-
-# Column widths for the labelled-row layout: title and cwd are padded so
-# the cwd / idle columns line up vertically across rows. Both fall back to
-# truncated-with-ellipsis when an entry exceeds the cell.
-TITLE_PAD_WIDTH = 16
-CWD_PAD_WIDTH = 10
-
-# Static block used as the leading marker on non-working rows. WORKING rows
-# get the live braille spinner frame instead, so the working state still
-# reads as 'something is happening' without animating the static rows.
-ROW_BLOCK = "▆"
-
 
 def _new_session_label() -> str:
-    """Top-of-tree affordance to open the new-session modal. Re-rendered on
-    theme change so the accent color stays in sync with the active theme."""
+    """Top-of-list affordance to open the new-session modal. Re-rendered
+    on theme change so the accent color stays in sync with the active
+    theme. `+` is plain ASCII typography, not an icon."""
     return f"[bold {ACCENT}]+  new session[/bold {ACCENT}]"
 
 
@@ -194,11 +202,10 @@ HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         (
             ("j / ↓", "down"),
             ("k / ↑", "up"),
-            ("h / ←", "collapse / parent"),
-            ("l / →", "expand / first child"),
+            ("h / ←", "previous session"),
+            ("l / →", "next session"),
             ("g / G", "top / bottom"),
             ("1–9", "jump to Nth pane"),
-            ("Space", "expand / collapse session"),
         ),
     ),
     (
@@ -214,7 +221,7 @@ HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     ),
     (
         "Spawn",
-        (("o", "new session (on +) or new window (on session/pane)"),),
+        (("o", "new session (on +) or new window (on a pane)"),),
     ),
     (
         "View",
@@ -264,7 +271,7 @@ class HelpScreen(ModalScreen):
         max-height: 80%;
         padding: 1 2;
         border: round $primary;
-        background: $surface;
+        background: $surface 70%;
         color: $foreground;
     }
     HelpScreen > #help-dialog > Static {
@@ -298,7 +305,7 @@ class NewPiScreen(ModalScreen):
         height: auto;
         padding: 1 2;
         border: round $primary;
-        background: $surface;
+        background: $surface 70%;
         color: $foreground;
     }
     NewPiScreen #new-pi-title {
@@ -318,7 +325,7 @@ class NewPiScreen(ModalScreen):
     }
     NewPiScreen Input {
         margin-top: 1;
-        background: $boost;
+        background: $boost 70%;
         color: $foreground;
         border: tall $surface-lighten-1;
     }
@@ -452,6 +459,50 @@ def _complete_dir_path(value: str) -> tuple[str, list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Git branch resolver (cached)
+# ---------------------------------------------------------------------------
+
+
+_BRANCH_TTL_S = 15.0
+_branch_cache: dict[str, tuple[float, str | None]] = {}
+
+
+def branch_for_cwd(cwd: str) -> str | None:
+    """Return the current git branch for `cwd`, with a 15s TTL cache.
+
+    Returns the short branch name (e.g., "main", "feature/foo") or None
+    when the cwd isn't a git checkout, the HEAD is detached, or the
+    `git` invocation fails for any reason. Detached HEADs intentionally
+    return None — there's no branch to display, and showing the SHA
+    just adds visual noise.
+
+    The cache amortizes the subprocess cost: at our 0.5s tick cadence
+    a 15s TTL means each cwd hits `git` at most every ~30 ticks, so the
+    render path stays cheap even with a dozen panes.
+    """
+    if not cwd:
+        return None
+    now = time.monotonic()
+    cached = _branch_cache.get(cwd)
+    if cached is not None and now - cached[0] < _BRANCH_TTL_S:
+        return cached[1]
+    try:
+        result = subprocess.run(
+            ["git", "-C", cwd, "symbolic-ref", "--quiet", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=0.4,
+        )
+        branch = (
+            result.stdout.strip() if result.returncode == 0 and result.stdout else None
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        branch = None
+    _branch_cache[cwd] = (now, branch)
+    return branch
+
+
+# ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
@@ -476,76 +527,83 @@ def _lerp_color(c1: str, c2: str, t: float) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-def _truncate(text: str, width: int) -> str:
-    """Right-truncate `text` to `width` cells, replacing the last char with
-    ‘…’ if it didn't fit. Width 0 collapses to empty; width 1 keeps a
-    single ellipsis as a placeholder."""
-    if width <= 0:
-        return ""
-    if len(text) <= width:
-        return text
-    return text[: max(width - 1, 0)] + "…"
-
-
-def fmt_row(
-    pane: Pane,
-    status: PaneStatus,
+def _state_tag(
+    state: AgentState,
+    idle_seconds: float,
     *,
-    spinner_char: str | None = None,
     working_color: str | None = None,
 ) -> str:
-    """Rich markup string for a tree leaf.
+    """Right-side state word for a pane row, colored by state.
 
-    Layout:  `<block>  Title<pad>  · cwd<pad>  idle`
-
-    The title carries the state color (bold), so the eye is drawn to
-    *which* agent is in *what* state without needing a separate state
-    word. Cwd and idle stay dim so they read as metadata. Title and cwd
-    are padded to fixed widths and ellipsized on overflow so the cwd /
-    idle columns line up vertically across rows.
-
-    For WORKING rows, the leading marker is the current braille spinner
-    frame and the title color is the pulsed value computed by the
-    animation timer (`working_color`). All other states get the static
-    `▆` block and the state's base color from `STATE_COLORS`.
+    Verbs are short on purpose so the right column reads as a status badge
+    rather than a sentence. WORKING uses `working_color` when given so it
+    pulses in lockstep with the title.
     """
-    is_working = status.state == AgentState.WORKING
-    if is_working:
-        color = working_color or STATE_COLORS[AgentState.WORKING]
-        block = spinner_char or ROW_BLOCK
+    color = STATE_COLORS.get(state, "grey50")
+    if state == AgentState.WORKING:
+        c = working_color or color
+        return f"[{c}]working[/{c}]"
+    if state == AgentState.IDLE:
+        idle = fmt_idle(idle_seconds)
+        verb = f"idle {idle}" if idle else "idle"
+        return f"[{color}]{verb}[/{color}]"
+    if state == AgentState.ERROR:
+        idle = fmt_idle(idle_seconds)
+        verb = f"error {idle}" if idle else "error"
+        return f"[{color}]{verb}[/{color}]"
+    if state == AgentState.WAITING:
+        return f"[{color}]waiting[/{color}]"
+    if state == AgentState.RETRYING:
+        return f"[{color}]retrying[/{color}]"
+    if state == AgentState.NO_PI:
+        return f"[{color}]no pi[/{color}]"
+    return f"[{color}]unknown[/{color}]"
+
+
+def fmt_row_main(
+    pane: Pane,
+    status: PaneStatus,
+    branch: str | None,
+    *,
+    working_color: str | None = None,
+) -> str:
+    """Markup for the LEFT half of a pane row: `name  · branch`.
+
+    The agent name is bold; on WORKING rows it's also tinted with the
+    pulse color so the title visibly breathes. Other states keep the
+    title in $foreground (neutral) and rely on the right-aligned state
+    word for color — that way the eye scans WORKING (active motion) vs
+    everything-else (calm) without a glyph in front of every line.
+
+    Branch is dim and prefixed with `· ` so it reads as metadata. When
+    the cwd isn't a git checkout we drop the entire branch fragment
+    (no awkward `· (none)` placeholder).
+    """
+    name_raw = pane.title or f"pane {pane.pane_index}"
+    name = escape(name_raw)
+    if status.state == AgentState.WORKING:
+        c = working_color or STATE_COLORS[AgentState.WORKING]
+        title = f"[bold {c}]{name}[/bold {c}]"
     else:
-        color = STATE_COLORS.get(status.state, "grey50")
-        block = ROW_BLOCK
-
-    title_raw = pane.title or f"pane {pane.pane_index}"
-    title = escape(_truncate(title_raw, TITLE_PAD_WIDTH).ljust(TITLE_PAD_WIDTH))
-    cwd_raw = Path(pane.cwd).name or pane.cwd
-    cwd = escape(_truncate(cwd_raw, CWD_PAD_WIDTH).ljust(CWD_PAD_WIDTH))
-    idle = fmt_idle(status.idle_seconds)
-
-    parts = [
-        f"[{color}]{block}[/{color}]  [bold {color}]{title}[/bold {color}]",
-        f"  [dim]· {cwd}[/dim]",
-    ]
-    if idle:
-        parts.append(f"  [dim]{idle}[/dim]")
-    return "".join(parts)
+        title = f"[bold]{name}[/bold]"
+    if branch:
+        return f"{title}  [dim]· {escape(branch)}[/dim]"
+    return title
 
 
-def fmt_session_header(session: str, statuses: list[PaneStatus]) -> str:
-    """`Session  ·  1 idle` (counts only for attention states).
+def fmt_row_tag(
+    status: PaneStatus,
+    *,
+    working_color: str | None = None,
+) -> str:
+    """Markup for the RIGHT half of a pane row: just the state word."""
+    return _state_tag(status.state, status.idle_seconds, working_color=working_color)
 
-    No glyphs; colored count text on the right.
-    """
-    name = escape(session)
-    counts: list[str] = []
-    for state in (AgentState.ERROR, AgentState.WAITING, AgentState.IDLE):
-        n = sum(1 for s in statuses if s.state == state)
-        if n:
-            color = STATE_COLORS[state]
-            counts.append(f"[{color}]{n} {state.value}[/{color}]")
-    suffix = f"  [dim]·[/dim]  {'  [dim]·[/dim]  '.join(counts)}" if counts else ""
-    return f"[bold]{name}[/bold]{suffix}"
+
+def fmt_session_header(session: str) -> str:
+    """Markup for a session group header. Plain bold name in the live
+    accent color — no border, no chip, no disclosure arrow."""
+    return f"[bold {ACCENT}]{escape(session)}[/bold {ACCENT}]"
 
 
 def fmt_status_widget(statuses: list[PaneStatus]) -> str:
@@ -567,6 +625,149 @@ def fmt_status_widget(statuses: list[PaneStatus]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Widgets — SessionGroup / PaneRow
+# ---------------------------------------------------------------------------
+
+
+class _SessionScroll(VerticalScroll):
+    """VerticalScroll whose arrow-key scroll bindings are redirected to
+    the App's cursor-nav actions.
+
+    Textual's `ScrollableContainer` ancestor binds up/down/left/right to
+    scroll the container, which would intercept those keys before our
+    App-level cursor bindings fire. We rebind them on the subclass so the
+    focused widget's bindings (this scroll's) point at the App actions
+    directly. PageUp / PageDown / Home / End stay as the inherited
+    scroll-aware defaults so users still get fast vertical paging in
+    long lists.
+    """
+
+    BINDINGS = [
+        Binding("up", "app.cursor_up", show=False),
+        Binding("down", "app.cursor_down", show=False),
+        Binding("left", "app.prev_card", show=False),
+        Binding("right", "app.next_card", show=False),
+    ]
+
+
+class PaneRow(Container):
+    """One pane inside a SessionGroup.
+
+    Two children laid out horizontally: `#row-main` takes all flexible
+    width (and ellipsizes when the agent name + branch don't fit); the
+    `#row-tag` floats on the right with auto width for the state word.
+    The flex split is what gives agent names every cell we can spare on
+    narrow tmux panes.
+
+    Selection is a CSS class toggle — `transition: background` on the
+    row makes the bg tint fade in/out smoothly when the cursor moves,
+    which is the visual cue replacing the glyph rail of the previous
+    design.
+    """
+
+    DEFAULT_CSS = """
+    PaneRow {
+        height: 1;
+        width: 100%;
+        layout: horizontal;
+        padding: 0 2;
+        background: transparent;
+        color: $foreground;
+        transition: background 180ms in_out_cubic;
+    }
+    PaneRow.selected {
+        background: $primary 18%;
+    }
+    PaneRow > #row-main {
+        width: 1fr;
+        height: 1;
+        background: transparent;
+        text-overflow: ellipsis;
+        text-wrap: nowrap;
+    }
+    PaneRow > #row-tag {
+        width: auto;
+        height: 1;
+        padding: 0 0 0 2;
+        background: transparent;
+        text-wrap: nowrap;
+    }
+    """
+
+    def __init__(self, pane_id: str) -> None:
+        # Pre-construct the children and pass them as positional args to
+        # Container.__init__ so they're materialized through Container's
+        # default `compose` immediately. Yielding them from a subclass
+        # `compose` instead races against subsequent explicit `mount`
+        # calls in the App's render path, which can leave child order
+        # inverted on the first paint.
+        self._main = Static("", id="row-main", markup=True)
+        self._tag = Static("", id="row-tag", markup=True)
+        super().__init__(self._main, self._tag)
+        self.pane_id = pane_id
+
+    def update_for(
+        self,
+        pane: Pane,
+        status: PaneStatus,
+        branch: str | None,
+        *,
+        working_color: str | None = None,
+    ) -> None:
+        """Refresh both halves of the row from the latest snapshot."""
+        self._main.update(
+            fmt_row_main(pane, status, branch, working_color=working_color)
+        )
+        self._tag.update(fmt_row_tag(status, working_color=working_color))
+
+
+class SessionGroup(Container):
+    """One session group. No border, no chip, no disclosure arrow — just
+    a bold name header with a 1-row top margin to separate it from the
+    previous group, and the PaneRow children flowing beneath.
+
+    Visual structure is carried by negative space alone, matching the
+    Mux/Warp sidebar pattern of "list with strong typography, not boxed
+    cards".
+    """
+
+    DEFAULT_CSS = """
+    SessionGroup {
+        height: auto;
+        width: 100%;
+        margin: 1 0 0 0;
+        padding: 0;
+        background: transparent;
+    }
+    SessionGroup > .session-header {
+        height: 1;
+        padding: 0 2;
+        background: transparent;
+        text-style: bold;
+    }
+    """
+
+    def __init__(self, session: str) -> None:
+        # Empty Container; the App's render path mounts the header
+        # explicitly right after mounting the group so it's queued
+        # before any rows. (Yielding the header from `compose` or
+        # passing it to Container.__init__ races against the explicit
+        # row mounts and ends up appended last.)
+        super().__init__()
+        self.session = session
+        self._header = Static(
+            fmt_session_header(session),
+            classes="session-header",
+            markup=True,
+        )
+
+    def refresh_header(self) -> None:
+        """Re-render the session-header label — used after a theme cycle
+        so the accent color tracks the new palette."""
+        self._header.update(fmt_session_header(self.session))
+
+
+# ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
 
@@ -574,17 +775,22 @@ def fmt_status_widget(statuses: list[PaneStatus]) -> str:
 class PiMonitorApp(App):
     """The pi-monitor TUI.
 
-    Renders the Sessions tree in the LEFT tmux pane of the monitor session.
-    The RIGHT tmux pane is owned by tmux and reset/respawned via this class
-    when the user picks an agent (see `_borrow_into_right_slot`).
+    Renders the session list in the LEFT tmux pane of the monitor session.
+    The RIGHT tmux pane is owned by tmux and reset/respawned via this
+    class when the user picks an agent (see `_borrow_into_right_slot`).
     """
 
     # Layout uses Textual's theme variables ($primary, $accent, $surface,
     # $foreground, $foreground-muted, ...) so swapping the active theme
-    # rethemes the whole UI for free. The Screen and chrome bars are
-    # transparent on purpose: a translucent terminal will let the user's
-    # wallpaper / blurred desktop show through. The tree card and modals
-    # keep $surface so text never lands on a busy backdrop.
+    # rethemes the whole UI for free. Everything in the column is
+    # transparent — Screen, chrome bars, the VerticalScroll itself, and
+    # SessionGroup backgrounds — so any translucency the user has
+    # configured in their terminal shows through end-to-end. There are
+    # no card borders, no glyphs, and no spinners; visual hierarchy
+    # comes from typography (bold names, dim metadata), color (state
+    # tints on titles + state words), and motion (smooth selection-bg
+    # transitions plus the WORKING-row title pulse driven from the App's
+    # animation timer).
     CSS = """
     Screen {
         background: transparent;
@@ -614,36 +820,38 @@ class PiMonitorApp(App):
         display: none;
     }
 
-    #tree-wrap {
+    #session-list {
         height: 1fr;
         width: 100%;
-        border: round $primary 50%;
-        border-title-color: $primary;
-        border-title-style: bold;
-        border-title-align: left;
-        background: $surface;
-        margin: 1 1 0 1;
+        background: transparent;
         padding: 0;
+        scrollbar-size: 1 1;
     }
 
-    #tree-wrap:focus-within {
-        border: round $primary;
+    #new-session-affordance {
+        height: 1;
+        padding: 0 2;
+        margin: 1 0 0 0;
+        background: transparent;
+        color: $foreground-muted;
+        transition: background 180ms in_out_cubic;
     }
 
-    Tree {
-        background: $surface;
-        color: $foreground;
-        padding: 1 1;
-    }
-
-    Tree > .tree--cursor {
-        background: $primary 30%;
-        color: $foreground;
+    #new-session-affordance.selected {
+        background: $primary 18%;
         text-style: bold;
     }
 
-    Tree > .tree--guides {
-        color: $foreground-muted 50%;
+    #empty-hint {
+        height: 1;
+        padding: 0 2;
+        margin: 1 0 0 0;
+        background: transparent;
+        color: $foreground-muted;
+    }
+
+    #empty-hint.hidden {
+        display: none;
     }
 
     Footer {
@@ -667,10 +875,15 @@ class PiMonitorApp(App):
     """
 
     BINDINGS = [
-        Binding("h", "tree_collapse_or_parent", "←", show=False),
-        Binding("j", "tree_cursor_down", "↓", show=False),
-        Binding("k", "tree_cursor_up", "↑", show=False),
-        Binding("l", "tree_expand_or_child", "→", show=False),
+        Binding("h", "prev_card", "←", show=False),
+        Binding("j", "cursor_down", "↓", show=False),
+        Binding("k", "cursor_up", "↑", show=False),
+        Binding("l", "next_card", "→", show=False),
+        Binding("up", "cursor_up", "↑", show=False),
+        Binding("down", "cursor_down", "↓", show=False),
+        Binding("left", "prev_card", "←", show=False),
+        Binding("right", "next_card", "→", show=False),
+        Binding("enter", "select", "open", show=False),
         Binding("tab", "focus_right", "→agent"),
         Binding("g", "go_top", "top", show=False),
         Binding("G", "go_bottom", "bottom", show=False),
@@ -711,14 +924,29 @@ class PiMonitorApp(App):
             saved_theme if saved_theme != self._theme_name else None
         )
         self._first_tick = True
-        self._last_labels: dict[tuple[str, str], str] = {}
-        self._needs_full_rebuild = True
+
+        # Render state. Groups keyed by session name, rows keyed by pane
+        # id; both diffed against resolver output every tick.
+        self._groups: dict[str, SessionGroup] = {}
+        self._rows: dict[str, PaneRow] = {}
         self._latest_statuses: dict[str, tuple[Pane, PaneStatus]] = {}
+        # Ordering preserved so insertion-order matches display order.
+        self._group_order: list[str] = []
+
+        # Cursor model: positions is a flat list of selectable rows in
+        # display order; idx points into it. Position tuples are either
+        # ("new",) or ("pane", pane_id).
+        self._cursor_positions: list[tuple] = [("new",)]
+        self._cursor_idx: int = 0
+
         # The viewer session currently attached in the right tmux pane (or
         # None when the right pane is at its placeholder).
         self._active_viewer: str | None = None
-        # Animation state: spinner frame counter.
-        self._spinner_frame = 0
+        # Animation: monotonic seconds-since-mount used for the WORKING
+        # title pulse phase. Keeping it as a float (not a frame counter)
+        # decouples the pulse from the timer cadence; if we change the
+        # interval, the visible motion stays the same.
+        self._pulse_t0: float = time.monotonic()
 
     @staticmethod
     def _resolve_theme(name: str) -> str:
@@ -732,25 +960,27 @@ class PiMonitorApp(App):
     def compose(self) -> ComposeResult:
         yield Static("pi-monitor", id="title-bar")
         yield Static("", id="attention-banner", classes="hidden")
-        with Container(id="tree-wrap"):
-            yield Tree("Sessions", id="tree")
+        with _SessionScroll(id="session-list"):
+            yield Static(_new_session_label(), id="new-session-affordance")
+            yield Static("", id="empty-hint", classes="hidden")
         yield Footer()
 
     def on_mount(self) -> None:
         self.title = "pi-monitor"
         self._title_bar: Static = self.query_one("#title-bar", Static)
         self._attention_banner: Static = self.query_one("#attention-banner", Static)
-        self._tree_wrap: Container = self.query_one("#tree-wrap", Container)
-        self._tree_wrap.border_title = "Sessions"
-        self._tree: Tree = self.query_one("#tree", Tree)
-        self._tree.show_root = False
-        self._tree.guide_depth = 2
-        self._tree.focus()
-        self.notifier.on_transition = self._on_transition
+        self._session_list: _SessionScroll = self.query_one(
+            "#session-list", _SessionScroll
+        )
+        self._new_session_row: Static = self.query_one(
+            "#new-session-affordance", Static
+        )
+        self._empty_hint: Static = self.query_one("#empty-hint", Static)
         # Pull initial palette from the saved theme before the first tick
         # so the very first render uses the right colors.
         self.theme = self._theme_name
         self._refresh_state_colors()
+        self._apply_selection()
         # Surface bad config values once, after the UI is up. We persist
         # the corrected value so we don't nag on every launch.
         if self._stale_saved_theme is not None:
@@ -762,8 +992,14 @@ class PiMonitorApp(App):
             self.config["theme"] = self._theme_name
             save_config(self.config)
             self._stale_saved_theme = None
+        # Take focus so our App-level bindings receive keystrokes. The
+        # session list itself is a VerticalScroll; we don't want the user
+        # to have to click before keys work.
+        self._session_list.can_focus = True
+        self._session_list.focus()
+        self.notifier.on_transition = self._on_transition
         self.set_interval(POLL_INTERVAL_S, self._tick)
-        self.set_interval(SPINNER_INTERVAL_S, self._animate_working_rows)
+        self.set_interval(PULSE_INTERVAL_S, self._animate_working_rows)
         self._tick()
 
     def _refresh_state_colors(self) -> None:
@@ -809,12 +1045,6 @@ class PiMonitorApp(App):
         # rows. Different visual contexts, same hue.
         STATE_COLORS[AgentState.WAITING] = palette["accent"]
         STATE_COLORS[AgentState.RETRYING] = palette["primary"]
-        # Use Textual's own muted foreground for UNKNOWN — it's contrast-
-        # correct against `$surface` on light themes too. The value carries
-        # an `#RRGGBBAA` alpha suffix; **Textual's** Static renderer strips
-        # the alpha at print time, so the on-screen color is the RGB
-        # component. (Pure Rich would fail to parse it — don't reuse this
-        # outside a Textual render path.)
         STATE_COLORS[AgentState.UNKNOWN] = palette["foreground-muted"]
         # NO_PI used to be the same RGB as UNKNOWN with only the alpha
         # different, which Textual ignores. Blend it halfway toward
@@ -824,57 +1054,49 @@ class PiMonitorApp(App):
             palette["foreground-disabled"][:7], surface_solid, 0.5
         )
         ACCENT = palette["primary"]
-        # Pulse dim end: blend success with $surface (the tree card's bg) at
-        # 50% so the dim end of the working animation stays legible across
-        # light AND dark themes. Strip alpha defensively before lerping.
-        WORKING_PULSE_DIM = _lerp_color(palette["success"][:7], surface_solid, 0.5)
+        # Pulse dim end: blend success with $background (the theme's deepest
+        # base color, what shows through the transparent rows) at 50% so
+        # the dim end of the working title pulse stays legible across both
+        # light and dark themes.
+        WORKING_PULSE_DIM = _lerp_color(
+            palette["success"][:7], palette["background"][:7], 0.5
+        )
 
     # -- Animation ---------------------------------------------------------
 
-    def _animation_state(self) -> tuple[str, str]:
-        """Current (spinner_char, pulse_color) for working rows."""
-        spinner_char = SPINNER_FRAMES[self._spinner_frame % len(SPINNER_FRAMES)]
-        # Sine-wave pulse between dim and bright green over PULSE_PERIOD_S.
-        # Range 0.55..1.0 keeps the dim end legible.
-        t = time.time() % PULSE_PERIOD_S
-        fraction = 0.55 + 0.45 * math.sin(2 * math.pi * t / PULSE_PERIOD_S)
+    def _pulse_color(self) -> str:
+        """Current WORKING-pulse color. Sine wave between dim and bright
+        success over PULSE_PERIOD_S; 0.55..1.0 keeps the dim end legible."""
+        elapsed = (time.monotonic() - self._pulse_t0) % PULSE_PERIOD_S
+        fraction = 0.55 + 0.45 * math.sin(2 * math.pi * elapsed / PULSE_PERIOD_S)
         if fraction < 0:
             fraction = 0.0
         elif fraction > 1:
             fraction = 1.0
-        pulse_color = _lerp_color(
+        return _lerp_color(
             WORKING_PULSE_DIM, STATE_COLORS[AgentState.WORKING], fraction
         )
-        return spinner_char, pulse_color
 
     def _animate_working_rows(self) -> None:
-        """Update labels of WORKING rows with the next spinner frame and the
-        current pulse color. Skips non-working rows so non-animated rows
-        don't flicker. Runs every SPINNER_INTERVAL_S."""
-        if not hasattr(self, "_tree"):
+        """Repaint every WORKING row with the current pulse color. Called
+        on PULSE_INTERVAL_S; cheap because we only touch rows whose state
+        is actually WORKING (other rows are owned by the slow tick)."""
+        if not hasattr(self, "_session_list"):
             return
-        self._spinner_frame = (self._spinner_frame + 1) % len(SPINNER_FRAMES)
-        spinner_char, pulse_color = self._animation_state()
-        for sess_node in self._tree.root.children:
-            for leaf in sess_node.children:
-                if not (leaf.data and leaf.data[0] == "pane"):
-                    continue
-                entry = self._latest_statuses.get(leaf.data[1])
-                if entry is None:
-                    continue
-                pane, status = entry
-                if status.state != AgentState.WORKING:
-                    continue
-                label = fmt_row(
-                    pane,
-                    status,
-                    spinner_char=spinner_char,
-                    working_color=pulse_color,
-                )
-                pane_key = ("pane", pane.pane_id)
-                if self._last_labels.get(pane_key) != label:
-                    self._last_labels[pane_key] = label
-                    leaf.set_label(label)
+        pulse = self._pulse_color()
+        for pane_id, row in self._rows.items():
+            entry = self._latest_statuses.get(pane_id)
+            if entry is None:
+                continue
+            pane, status = entry
+            if status.state != AgentState.WORKING:
+                continue
+            row.update_for(
+                pane,
+                status,
+                branch_for_cwd(pane.cwd),
+                working_color=pulse,
+            )
 
     def _on_transition(
         self,
@@ -981,13 +1203,12 @@ class PiMonitorApp(App):
         self._active_viewer = None
 
     def _update_chrome(self, statuses: list[tuple[Pane, PaneStatus]]) -> None:
-        """Render the title bar (brand + always-on stat chips + view info)
+        """Render the title bar (brand + always-on stat counts + view info)
         and the attention banner (top issue + count of the rest).
 
-        Once any pane exists the title-bar layout is stable so the eye
-        doesn't have to chase moving content: zero-counts render in dim.
-        With zero panes total we drop the chips entirely and let the tree's
-        empty-state hint do the talking.
+        Counts are rendered as colored words (`2 working · 1 idle`) — no
+        leading bullet glyph. Zero counts render in dim so the layout
+        stays stable as panes come and go.
         """
         counts: dict[AgentState, int] = {}
         for _, s in statuses:
@@ -996,25 +1217,23 @@ class PiMonitorApp(App):
 
         brand = f"[bold {ACCENT}]pi-monitor[/bold {ACCENT}]"
         if total == 0:
-            # Empty state: brand + the same hint the tree shows, so users
-            # see the next action no matter where their eye lands.
             self._title_bar.update(
                 f"{brand}   [dim]no pi sessions yet · press [/dim]"
                 f"[bold {ACCENT}]o[/bold {ACCENT}][dim] to launch one[/dim]"
             )
-            self._tree_wrap.border_title = "Sessions"
             self._update_attention_banner(statuses, counts)
             return
 
-        # Stat chips: working / idle / error, colored from the live theme.
-        # Zero rows render in dim so the layout is stable while panes come
-        # and go.
         chips: list[str] = []
-        for state in (AgentState.WORKING, AgentState.IDLE, AgentState.ERROR):
+        for state, label in (
+            (AgentState.WORKING, "working"),
+            (AgentState.IDLE, "idle"),
+            (AgentState.ERROR, "error"),
+        ):
             n = counts.get(state, 0)
             color = STATE_COLORS[state] if n else "grey50"
-            chips.append(f"[{color}]{CHIP_GLYPHS[state]} {n}[/{color}]")
-        chips_str = "  ".join(chips)
+            chips.append(f"[{color}]{n} {label}[/{color}]")
+        chips_str = "  [dim]·[/dim]  ".join(chips)
 
         info_bits = [
             f"{total} pane{'s' if total != 1 else ''}",
@@ -1029,10 +1248,6 @@ class PiMonitorApp(App):
             f"{brand}   {chips_str}   [dim]·[/dim]   [dim]{info}[/dim]"
         )
 
-        # Border title shows section name + live total so the card itself
-        # tells you how much it's showing without having to scan the chips.
-        self._tree_wrap.border_title = f"Sessions  ·  {total}"
-
         self._update_attention_banner(statuses, counts)
 
     def _update_attention_banner(
@@ -1044,8 +1259,8 @@ class PiMonitorApp(App):
         panes also need attention, append `+N more`. Hide entirely when
         nothing's stuck.
 
-        Highest priority wins: ERROR > IDLE. Among the same state we pick
-        the longest-idle pane (oldest issue first).
+        Highest priority wins: ERROR > WAITING > IDLE. Among the same
+        state we pick the longest-idle pane (oldest issue first).
         """
         attention_total = sum(
             counts.get(s, 0)
@@ -1056,8 +1271,6 @@ class PiMonitorApp(App):
             self._attention_banner.update("")
             return
 
-        # Pick the worst case: errors first, then waiting, then idle,
-        # oldest within state.
         candidates: list[tuple[Pane, PaneStatus]] = [
             (p, s) for p, s in statuses if s.state in ATTENTION_STATES
         ]
@@ -1069,8 +1282,6 @@ class PiMonitorApp(App):
         )
         top_pane, top_status = candidates[0]
         color = STATE_COLORS[top_status.state]
-        # Per-state verb. Default fallback handles any future ATTENTION
-        # state we forget to map here.
         verb = {
             AgentState.ERROR: "errored",
             AgentState.WAITING: "waiting",
@@ -1081,19 +1292,15 @@ class PiMonitorApp(App):
         target = escape(f"{top_pane.session}/{top_pane.title or top_pane.pane_index}")
         rest = attention_total - 1
         rest_part = f"  [dim]· +{rest} more[/dim]" if rest else ""
-        # CHIP_GLYPHS only covers the four "primary" states (working/idle/
-        # error/unknown). For WAITING, fall back to STATE_GLYPHS' tmux glyph.
-        chip = CHIP_GLYPHS.get(
-            top_status.state, STATE_GLYPHS.get(top_status.state, "○")
-        )
         self._attention_banner.update(
-            f"[bold {color}]{chip}[/bold {color}] "
-            f"[bold]{target}[/bold] [{color}]{verb}{idle_part}[/{color}]"
+            f"[bold]{target}[/bold]  [{color}]{verb}{idle_part}[/{color}]"
             f"{rest_part}  [dim]· press 1–9 to jump[/dim]"
         )
         self._attention_banner.remove_class("hidden")
 
     def _render(self, statuses: list[tuple[Pane, PaneStatus]]) -> None:
+        """Diff the desired group/row state against `_groups` / `_rows`
+        and mount/unmount/update widgets in place."""
         by_session: dict[str, list[tuple[Pane, PaneStatus]]] = {}
         for pane, status in statuses:
             by_session.setdefault(pane.session, []).append((pane, status))
@@ -1110,231 +1317,170 @@ class PiMonitorApp(App):
                 items.sort(key=lambda x: (x[0].window_index, x[0].pane_index))
         desired_sessions = sorted(by_session.keys())
 
-        if self._needs_full_rebuild:
-            self._full_rebuild(by_session, desired_sessions)
-            self._needs_full_rebuild = False
-        else:
-            self._diff_update(by_session, desired_sessions)
-        self._sync_empty_hint(not desired_sessions)
+        # Remove dead groups.
+        for name in list(self._groups.keys()):
+            if name not in by_session:
+                group = self._groups.pop(name)
+                for child in list(group.children):
+                    if isinstance(child, PaneRow):
+                        self._rows.pop(child.pane_id, None)
+                group.remove()
 
-    def _sync_empty_hint(self, empty: bool) -> None:
-        """Show or hide the first-run hint leaf below `+ new session`.
+        pulse = self._pulse_color()
 
-        The hint is a sibling root-level leaf (not a child of the new-
-        session row). Called after both the full and diff rebuild paths
-        so users see "no pi sessions yet · press o to launch one" when
-        their tree is otherwise blank, regardless of how we got there.
-        """
-        hint_key = ("hint", None)
-        existing = next(
-            (c for c in self._tree.root.children if c.data == hint_key), None
-        )
-        if empty and existing is None:
-            label = (
-                "  [dim]no pi sessions yet · press [/dim]"
+        for name in desired_sessions:
+            items = by_session[name]
+            if name not in self._groups:
+                group = SessionGroup(name)
+                self._groups[name] = group
+                # Mount before the empty-hint sentinel so groups stack
+                # above it; the hint sits at the very bottom of the list.
+                self._session_list.mount(group, before=self._empty_hint)
+                # Queue the header right after, so subsequent row mounts
+                # land below it. Textual flushes mount() calls FIFO
+                # within a turn, so this preserves header-first order
+                # without needing to await each AwaitMount.
+                group.mount(group._header)
+            else:
+                group = self._groups[name]
+
+            desired_pane_ids = [p.pane_id for p, _ in items]
+            existing_rows: dict[str, PaneRow] = {
+                child.pane_id: child
+                for child in group.children
+                if isinstance(child, PaneRow)
+            }
+
+            for pid, row in existing_rows.items():
+                if pid not in desired_pane_ids:
+                    row.remove()
+                    self._rows.pop(pid, None)
+
+            for pane, status in items:
+                branch = branch_for_cwd(pane.cwd)
+                if pane.pane_id in existing_rows and pane.pane_id in self._rows:
+                    row = self._rows[pane.pane_id]
+                    # WORKING rows are owned by the pulse timer; let it
+                    # repaint them so it doesn't fight our frame.
+                    if status.state == AgentState.WORKING:
+                        continue
+                    row.update_for(pane, status, branch)
+                else:
+                    row = PaneRow(pane.pane_id)
+                    self._rows[pane.pane_id] = row
+                    group.mount(row)
+                    row.update_for(
+                        pane,
+                        status,
+                        branch,
+                        working_color=pulse,
+                    )
+
+        self._group_order = list(desired_sessions)
+
+        if not desired_sessions:
+            self._empty_hint.update(
+                "[dim]no pi sessions yet · press [/dim]"
                 f"[bold {ACCENT}]o[/bold {ACCENT}]"
                 "[dim] to launch one[/dim]"
             )
-            self._tree.root.add_leaf(label, data=hint_key)
-            self._last_labels[hint_key] = label
-        elif not empty and existing is not None:
-            existing.remove()
-            self._last_labels.pop(hint_key, None)
+            self._empty_hint.remove_class("hidden")
+        else:
+            self._empty_hint.add_class("hidden")
 
-    def _full_rebuild(
-        self,
-        by_session: dict[str, list[tuple[Pane, PaneStatus]]],
-        desired_sessions: list[str],
-    ) -> None:
-        prev_cursor = self._tree.cursor_node.data if self._tree.cursor_node else None
-        expanded: dict[tuple, bool] = {}
-        for child in list(self._tree.root.children):
-            if child.data:
-                expanded[child.data] = child.is_expanded
+        # Refresh the affordance label so theme changes update its accent.
+        self._new_session_row.update(_new_session_label())
 
-        self._tree.root.remove_children()
-        self._last_labels.clear()
+        self._rebuild_cursor_positions()
+        self._apply_selection()
 
-        # Synthetic 'new session' affordance always at the top of the tree.
-        new_label = _new_session_label()
-        new_key = ("new", None)
-        self._tree.root.add_leaf(new_label, data=new_key)
-        self._last_labels[new_key] = new_label
+    # -- Cursor model ------------------------------------------------------
 
-        spinner_char, pulse_color = self._animation_state()
-        for session in desired_sessions:
-            items = by_session[session]
-            header = fmt_session_header(session, [s for _, s in items])
-            sess_key = ("session", session)
-            sess_node = self._tree.root.add(header, data=sess_key, expand=True)
-            self._last_labels[sess_key] = header
-            if expanded.get(sess_key, True) is False:
-                sess_node.collapse()
-            for pane, status in items:
-                label = fmt_row(
-                    pane,
-                    status,
-                    spinner_char=spinner_char,
-                    working_color=pulse_color,
-                )
-                pane_key = ("pane", pane.pane_id)
-                sess_node.add_leaf(label, data=pane_key)
-                self._last_labels[pane_key] = label
+    def _rebuild_cursor_positions(self) -> None:
+        """Walk the visible group/row structure and recompute the cursor
+        position list. Preserves the current cursor when its target is
+        still visible; otherwise lands on the first pane row.
+        """
+        prev_pos = (
+            self._cursor_positions[self._cursor_idx]
+            if 0 <= self._cursor_idx < len(self._cursor_positions)
+            else None
+        )
 
-        if prev_cursor is not None:
-            self._restore_cursor(prev_cursor)
-
-    def _diff_update(
-        self,
-        by_session: dict[str, list[tuple[Pane, PaneStatus]]],
-        desired_sessions: list[str],
-    ) -> None:
-        sess_nodes: dict[str, object] = {}
-        for child in self._tree.root.children:
-            if child.data and child.data[0] == "session":
-                sess_nodes[child.data[1]] = child
-
-        live = set(desired_sessions)
-        for name, node in list(sess_nodes.items()):
-            if name not in live:
-                node.remove()
-                self._last_labels.pop(("session", name), None)
-                del sess_nodes[name]
-
-        spinner_char, pulse_color = self._animation_state()
-        for name in desired_sessions:
-            items = by_session[name]
-            header = fmt_session_header(name, [s for _, s in items])
-            sess_key = ("session", name)
-
-            if name not in sess_nodes:
-                sess_node = self._tree.root.add(header, data=sess_key, expand=True)
-                sess_nodes[name] = sess_node
-                self._last_labels[sess_key] = header
-                for pane, status in items:
-                    label = fmt_row(
-                        pane,
-                        status,
-                        spinner_char=spinner_char,
-                        working_color=pulse_color,
-                    )
-                    pane_key = ("pane", pane.pane_id)
-                    sess_node.add_leaf(label, data=pane_key)
-                    self._last_labels[pane_key] = label
+        positions: list[tuple] = [("new",)]
+        for name in self._group_order:
+            group = self._groups.get(name)
+            if group is None:
                 continue
+            for child in group.children:
+                if isinstance(child, PaneRow):
+                    positions.append(("pane", child.pane_id))
 
-            sess_node = sess_nodes[name]
-            if self._last_labels.get(sess_key) != header:
-                sess_node.set_label(header)
-                self._last_labels[sess_key] = header
-
-            pane_nodes: dict[str, object] = {}
-            for child in sess_node.children:
-                if child.data and child.data[0] == "pane":
-                    pane_nodes[child.data[1]] = child
-
-            desired_ids = {p.pane_id for p, _ in items}
-            for pid, node in list(pane_nodes.items()):
-                if pid not in desired_ids:
-                    node.remove()
-                    self._last_labels.pop(("pane", pid), None)
-                    del pane_nodes[pid]
-
-            for pane, status in items:
-                # WORKING rows are owned by the animation timer; let it set
-                # their labels so its frame doesn't fight ours. We still add
-                # missing rows here (with the current animation snapshot).
-                pane_key = ("pane", pane.pane_id)
-                if pane.pane_id in pane_nodes:
-                    if status.state == AgentState.WORKING:
-                        continue
-                    label = fmt_row(pane, status)
-                    if self._last_labels.get(pane_key) != label:
-                        pane_nodes[pane.pane_id].set_label(label)
-                        self._last_labels[pane_key] = label
-                else:
-                    label = fmt_row(
-                        pane,
-                        status,
-                        spinner_char=spinner_char,
-                        working_color=pulse_color,
-                    )
-                    sess_node.add_leaf(label, data=pane_key)
-                    self._last_labels[pane_key] = label
-
-    def _restore_cursor(self, target_data) -> None:
-        """Re-cursor to a row identified by its `data` key after a rebuild.
-
-        Uses `move_cursor` (cursor-only) instead of `select_node`, because
-        select_node also posts a `NodeSelected` event — which we wired to
-        side-effects like opening the new-session modal or focusing the
-        right tmux pane. A passive rebuild must never trigger user-action
-        side-effects.
-        """
-        if target_data is None:
-            return
-        for sess_node in self._tree.root.children:
-            if sess_node.data == target_data:
-                self._tree.move_cursor(sess_node)
+        self._cursor_positions = positions
+        if prev_pos is not None:
+            try:
+                self._cursor_idx = positions.index(prev_pos)
                 return
-            for leaf in sess_node.children:
-                if leaf.data == target_data:
-                    self._tree.move_cursor(leaf)
-                    return
+            except ValueError:
+                pass
+        # Fallback: prefer the first pane over the affordance so power
+        # users land on a real row after the very first tick.
+        if len(positions) > 1:
+            self._cursor_idx = 1
+        else:
+            self._cursor_idx = 0
 
-    # -- Tree event ---------------------------------------------------------
+    def _current_position(self) -> tuple | None:
+        if 0 <= self._cursor_idx < len(self._cursor_positions):
+            return self._cursor_positions[self._cursor_idx]
+        return None
 
-    def on_tree_node_highlighted(self, event) -> None:
-        """Cursor moved to a row — preview the hovered agent in the right
-        pane while keyboard focus stays on the tree.
+    def _apply_selection(self) -> None:
+        """Reflect the cursor on the actual widgets — toggle the
+        `.selected` class on the row that owns the current position,
+        scroll it into view, and trigger a hover-preview if it's a pane
+        row. Selection bg fades in/out via the row's CSS transition."""
+        pos = self._current_position()
+        if pos == ("new",):
+            self._new_session_row.add_class("selected")
+        else:
+            self._new_session_row.remove_class("selected")
 
-        Pane rows trigger an attach (idempotent if it's the same source
-        session). Session headers and the `[+] new session` row are
-        no-ops; the right pane keeps showing whatever was last previewed
-        so the user can navigate around without losing context.
-        """
-        node = event.node
-        if not node.data:
-            return
-        if node.data[0] != "pane":
-            return
-        entry = self._latest_statuses.get(node.data[1])
-        if entry is None:
-            return
-        self._borrow_into_right_slot(entry[0])
+        target_row: PaneRow | None = None
+        for pane_id, row in self._rows.items():
+            if pos is not None and pos[0] == "pane" and pos[1] == pane_id:
+                row.add_class("selected")
+                target_row = row
+            else:
+                row.remove_class("selected")
 
-    def on_tree_node_selected(self, event) -> None:
-        """Enter (or click) on a row.
+        try:
+            if target_row is not None:
+                self._session_list.scroll_to_widget(target_row, animate=False)
+            elif pos == ("new",):
+                self._session_list.scroll_to_widget(
+                    self._new_session_row, animate=False
+                )
+        except Exception:
+            # Scroll target may not be mounted yet on the very first tick;
+            # the next tick will catch up.
+            pass
 
-        - on `[+] new session`: open the new-session modal
-        - on a pane: hand keyboard focus to the right pane so the user
-          can type to the agent. The agent itself was already attached
-          on hover (see `on_tree_node_highlighted`).
-        - on a session header: default tree expand/collapse (handled elsewhere)
-        """
-        node = event.node
-        if not node.data:
-            return
-        kind = node.data[0]
-        if kind == "new":
-            self._open_new_session()
-            return
-        if kind == "pane":
-            # Make sure the preview is current (covers a rare race where
-            # the user clicks a row their cursor never highlighted).
-            entry = self._latest_statuses.get(node.data[1])
+        if pos is not None and pos[0] == "pane":
+            entry = self._latest_statuses.get(pos[1])
             if entry is not None:
                 self._borrow_into_right_slot(entry[0])
-            if self._active_viewer is None:
-                return
-            try:
-                focus_right_slot()
-            except TmuxError as exc:
-                self.notify(
-                    f"could not focus right pane: {exc}",
-                    severity="error",
-                    timeout=8,
-                )
+
+    def _move_cursor(self, new_idx: int) -> None:
+        """Clamp + apply. Single chokepoint so we don't have to re-style
+        from every keybinding."""
+        if not self._cursor_positions:
+            return
+        new_idx = max(0, min(new_idx, len(self._cursor_positions) - 1))
+        if new_idx == self._cursor_idx:
+            return
+        self._cursor_idx = new_idx
+        self._apply_selection()
 
     # -- Right slot management ---------------------------------------------
 
@@ -1394,45 +1540,151 @@ class PiMonitorApp(App):
                 f"could not focus right pane: {exc}", severity="error", timeout=8
             )
 
+    # -- Cursor / nav actions ----------------------------------------------
+
+    def action_cursor_down(self) -> None:
+        self._move_cursor(self._cursor_idx + 1)
+
+    def action_cursor_up(self) -> None:
+        self._move_cursor(self._cursor_idx - 1)
+
+    def action_prev_card(self) -> None:
+        """h / ←: jump to the first row of the previous session."""
+        target = self._neighbour_card(direction=-1)
+        if target is not None:
+            self._move_cursor(target)
+
+    def action_next_card(self) -> None:
+        """l / →: jump to the first row of the next session."""
+        target = self._neighbour_card(direction=1)
+        if target is not None:
+            self._move_cursor(target)
+
+    def _neighbour_card(self, direction: int) -> int | None:
+        """Find the cursor index of the first pane row of the
+        previous/next session relative to the current cursor.
+        """
+        positions = self._cursor_positions
+        if not positions:
+            return None
+        current_card = self._card_for_position(self._current_position())
+        if not self._group_order:
+            return None
+        if current_card is None:
+            target_card = (
+                self._group_order[0] if direction > 0 else self._group_order[-1]
+            )
+        else:
+            try:
+                idx = self._group_order.index(current_card)
+            except ValueError:
+                return None
+            new_idx = idx + direction
+            if new_idx < 0 or new_idx >= len(self._group_order):
+                return None
+            target_card = self._group_order[new_idx]
+        for i, pos in enumerate(positions):
+            if pos[0] != "pane":
+                continue
+            entry = self._latest_statuses.get(pos[1])
+            if entry is not None and entry[0].session == target_card:
+                return i
+        return None
+
+    def _card_for_position(self, pos: tuple | None) -> str | None:
+        """Return the session name for a pane position, else None."""
+        if pos is None or pos[0] != "pane":
+            return None
+        entry = self._latest_statuses.get(pos[1])
+        return entry[0].session if entry is not None else None
+
     def action_go_top(self) -> None:
-        if self._tree.root.children:
-            first = self._tree.root.children[0]
-            target = first.children[0] if first.children else first
-            self._tree.select_node(target)
-            self._tree.scroll_home()
+        if not self._cursor_positions:
+            return
+        for i, pos in enumerate(self._cursor_positions):
+            if pos[0] == "pane":
+                self._move_cursor(i)
+                return
+        self._move_cursor(0)
 
     def action_go_bottom(self) -> None:
-        if not self._tree.root.children:
+        if not self._cursor_positions:
             return
-        last = self._tree.root.children[-1]
-        target = last.children[-1] if last.children else last
-        self._tree.select_node(target)
-        self._tree.scroll_end()
+        for i in range(len(self._cursor_positions) - 1, -1, -1):
+            if self._cursor_positions[i][0] == "pane":
+                self._move_cursor(i)
+                return
+        self._move_cursor(len(self._cursor_positions) - 1)
+
+    def action_jump(self, n: int) -> None:
+        """1–9: jump to the Nth pane in display order (skipping the
+        affordance). Out-of-range presses are no-ops."""
+        count = 0
+        for i, pos in enumerate(self._cursor_positions):
+            if pos[0] != "pane":
+                continue
+            count += 1
+            if count == n:
+                self._move_cursor(i)
+                return
+
+    def action_select(self) -> None:
+        """Enter: act on the cursored row.
+
+        - On `+ new session`: open the new-session modal.
+        - On a pane row: ensure the right pane previews this agent and
+          hand keyboard focus to the right pane (so subsequent keys go to
+          the agent, not to pi-monitor).
+        """
+        pos = self._current_position()
+        if pos is None:
+            return
+        if pos[0] == "new":
+            self._open_new_session()
+            return
+        if pos[0] == "pane":
+            entry = self._latest_statuses.get(pos[1])
+            if entry is not None:
+                self._borrow_into_right_slot(entry[0])
+            if self._active_viewer is None:
+                return
+            try:
+                focus_right_slot()
+            except TmuxError as exc:
+                self.notify(
+                    f"could not focus right pane: {exc}",
+                    severity="error",
+                    timeout=8,
+                )
+
+    # -- Other actions ----------------------------------------------------
 
     def action_cycle_sort(self) -> None:
         self.sort_mode = "status" if self.sort_mode == "tmux" else "tmux"
         self.config["sort_mode"] = self.sort_mode
         save_config(self.config)
-        self._needs_full_rebuild = True
         self._tick()
 
     def action_cycle_theme(self) -> None:
         """Cycle through the curated theme list, persist the choice, and
-        force a full tree rebuild so cached row labels pick up the new
-        accent / state colors."""
+        refresh state colors so titles + tags + headers pick up the new
+        accents.
+        """
         idx = THEMES.index(self._theme_name) if self._theme_name in THEMES else 0
         self._theme_name = THEMES[(idx + 1) % len(THEMES)]
         self.theme = self._theme_name
         self.config["theme"] = self._theme_name
         save_config(self.config)
         self._refresh_state_colors()
-        self._needs_full_rebuild = True
+        # Re-render group headers (their accent color comes from the live
+        # ACCENT and we just bumped it).
+        for group in self._groups.values():
+            group.refresh_header()
         self._tick()
         self.notify(f"theme: {self._theme_name}", timeout=2)
 
     def action_toggle_show_non_pi(self) -> None:
         self.show_non_pi = not self.show_non_pi
-        self._needs_full_rebuild = True
         self._tick()
 
     def action_refresh_now(self) -> None:
@@ -1447,65 +1699,23 @@ class PiMonitorApp(App):
             severity="information",
         )
 
-    def action_jump(self, n: int) -> None:
-        idx = 0
-        for sess_node in self._tree.root.children:
-            for leaf in sess_node.children:
-                idx += 1
-                if idx == n:
-                    self._tree.select_node(leaf)
-                    return
-
-    def action_tree_cursor_down(self) -> None:
-        self._tree.action_cursor_down()
-
-    def action_tree_cursor_up(self) -> None:
-        self._tree.action_cursor_up()
-
-    def action_tree_collapse_or_parent(self) -> None:
-        node = self._tree.cursor_node
-        if node is None:
-            return
-        if node.allow_expand and node.is_expanded:
-            node.collapse()
-            return
-        parent = node.parent
-        if parent is not None and parent != self._tree.root:
-            self._tree.select_node(parent)
-
-    def action_tree_expand_or_child(self) -> None:
-        node = self._tree.cursor_node
-        if node is None:
-            return
-        if node.allow_expand and not node.is_expanded:
-            node.expand()
-            return
-        children = list(node.children)
-        if children:
-            self._tree.select_node(children[0])
-
     def action_show_help(self) -> None:
         self.push_screen(HelpScreen())
 
     def action_open_new(self) -> None:
         """`o` is context-sensitive:
 
-        - cursor on `[+] new session` row → new tmux session (with pi)
-        - cursor on a session header / pane → new pi window in that session
-        - cursor on nothing useful (empty tree) → fall back to new session
+        - cursor on `+ new session` row → new tmux session (with pi)
+        - cursor on a pane → new pi window in that pane's session
+        - cursor on nothing useful (empty list) → fall back to new session
         """
-        node = self._tree.cursor_node
-        if node is None or not node.data:
+        pos = self._current_position()
+        if pos is None or pos[0] == "new":
             self._open_new_session()
             return
-        kind = node.data[0]
-        if kind == "new":
-            self._open_new_session()
-            return
-        if kind in ("session", "pane"):
+        if pos[0] == "pane":
             self._open_window()
             return
-        # Defensive fallback for any unrecognized node kind.
         self._open_new_session()
 
     def _open_new_session(self) -> None:
@@ -1518,7 +1728,6 @@ class PiMonitorApp(App):
     def _open_window(self) -> None:
         pane = self._cursored_pane_obj()
         if pane is None:
-            # Shouldn't normally happen given the dispatcher above; safe fallback.
             self._open_new_session()
             return
         self._window_target = pane.session
@@ -1528,33 +1737,15 @@ class PiMonitorApp(App):
         )
 
     def _cursored_cwd(self) -> str | None:
-        node = self._tree.cursor_node
-        if node and node.data:
-            kind, key = node.data
-            if kind == "pane":
-                entry = self._latest_statuses.get(key)
-                if entry is not None:
-                    return entry[0].cwd
-            elif kind == "session":
-                for p, _ in self._latest_statuses.values():
-                    if p.session == key:
-                        return p.cwd
-        return None
+        pane = self._cursored_pane_obj()
+        return pane.cwd if pane is not None else None
 
     def _cursored_pane_obj(self) -> Pane | None:
-        node = self._tree.cursor_node
-        if node is None or not node.data:
+        pos = self._current_position()
+        if pos is None or pos[0] != "pane":
             return None
-        kind, key = node.data
-        if kind == "pane":
-            entry = self._latest_statuses.get(key)
-            return entry[0] if entry else None
-        if kind == "session":
-            # Pick any pane in the session; window_index will be the same.
-            for p, _ in self._latest_statuses.values():
-                if p.session == key:
-                    return p
-        return None
+        entry = self._latest_statuses.get(pos[1])
+        return entry[0] if entry is not None else None
 
     def _handle_launch_result(self, result) -> None:
         if result is None:
@@ -1589,8 +1780,6 @@ class PiMonitorApp(App):
                 )
         except TmuxError as exc:
             self.notify(f"launch failed: {exc}", severity="error", timeout=8)
-        # Refresh tree immediately so the new agent shows up.
-        self._needs_full_rebuild = True
         self._tick()
 
     def action_quit_monitor(self) -> None:
