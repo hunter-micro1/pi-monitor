@@ -500,6 +500,103 @@ def test_resolve_unknown_when_no_session_files(
 
 
 # ---------------------------------------------------------------------------
+# Starting-grace promotion: a freshly-launched pi with no JSONL on disk yet
+# (pi only flushes after the first assistant) reports WORKING during the
+# grace window so the user never sees ❓ on a healthy fresh pi.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_promotes_starting_pi_with_no_file_to_working(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Live pi pid + valid pi_start + no claimable file + within
+    STARTING_GRACE_S → WORKING (not UNKNOWN, not IDLE)."""
+    from pi_monitor.state import (
+        STARTING_GRACE_S,
+        AgentState,
+        PaneRef,
+        StateResolver,
+    )
+
+    monkeypatch.setattr("pi_monitor.state.SESSIONS_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "pi_monitor.state.find_pi_pid_for_pane", lambda pid: 9999
+    )
+    pi_start = 1000.0
+    monkeypatch.setattr(
+        "pi_monitor.state._proc_starttime", lambda pid: pi_start
+    )
+
+    resolver = StateResolver()
+    refs = [PaneRef(pane_id="fresh", cwd="/no-files", is_pi=True, pane_pid=1)]
+    # 1 second after launch — well inside the grace window.
+    out = resolver.resolve(refs, now=pi_start + 1.0)
+    assert out["fresh"].state == AgentState.WORKING
+    assert out["fresh"].session_file is None
+    # Sanity: STARTING_GRACE_S is the documented threshold; if it ever
+    # drops below 1 s this test silently passes for the wrong reason.
+    assert STARTING_GRACE_S > 1.0
+
+
+def test_resolve_demotes_long_running_pi_with_no_file_to_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Live pi pid + valid pi_start + no claimable file + past
+    STARTING_GRACE_S → UNKNOWN. Promoting to IDLE here would notify
+    the user every workspace setup; UNKNOWN keeps quiet."""
+    from pi_monitor.state import (
+        STARTING_GRACE_S,
+        AgentState,
+        PaneRef,
+        StateResolver,
+    )
+
+    monkeypatch.setattr("pi_monitor.state.SESSIONS_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "pi_monitor.state.find_pi_pid_for_pane", lambda pid: 9999
+    )
+    pi_start = 1000.0
+    monkeypatch.setattr(
+        "pi_monitor.state._proc_starttime", lambda pid: pi_start
+    )
+
+    resolver = StateResolver()
+    refs = [PaneRef(pane_id="old", cwd="/no-files", is_pi=True, pane_pid=1)]
+    # Well past the grace window.
+    out = resolver.resolve(refs, now=pi_start + STARTING_GRACE_S + 5.0)
+    assert out["old"].state == AgentState.UNKNOWN
+
+
+# ---------------------------------------------------------------------------
+# Retryable-error classifier (consumed by the Notifier).
+# ---------------------------------------------------------------------------
+
+
+def test_is_retryable_error_message_matches_pi_transients():
+    from pi_monitor.state import is_retryable_error_message
+
+    # Real shapes seen in pi's `_isRetryableError` regex.
+    assert is_retryable_error_message("Anthropic API: overloaded_error")
+    assert is_retryable_error_message("HTTP 429 Too Many Requests")
+    assert is_retryable_error_message("503 service unavailable")
+    assert is_retryable_error_message("fetch failed: connection refused")
+    assert is_retryable_error_message("socket hang up")
+    assert is_retryable_error_message("upstream connect error")
+    assert is_retryable_error_message("Request timed out")
+
+
+def test_is_retryable_error_message_rejects_non_transients():
+    from pi_monitor.state import is_retryable_error_message
+
+    assert not is_retryable_error_message(None)
+    assert not is_retryable_error_message("")
+    # Real, non-retryable failure shapes.
+    assert not is_retryable_error_message("Tool 'bash' not found")
+    assert not is_retryable_error_message("Invalid argument: missing 'path'")
+    assert not is_retryable_error_message("Authentication failed: bad API key")
+
+
+# ---------------------------------------------------------------------------
 # Filename-timestamp parser
 # ---------------------------------------------------------------------------
 
@@ -606,8 +703,14 @@ def test_resolve_does_not_swap_when_idle_pi_starts_alongside_working_pi(
     assert out["old"].state == AgentState.WORKING
 
     # New pi has no file of its own — must not steal old pi's session.
+    # The state value is incidental here (within STARTING_GRACE_S the
+    # resolver reports WORKING; outside it would report UNKNOWN). What
+    # this regression actually guards is that no JSONL was bound at all.
     assert out["new"].session_file is None
-    assert out["new"].state == AgentState.UNKNOWN
+    # Sanity: "new" pi was launched 1 s before `now`, well inside the
+    # starting grace window, so the resolver promotes the no-file pane
+    # to WORKING rather than leaving it as UNKNOWN.
+    assert out["new"].state == AgentState.WORKING
 
 
 # ---------------------------------------------------------------------------

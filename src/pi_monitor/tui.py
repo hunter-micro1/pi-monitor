@@ -745,12 +745,24 @@ class PiMonitorApp(App):
             self._first_tick = False
         else:
             for pane, status in statuses:
+                # Pass last_error so the notifier can suppress transient
+                # auto-retry blips. snapshot is None for STARTING / NO_PI
+                # / UNKNOWN panes; treat that as no error.
+                err_msg = (
+                    status.snapshot.last_error
+                    if status.snapshot is not None
+                    else None
+                )
                 self.notifier.transition(
                     pane.target,
                     status.state,
                     title=f"pi · {pane.session}/{pane.title}",
                     body=Path(pane.cwd).name or pane.cwd,
+                    error_message=err_msg,
                 )
+            # Release any previously-deferred ERROR notifications whose
+            # suppression window has expired without recovery.
+            self.notifier.tick()
 
         self._latest_statuses = {p.pane_id: (p, s) for p, s in statuses}
 
