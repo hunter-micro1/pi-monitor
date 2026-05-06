@@ -120,11 +120,16 @@ def is_retryable_error_message(msg: str | None) -> bool:
 
 
 class AgentState(str, Enum):
-    WORKING = "working"
-    IDLE = "idle"
+    # Order is intentional: needs-attention states (ERROR, WAITING, IDLE)
+    # come first so the priority table in `tui.STATE_PRIORITY` can use
+    # iteration order as a tie-break for free.
     ERROR = "error"
-    NO_PI = "no_pi"
+    WAITING = "waiting"  # Agent is blocked on a user decision (heartbeat-only).
+    IDLE = "idle"
+    RETRYING = "retrying"  # Auto-retrying a transient API error (heartbeat-only).
+    WORKING = "working"
     UNKNOWN = "unknown"
+    NO_PI = "no_pi"
 
 
 @dataclass
@@ -660,6 +665,45 @@ def infer_state(
 
 
 # ---------------------------------------------------------------------------
+# Heartbeat → state mapping
+# ---------------------------------------------------------------------------
+
+# How the optional `pi-monitor-heartbeat` extension's `phase` field maps to
+# `AgentState`. Phases not in this table fall through to JSONL inference,
+# so adding new phases upstream is forward-compatible (worst case: no
+# fast-path benefit until this table is updated).
+_PHASE_TO_STATE: dict[str, AgentState] = {
+    "idle": AgentState.IDLE,
+    "agent_running": AgentState.WORKING,
+    "tool_running": AgentState.WORKING,
+    "compacting": AgentState.WORKING,
+    "retrying": AgentState.RETRYING,
+    "awaiting_permission": AgentState.WAITING,
+}
+
+
+def _state_from_heartbeat(
+    pid: int, now: float
+) -> tuple[AgentState, Path | None] | None:
+    """Read the heartbeat for `pid` and map it to a state. Returns
+    `(state, session_file)` when the heartbeat is fresh and its phase
+    is recognized; `None` otherwise so the caller falls back to JSONL.
+
+    Imports are local to keep `state.py` import-light when the optional
+    heartbeat module isn't present (e.g. in stripped test environments).
+    """
+    from .heartbeat import read_heartbeat
+
+    hb = read_heartbeat(pid, now=now)
+    if hb is None:
+        return None
+    state = _PHASE_TO_STATE.get(hb.phase)
+    if state is None:
+        return None
+    return state, hb.session_file
+
+
+# ---------------------------------------------------------------------------
 # Top-level helper used by the TUI
 # ---------------------------------------------------------------------------
 
@@ -701,13 +745,16 @@ class StateResolver:
         """
         if now is None:
             now = time.time()
-        # Walk process trees once; cache (ref → pi_start_time). We only
-        # need start time downstream, so drop the pid after the lookup.
+        # Walk process trees once; cache (ref → pid, start_time). We need
+        # the pid for heartbeat lookups and the start time for the
+        # claim-window logic.
+        pids: dict[str, int | None] = {}
         starts: dict[str, float | None] = {}
         for ref in refs:
             if not ref.is_pi:
                 continue
             pi_pid = find_pi_pid_for_pane(ref.pane_pid)
+            pids[ref.pane_id] = pi_pid
             starts[ref.pane_id] = (
                 _proc_starttime(pi_pid) if pi_pid is not None else None
             )
@@ -726,6 +773,30 @@ class StateResolver:
         results: dict[str, PaneStatus] = {}
         for group in groups.values():
             for i, ref in enumerate(group):
+                # Heartbeat fast path: if the pi-monitor-heartbeat
+                # extension is running inside this pi process and has
+                # written a fresh status file, trust it and skip JSONL
+                # inference entirely. This is the cleanest signal we
+                # have for compaction/retry/awaiting-permission — those
+                # phases never surface on disk.
+                pi_pid = pids.get(ref.pane_id)
+                if pi_pid is not None:
+                    hb_state = _state_from_heartbeat(pi_pid, now)
+                    if hb_state is not None:
+                        state, hb_session_file = hb_state
+                        if hb_session_file is not None:
+                            claimed.add(hb_session_file)
+                        # idle_seconds is moot for heartbeat-driven
+                        # status (the freshness window is the timeout).
+                        results[ref.pane_id] = PaneStatus(
+                            pane_id=ref.pane_id,
+                            state=state,
+                            session_file=hb_session_file,
+                            snapshot=None,
+                            idle_seconds=0.0,
+                        )
+                        continue
+
                 pi_start = starts[ref.pane_id]
                 next_pi_start = (
                     starts[group[i + 1].pane_id] if i + 1 < len(group) else None

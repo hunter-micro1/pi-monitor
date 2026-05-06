@@ -32,6 +32,23 @@ cd pi-monitor
 uv tool install -e .
 ```
 
+### Optional: heartbeat extension (much more accurate state)
+
+The default JSONL/mtime classifier can't tell `compacting`, `retrying`, or
+`awaiting_permission` apart from plain idle/working. The bundled
+`pi-monitor-heartbeat` pi extension publishes a small status file from
+inside each pi process so the monitor reads ground truth directly.
+Install once (the extension is auto-discovered from
+`~/.pi/agent/extensions/`):
+
+```bash
+ln -sf "$(pwd)/extensions/pi-monitor-heartbeat" ~/.pi/agent/extensions/pi-monitor-heartbeat
+```
+
+New pi processes pick it up automatically. Without the extension,
+pi-monitor falls back to the JSONL heuristic — nothing breaks, you just
+get the slightly less accurate v1 classification.
+
 ## Quickstart
 
 1. Add a hotkey to `~/.tmux.conf`:
@@ -86,18 +103,19 @@ uv tool install -e .
 
 ## States
 
-| Glyph | Meaning                                                                                                       |
-| ----- | ------------------------------------------------------------------------------------------------------------- |
-| 🟢    | working — agent is streaming or running tools                                                                 |
-| 🔴    | idle — agent finished, awaiting your next prompt                                                              |
-| 🟡    | stalled — tool-use turn open >5s without a result (likely awaiting your confirmation, or a long-running tool) |
-| ❌    | error — last assistant message has an error                                                                   |
-| ❓    | unknown — pane runs pi but no JSONL detected yet                                                              |
-| ⚫    | no pi running in this pane                                                                                    |
+| Glyph | Meaning                                                                                              |
+| ----- | ---------------------------------------------------------------------------------------------------- |
+| 🟢    | working — agent is streaming, running a tool, or compacting                                          |
+| 🔴    | idle — agent finished, awaiting your next prompt                                                     |
+| ❌    | error — last assistant message has a non-retryable error                                             |
+| 🟠    | waiting — agent is blocked on a user decision (heartbeat extension only)                             |
+| 🔵    | retrying — pi is auto-retrying a transient API error (heartbeat extension only; no notification)     |
+| ❓    | unknown — pane runs pi but no JSONL detected and no heartbeat                                        |
+| ⚫    | no pi running in this pane                                                                           |
 
 ## Notifications
 
-By default, `pi-monitor` fires a `notify-send` desktop notification when a pane transitions into `idle`, `stalled`, or `error` (not into `working`). Each pane has a 2-second debounce to suppress flapping.
+By default, `pi-monitor` fires a `notify-send` desktop notification when a pane transitions into `idle`, `waiting`, or `error` (not into `working` or `retrying`). Each pane has a 2-second debounce to suppress flapping. Errors whose message matches pi's auto-retry regex are deferred 10 s — if pi recovers in that window the notification is dropped entirely.
 
 Press `m` in the TUI to mute / unmute. The setting persists in `~/.config/pi-monitor/config.json`.
 

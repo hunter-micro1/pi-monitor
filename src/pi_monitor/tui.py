@@ -86,20 +86,27 @@ PI_DIM = "#666666"
 PI_SUCCESS_DIM = "#7d8347"
 
 # Per-state colors. Traffic-light semantics:
-#   working = green (good, leave alone)
-#   idle    = yellow (waiting for you)
-#   error   = red (broken)
+#   working  = green   (good, leave alone)
+#   idle     = yellow  (waiting for you)
+#   error    = red     (broken)
+#   waiting  = orange  (heartbeat-only: agent blocked on a user decision)
+#   retrying = blue    (heartbeat-only: pi auto-retrying a transient API error)
 STATE_COLORS: dict[AgentState, str] = {
     AgentState.WORKING: PI_SUCCESS,
     AgentState.IDLE: PI_WARNING,
     AgentState.ERROR: PI_ERROR,
+    AgentState.WAITING: "#de935f",  # warm orange — calls attention
+    AgentState.RETRYING: "#81a2be",  # steel blue — "automated, ongoing"
     AgentState.UNKNOWN: PI_DIM,
     AgentState.NO_PI: "#505050",
 }
 
-# Severity passed to Textual's in-TUI toast on transitions.
+# Severity passed to Textual's in-TUI toast on transitions. WAITING is a
+# real attention state (user must respond), so it gets a warning toast.
+# RETRYING never toasts — the user has nothing to do.
 STATE_TOAST_SEVERITY: dict[AgentState, str] = {
     AgentState.IDLE: "warning",
+    AgentState.WAITING: "warning",
     AgentState.ERROR: "error",
 }
 
@@ -108,6 +115,8 @@ STATE_GLYPHS: dict[AgentState, str] = {
     AgentState.IDLE: "🔴",
     AgentState.WORKING: "🟢",
     AgentState.ERROR: "❌",
+    AgentState.WAITING: "🟠",
+    AgentState.RETRYING: "🔵",
     AgentState.UNKNOWN: "❓",
     AgentState.NO_PI: "⚫",
 }
@@ -120,13 +129,17 @@ STATE_LABEL_WIDTH = 8
 # create a tmux session without it being context-sensitive.
 NEW_SESSION_LABEL = "[bold #8abeb7][+] new session[/bold #8abeb7]"
 
-# Lower number = higher attention priority.
+# Lower number = higher attention priority. WAITING slots above IDLE
+# (the user is being asked something specific). RETRYING is below IDLE
+# but above WORKING because it's a transient state worth surfacing.
 STATE_PRIORITY: dict[AgentState, int] = {
     AgentState.ERROR: 0,
-    AgentState.IDLE: 1,
-    AgentState.UNKNOWN: 2,
-    AgentState.WORKING: 4,
-    AgentState.NO_PI: 5,
+    AgentState.WAITING: 1,
+    AgentState.IDLE: 2,
+    AgentState.RETRYING: 3,
+    AgentState.UNKNOWN: 4,
+    AgentState.WORKING: 5,
+    AgentState.NO_PI: 6,
 }
 
 HELP_TEXT = """\
@@ -454,7 +467,7 @@ def fmt_session_header(session: str, statuses: list[PaneStatus]) -> str:
     """
     name = escape(session)
     counts: list[str] = []
-    for state in (AgentState.ERROR, AgentState.IDLE):
+    for state in (AgentState.ERROR, AgentState.WAITING, AgentState.IDLE):
         n = sum(1 for s in statuses if s.state == state)
         if n:
             color = STATE_COLORS[state]
@@ -470,7 +483,9 @@ def fmt_status_widget(statuses: list[PaneStatus]) -> str:
     parts: list[str] = []
     for state in (
         AgentState.ERROR,
+        AgentState.WAITING,
         AgentState.IDLE,
+        AgentState.RETRYING,
         AgentState.WORKING,
     ):
         n = counts.get(state, 0)
@@ -810,7 +825,8 @@ class PiMonitorApp(App):
         )
 
         attention_total = sum(
-            counts.get(s, 0) for s in (AgentState.ERROR, AgentState.IDLE)
+            counts.get(s, 0)
+            for s in (AgentState.ERROR, AgentState.WAITING, AgentState.IDLE)
         )
         if attention_total == 0:
             self._attention_banner.add_class("hidden")
@@ -820,6 +836,7 @@ class PiMonitorApp(App):
         parts: list[str] = []
         for state, label in (
             (AgentState.ERROR, "error"),
+            (AgentState.WAITING, "waiting"),
             (AgentState.IDLE, "idle"),
         ):
             n = counts.get(state, 0)
