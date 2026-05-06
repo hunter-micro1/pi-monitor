@@ -63,7 +63,7 @@
  * (`dist/core/agent-session.js`).
  */
 
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -75,8 +75,23 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 const HEARTBEAT_DIR = join(homedir(), ".pi", "agent", ".heartbeats");
 const HEARTBEAT_PATH = join(HEARTBEAT_DIR, `${process.pid}.json`);
+const HEARTBEAT_TMP_PATH = `${HEARTBEAT_PATH}.tmp`;
 
 const SCHEMA_VERSION = 1;
+
+/**
+ * How often we re-stamp the heartbeat while in a non-idle phase.
+ *
+ * The reader treats heartbeats older than its own freshness window
+ * (`HEARTBEAT_FRESHNESS_S`, default 5 s) as stale. Pi events fire only
+ * at boundaries, so phases like `compacting` (10–60 s LLM call) and
+ * the late attempts of `retrying` (exponential backoff sleep, ~8 s on
+ * attempt 4 with default settings) are silent for longer than the
+ * reader's window. Without this refresh the resolver would fall back
+ * to JSONL inference during the very phases this extension exists to
+ * disambiguate. Two seconds gives the reader a safe ~2.5× buffer.
+ */
+const REFRESH_INTERVAL_MS = 2000;
 
 /**
  * Mirror of pi-coding-agent's `_isRetryableError` regex
@@ -132,8 +147,14 @@ function write(): void {
 		current_tool: currentTool,
 		retry_attempt: retryAttempt,
 	};
+	// Atomic write: writeFileSync truncates-then-writes, which means a
+	// reader can observe a half-written buffer if it polls during the
+	// write. Stage to a sibling tmp file then rename — POSIX rename is
+	// atomic on the same filesystem, so the reader either sees the old
+	// contents or the new contents, never partial.
 	try {
-		writeFileSync(HEARTBEAT_PATH, `${JSON.stringify(payload)}\n`);
+		writeFileSync(HEARTBEAT_TMP_PATH, `${JSON.stringify(payload)}\n`);
+		renameSync(HEARTBEAT_TMP_PATH, HEARTBEAT_PATH);
 	} catch {
 		// Heartbeat is advisory; never crash pi over a write failure.
 	}
@@ -171,6 +192,14 @@ function lastAssistant(
 
 export default function (pi: ExtensionAPI): void {
 	ensureDir();
+
+	// Periodic re-stamp so long silent phases (compaction, retry sleep,
+	// long bash) keep the heartbeat fresh. `unref()` so this never blocks
+	// pi from exiting cleanly. Cleared in `session_shutdown`.
+	const refreshTimer = setInterval(() => {
+		if (phase !== "idle") write();
+	}, REFRESH_INTERVAL_MS);
+	refreshTimer.unref();
 
 	pi.on("session_start", async (_event, ctx) => {
 		sessionFile = ctx.sessionManager.getSessionFile() ?? null;
@@ -263,6 +292,7 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async (_event, _ctx) => {
+		clearInterval(refreshTimer);
 		deleteHeartbeat();
 	});
 }

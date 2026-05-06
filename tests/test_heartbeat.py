@@ -312,6 +312,82 @@ def test_resolve_uses_heartbeat_waiting_for_no_session_file(
     assert out["p"].state == AgentState.WAITING
 
 
+def test_resolve_uses_heartbeat_compacting_overrides_idle_jsonl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Headline G4 case: while pi auto-compacts, the JSONL hasn't been
+    touched (last entry is the prior `assistant{stop}` turn), so the
+    legacy classifier reports IDLE. The heartbeat says compacting.
+    The compacting phase must map to WORKING so the user sees the agent
+    is busy and doesn't get a misleading IDLE notification.
+    """
+    from pi_monitor.state import AgentState, PaneRef, StateResolver
+
+    sessions_root, heartbeats_dir = _setup_pi_pane(tmp_path, monkeypatch)
+
+    sess = sessions_root / "--proj--"
+    sess.mkdir()
+    file_a = sess / "live.jsonl"
+    _write_jsonl(
+        file_a,
+        [
+            _msg(
+                "assistant",
+                content=[{"type": "text", "text": "done"}],
+                stopReason="stop",
+            )
+        ],
+    )
+    # mtime far enough in the past that legacy inference would say IDLE.
+    _stamp(file_a, 1000.0)
+
+    _write_heartbeat(
+        heartbeats_dir, 9999, ts=1199.5, phase="compacting"
+    )
+
+    resolver = StateResolver()
+    refs = [PaneRef(pane_id="p", cwd="/proj", is_pi=True, pane_pid=1)]
+    out = resolver.resolve(refs, now=1200.0)
+    assert out["p"].state == AgentState.WORKING
+
+
+def test_resolve_uses_heartbeat_agent_running_overrides_idle_jsonl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Mid-agent-loop case: pi just started a new turn but the JSONL
+    hasn't received the new user/assistant entries yet (lazy flush
+    semantics). Heartbeat says agent_running; resolver must report
+    WORKING, not whatever the previous turn left on disk.
+    """
+    from pi_monitor.state import AgentState, PaneRef, StateResolver
+
+    sessions_root, heartbeats_dir = _setup_pi_pane(tmp_path, monkeypatch)
+
+    sess = sessions_root / "--proj--"
+    sess.mkdir()
+    file_a = sess / "live.jsonl"
+    _write_jsonl(
+        file_a,
+        [
+            _msg(
+                "assistant",
+                content=[{"type": "text", "text": "prev"}],
+                stopReason="stop",
+            )
+        ],
+    )
+    _stamp(file_a, 1000.0)  # legacy: would say IDLE
+
+    _write_heartbeat(
+        heartbeats_dir, 9999, ts=1199.5, phase="agent_running"
+    )
+
+    resolver = StateResolver()
+    refs = [PaneRef(pane_id="p", cwd="/proj", is_pi=True, pane_pid=1)]
+    out = resolver.resolve(refs, now=1200.0)
+    assert out["p"].state == AgentState.WORKING
+
+
 def test_resolve_falls_back_when_heartbeat_unknown_phase(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
