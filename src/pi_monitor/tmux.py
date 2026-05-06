@@ -361,12 +361,23 @@ def viewer_zoom_to_pane(viewer: str, window_index: int, pane_index: int) -> None
         pass
 
 
-def attach_right_slot_to_viewer(viewer: str) -> None:
+def attach_right_slot_to_viewer(viewer: str, cwd: str | None = None) -> None:
     """Respawn the monitor's right pane with a tmux client attached to
     `viewer`. The `env -u TMUX` prefix unsets the inherited `$TMUX` so the
-    inner client doesn't refuse to nest."""
+    inner client doesn't refuse to nest.
+
+    When `cwd` is provided we pass it to `respawn-pane -c`, which sets
+    the new pane's `pane_current_path`. Any user-initiated split of the
+    right pane (e.g. outer-tmux `prefix + n` or `prefix + %`) inherits
+    that path, so the new shell lands in the agent's directory instead
+    of pi-monitor's launch directory.
+    """
     cmd = f"env -u TMUX tmux attach -t {shlex.quote(viewer)}"
-    _tmux("respawn-pane", "-k", "-t", RIGHT_SLOT, cmd)
+    args = ["respawn-pane", "-k"]
+    if cwd:
+        args += ["-c", cwd]
+    args += ["-t", RIGHT_SLOT, cmd]
+    _tmux(*args)
 
 
 def reset_right_slot_to_placeholder() -> None:
