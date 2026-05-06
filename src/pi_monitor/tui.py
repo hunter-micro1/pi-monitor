@@ -155,7 +155,8 @@ HELP_TEXT = """\
 [bold]Spawn[/bold]
   [#8abeb7]o[/#8abeb7]          context-sensitive launch:
               · on [+] new session row → new tmux session
-              · on session header / pane → split that session
+              · on session header / pane → new pi window
+                in that session (each agent is isolated)
 
 [bold]View[/bold]
   [#8abeb7]s[/#8abeb7]          cycle sort: tmux ↔ needs-attention-first
@@ -214,8 +215,8 @@ class NewPiScreen(ModalScreen):
     """Prompt for a directory to launch a new pi agent in.
 
     Returns a tuple `(mode, cwd)` on Enter, or `None` on Esc. The caller
-    distinguishes 'session' (new tmux session) vs 'split' (split current)
-    via the `mode` it passed in at construction.
+    distinguishes 'session' (new tmux session) vs 'window' (new window in
+    the current session) via the `mode` it passed in at construction.
     """
 
     DEFAULT_CSS = """
@@ -265,14 +266,14 @@ class NewPiScreen(ModalScreen):
 
     def __init__(self, mode: str, default_cwd: str) -> None:
         super().__init__()
-        self.mode = mode  # "session" or "split"
+        self.mode = mode  # "session" or "window"
         self.default_cwd = default_cwd
 
     def compose(self) -> ComposeResult:
         title = (
             "Launch pi in a new tmux session"
             if self.mode == "session"
-            else "Launch pi in a new split (current session)"
+            else "Launch pi in a new window (current session)"
         )
         with Container(id="new-pi-dialog"):
             yield Static(title, id="new-pi-title")
@@ -1166,8 +1167,8 @@ class PiMonitorApp(App):
     def action_open_new(self) -> None:
         """`o` is context-sensitive:
 
-        - cursor on `[+] new session` row → new tmux session
-        - cursor on a session header / pane → split that session
+        - cursor on `[+] new session` row → new tmux session (with pi)
+        - cursor on a session header / pane → new pi window in that session
         - cursor on nothing useful (empty tree) → fall back to new session
         """
         node = self._tree.cursor_node
@@ -1179,7 +1180,7 @@ class PiMonitorApp(App):
             self._open_new_session()
             return
         if kind in ("session", "pane"):
-            self._open_split()
+            self._open_window()
             return
         # Defensive fallback for any unrecognized node kind.
         self._open_new_session()
@@ -1191,15 +1192,15 @@ class PiMonitorApp(App):
             self._handle_launch_result,
         )
 
-    def _open_split(self) -> None:
+    def _open_window(self) -> None:
         pane = self._cursored_pane_obj()
         if pane is None:
             # Shouldn't normally happen given the dispatcher above; safe fallback.
             self._open_new_session()
             return
-        self._split_target = f"{pane.session}:{pane.window_index}"
+        self._window_target = pane.session
         self.push_screen(
-            NewPiScreen("split", pane.cwd),
+            NewPiScreen("window", pane.cwd),
             self._handle_launch_result,
         )
 
@@ -1247,19 +1248,19 @@ class PiMonitorApp(App):
                     timeout=4,
                 )
             else:
-                from .tmux import split_pi_pane
+                from .tmux import create_pi_window
 
-                target = getattr(self, "_split_target", None)
+                target = getattr(self, "_window_target", None)
                 if target is None:
                     self.notify(
-                        "no split target tracked; cursor a pane and try again",
+                        "no target session tracked; cursor a session and try again",
                         severity="error",
                         timeout=5,
                     )
                     return
-                split_pi_pane(target, cwd)
+                create_pi_window(target, cwd)
                 self.notify(
-                    f"started pi in split on {target}",
+                    f"started pi in a new window of session {target}",
                     severity="information",
                     timeout=4,
                 )
