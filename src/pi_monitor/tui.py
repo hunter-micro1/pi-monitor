@@ -157,8 +157,16 @@ CHIP_GLYPHS: dict[AgentState, str] = {
     AgentState.UNKNOWN: "○",
 }
 
-# Width to which we pad state labels in the tree. Longest is 'working' (7).
-STATE_LABEL_WIDTH = 8
+# Column widths for the labelled-row layout: title and cwd are padded so
+# the cwd / idle columns line up vertically across rows. Both fall back to
+# truncated-with-ellipsis when an entry exceeds the cell.
+TITLE_PAD_WIDTH = 16
+CWD_PAD_WIDTH = 10
+
+# Static block used as the leading marker on non-working rows. WORKING rows
+# get the live braille spinner frame instead, so the working state still
+# reads as 'something is happening' without animating the static rows.
+ROW_BLOCK = "▆"
 
 
 def _new_session_label() -> str:
@@ -468,43 +476,59 @@ def _lerp_color(c1: str, c2: str, t: float) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
+def _truncate(text: str, width: int) -> str:
+    """Right-truncate `text` to `width` cells, replacing the last char with
+    ‘…’ if it didn't fit. Width 0 collapses to empty; width 1 keeps a
+    single ellipsis as a placeholder."""
+    if width <= 0:
+        return ""
+    if len(text) <= width:
+        return text
+    return text[: max(width - 1, 0)] + "…"
+
+
 def fmt_row(
     pane: Pane,
     status: PaneStatus,
     *,
-    spinner_char: str = " ",
+    spinner_char: str | None = None,
     working_color: str | None = None,
 ) -> str:
     """Rich markup string for a tree leaf.
 
-    Layout:  `<glyph> <state>  Title  · cwd  · idle`
+    Layout:  `<block>  Title<pad>  · cwd<pad>  idle`
 
-    For WORKING rows, the leading glyph is the current spinner frame and
-    the state word's color comes from `working_color` (the pulsed value
-    computed by the animation timer). For all other states the leading
-    column is a single space (kept for column alignment) and color comes
-    from `STATE_COLORS`.
+    The title carries the state color (bold), so the eye is drawn to
+    *which* agent is in *what* state without needing a separate state
+    word. Cwd and idle stay dim so they read as metadata. Title and cwd
+    are padded to fixed widths and ellipsized on overflow so the cwd /
+    idle columns line up vertically across rows.
+
+    For WORKING rows, the leading marker is the current braille spinner
+    frame and the title color is the pulsed value computed by the
+    animation timer (`working_color`). All other states get the static
+    `▆` block and the state's base color from `STATE_COLORS`.
     """
     is_working = status.state == AgentState.WORKING
     if is_working:
         color = working_color or STATE_COLORS[AgentState.WORKING]
-        glyph = spinner_char
+        block = spinner_char or ROW_BLOCK
     else:
         color = STATE_COLORS.get(status.state, "grey50")
-        glyph = " "
+        block = ROW_BLOCK
 
-    state_label = status.state.value.ljust(STATE_LABEL_WIDTH)
-    title = escape(pane.title or f"pane {pane.pane_index}")
-    cwd = escape(Path(pane.cwd).name or pane.cwd)
+    title_raw = pane.title or f"pane {pane.pane_index}"
+    title = escape(_truncate(title_raw, TITLE_PAD_WIDTH).ljust(TITLE_PAD_WIDTH))
+    cwd_raw = Path(pane.cwd).name or pane.cwd
+    cwd = escape(_truncate(cwd_raw, CWD_PAD_WIDTH).ljust(CWD_PAD_WIDTH))
     idle = fmt_idle(status.idle_seconds)
 
     parts = [
-        f"[{color}]{glyph}[/{color}] [bold {color}]{state_label}[/bold {color}] {title}"
+        f"[{color}]{block}[/{color}]  [bold {color}]{title}[/bold {color}]",
+        f"  [dim]· {cwd}[/dim]",
     ]
-    if cwd:
-        parts.append(f"  [dim]· {cwd}[/dim]")
     if idle:
-        parts.append(f"  [dim]· {idle}[/dim]")
+        parts.append(f"  [dim]{idle}[/dim]")
     return "".join(parts)
 
 
