@@ -256,6 +256,11 @@ def ensure_linked_viewer(source: str) -> str:
     one) and set its prefix to `VIEWER_INNER_PREFIX`. Returns the viewer
     session name. The viewer shares `source`'s windows; killing the viewer
     leaves `source` and its panes untouched.
+
+    We also disable the viewer session's status line. The right pane is a
+    nested tmux client — without this, you'd see two status bars stacked
+    inside the monitor: the outer monitor session's bar (which already
+    shows pi-monitor's aggregate counts) and the inner viewer's duplicate.
     """
     name = viewer_session_name(source)
     if not session_exists(name):
@@ -264,6 +269,12 @@ def ensure_linked_viewer(source: str) -> str:
             _tmux("set-option", "-t", name, "prefix", VIEWER_INNER_PREFIX)
         except TmuxError:
             # Old tmux that won't take prefix per-session — not fatal.
+            pass
+        try:
+            _tmux("set-option", "-t", name, "status", "off")
+        except TmuxError:
+            # Old tmux that won't take status per-session — not fatal;
+            # the user just sees a redundant bar inside the right pane.
             pass
     return name
 
