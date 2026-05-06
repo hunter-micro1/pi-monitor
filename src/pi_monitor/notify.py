@@ -4,6 +4,14 @@ We only fire notifications for transitions *into* a "needs-attention" state
 (idle / error). Working → idle fires; idle → working does not.
 Each pane gets a 2-second debounce so flapping states don't spam the user.
 
+ERROR transitions whose `errorMessage` looks like one of pi's auto-retried
+transients (overload / 429 / network blips) are *deferred* by
+`retry_suppression_s`. If the pane recovers to a non-error state before the
+window expires the notification is dropped entirely; otherwise it fires
+as a real ERROR. This kills the false desktop alarms during pi's
+exponential-backoff auto-retry loop without losing notifications for
+actually-broken sessions.
+
 Config lives at `~/.config/pi-monitor/config.json` and is touched only when
 the user toggles a setting from the TUI (mute, sort mode).
 """
@@ -18,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .state import AgentState
+from .state import AgentState, is_retryable_error_message
 
 ATTENTION_STATES = frozenset({AgentState.IDLE, AgentState.ERROR})
 
@@ -56,10 +64,25 @@ def save_config(config: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _PendingError:
+    """An ERROR transition deferred while pi might be auto-retrying."""
+
+    deadline: float
+    title: str
+    body: str
+
+
 @dataclass
 class Notifier:
     """Tracks last-known state per pane and fires `notify-send` on transitions
     into attention states. Debounces duplicate transitions inside `debounce_s`.
+
+    ERROR transitions with a retryable `error_message` are held for
+    `retry_suppression_s` and only fired if the pane is still in ERROR when
+    the window expires. Callers must pump `tick(now)` periodically (e.g.
+    once per poll loop) so deferred errors actually get released; without
+    a pump the suppression window is effectively infinite.
 
     The TUI installs `on_transition` to also receive an in-TUI toast on the
     same trigger. The callback runs only when `enabled` is True (mute affects
@@ -67,10 +90,12 @@ class Notifier:
     """
 
     debounce_s: float = 2.0
+    retry_suppression_s: float = 10.0
     enabled: bool = True
     on_transition: Callable[[str, AgentState, str, str], None] | None = None
     _last_state: dict[str, AgentState] = field(default_factory=dict)
     _last_fire: dict[str, float] = field(default_factory=dict)
+    _pending: dict[str, _PendingError] = field(default_factory=dict)
 
     def transition(
         self,
@@ -79,21 +104,47 @@ class Notifier:
         *,
         title: str | None = None,
         body: str | None = None,
+        error_message: str | None = None,
         now: float | None = None,
     ) -> bool:
         """Record a state observation and maybe fire a notification.
 
-        Returns True iff a notification was actually fired.
+        Returns True iff a notification was actually fired *now*. A return
+        of False can mean: no transition, suppressed by debounce, deferred
+        by retry suppression, or attention-not-required.
         """
         now = now if now is not None else time.time()
         prev = self._last_state.get(pane_id)
         self._last_state[pane_id] = new_state
+
+        # Any non-ERROR transition cancels a pending suppressed error —
+        # whatever pi was retrying, it's not retrying anymore.
+        if new_state != AgentState.ERROR:
+            self._pending.pop(pane_id, None)
 
         if prev == new_state:
             return False
         if new_state not in ATTENTION_STATES:
             return False
         if not self.enabled:
+            return False
+
+        # ERROR with a retryable error message — defer instead of firing.
+        # If pi recovers (next non-ERROR transition) we drop the pending
+        # entry above. Otherwise `tick()` will fire it once the window
+        # expires.
+        if (
+            new_state == AgentState.ERROR
+            and self.retry_suppression_s > 0
+            and is_retryable_error_message(error_message)
+        ):
+            resolved_title = title or f"pi-monitor · {pane_id}"
+            resolved_body = body or f"agent state: {new_state.value}"
+            self._pending[pane_id] = _PendingError(
+                deadline=now + self.retry_suppression_s,
+                title=resolved_title,
+                body=resolved_body,
+            )
             return False
 
         last_fire = self._last_fire.get(pane_id, 0.0)
@@ -103,18 +154,61 @@ class Notifier:
 
         resolved_title = title or f"pi-monitor · {pane_id}"
         resolved_body = body or f"agent state: {new_state.value}"
+        self._fire(pane_id, new_state, resolved_title, resolved_body)
+        return True
+
+    def tick(self, now: float | None = None) -> int:
+        """Release any deferred ERROR notifications whose suppression window
+        has expired. Returns the number of notifications fired.
+
+        Call this once per poll tick. Without it, deferred errors never
+        surface — this is the only place suppressed ERRORs get unblocked.
+        """
+        if not self._pending:
+            return 0
+        now = now if now is not None else time.time()
+        fired = 0
+        # Materialize the iter; we mutate _pending inside the loop.
+        for pane_id, pending in list(self._pending.items()):
+            if now < pending.deadline:
+                continue
+            self._pending.pop(pane_id, None)
+            if not self.enabled:
+                continue
+            # Only fire if the pane is still in ERROR. A non-ERROR
+            # transition would have cleared the pending entry, so this
+            # check is belt-and-braces; keep it for the case where a
+            # caller calls tick() before transition() in the same loop.
+            if self._last_state.get(pane_id) != AgentState.ERROR:
+                continue
+            last_fire = self._last_fire.get(pane_id, 0.0)
+            if now - last_fire < self.debounce_s:
+                continue
+            self._last_fire[pane_id] = now
+            self._fire(pane_id, AgentState.ERROR, pending.title, pending.body)
+            fired += 1
+        return fired
+
+    def _fire(
+        self,
+        pane_id: str,
+        state: AgentState,
+        title: str,
+        body: str,
+    ) -> None:
+        """Run the in-TUI toast callback (if any) and the desktop notify.
+        Shared between the immediate-fire and deferred-fire paths."""
         if self.on_transition is not None:
             try:
-                self.on_transition(pane_id, new_state, resolved_title, resolved_body)
+                self.on_transition(pane_id, state, title, body)
             except Exception:
                 # In-app callback failures must never block desktop notifications.
                 pass
         _send_notification(
-            resolved_title,
-            resolved_body,
-            urgency="critical" if new_state == AgentState.ERROR else "normal",
+            title,
+            body,
+            urgency="critical" if state == AgentState.ERROR else "normal",
         )
-        return True
 
     def update_state_only(self, pane_id: str, new_state: AgentState) -> None:
         """Seed the tracker without firing notifications. Used on first poll

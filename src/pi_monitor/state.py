@@ -55,7 +55,68 @@ from pathlib import Path
 # user to look at the pane (via the preview) when they want to engage.
 IDLE_THRESHOLD_S = 1.0
 
+# How long after pi launches we keep showing a no-file pane as WORKING
+# instead of UNKNOWN. SessionManager._persist only flushes the JSONL
+# after the first assistant message lands (`hasAssistant` guard), so a
+# freshly-launched pi that's actively streaming its first reply has zero
+# bytes on disk. Treating that window as WORKING avoids the confusing ❓
+# glyph for every fresh launch. Past the grace window a no-file pane
+# almost certainly means the user just hasn't typed anything yet, so we
+# fall back to UNKNOWN — never IDLE, which would notify.
+STARTING_GRACE_S = 30.0
+
 SESSIONS_ROOT = Path.home() / ".pi" / "agent" / "sessions"
+
+# Errors pi auto-retries with exponential backoff. Mirrors
+# `_isRetryableError` in pi-coding-agent's `agent-session.js`. When an
+# assistant lands with `stopReason: "error"` AND its `errorMessage`
+# matches this pattern, pi is in the middle of
+# `auto_retry_start..auto_retry_end` and will most likely recover on its
+# own within a few seconds. The Notifier uses this to suppress the
+# desktop notification for a short window so transient 429/503/network
+# blips don't spam the user. Keep this in sync with the upstream regex;
+# if pi's list grows we'll match a subset until updated (worst case: a
+# real new transient briefly fires a notification, which is the
+# pre-suppression behaviour).
+_RETRYABLE_ERROR_RE = re.compile(
+    r"overloaded"
+    r"|provider.?returned.?error"
+    r"|rate.?limit"
+    r"|too many requests"
+    r"|429"
+    r"|500|502|503|504"
+    r"|service.?unavailable"
+    r"|server.?error"
+    r"|internal.?error"
+    r"|network.?error"
+    r"|connection.?error"
+    r"|connection.?refused"
+    r"|connection.?lost"
+    r"|other side closed"
+    r"|fetch failed"
+    r"|upstream.?connect"
+    r"|reset before headers"
+    r"|socket hang up"
+    r"|ended without"
+    r"|http2 request did not get a response"
+    r"|timed? out"
+    r"|timeout"
+    r"|terminated"
+    r"|retry delay",
+    re.IGNORECASE,
+)
+
+
+def is_retryable_error_message(msg: str | None) -> bool:
+    """True if `msg` looks like one of pi's auto-retried transient errors.
+
+    Used by the Notifier to defer ERROR notifications during pi's
+    exponential-backoff window. Empty/None is treated as non-retryable —
+    we only suppress when we have a concrete error string to match.
+    """
+    if not msg:
+        return False
+    return _RETRYABLE_ERROR_RE.search(msg) is not None
 
 
 class AgentState(str, Enum):
@@ -673,9 +734,22 @@ class StateResolver:
                     ref.cwd, pi_start, next_pi_start, claimed
                 )
                 if session_file is None:
-                    results[ref.pane_id] = PaneStatus(
-                        pane_id=ref.pane_id, state=AgentState.UNKNOWN
-                    )
+                    # Live pi with no flushed JSONL yet: most likely a
+                    # fresh launch streaming its first response. Show
+                    # WORKING during the grace window so users don't see
+                    # ❓ on every new pi. After the window we fall back
+                    # to UNKNOWN — never IDLE, which would notify.
+                    if (
+                        pi_start is not None
+                        and (now - pi_start) < STARTING_GRACE_S
+                    ):
+                        results[ref.pane_id] = PaneStatus(
+                            pane_id=ref.pane_id, state=AgentState.WORKING
+                        )
+                    else:
+                        results[ref.pane_id] = PaneStatus(
+                            pane_id=ref.pane_id, state=AgentState.UNKNOWN
+                        )
                     continue
                 claimed.add(session_file)
                 snapshot = self.reader.read(session_file)
