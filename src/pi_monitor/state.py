@@ -156,6 +156,14 @@ class PaneStatus:
     session_file: Path | None = None
     snapshot: JsonlSnapshot | None = None
     idle_seconds: float = 0.0  # seconds since last write (mtime distance)
+    # Optional heartbeat-derived activity context. Populated only when
+    # the pi-monitor-heartbeat extension is running inside the agent and
+    # has written a fresh status file; None otherwise. Lets the UI tell
+    # "agent is in tool X right now" from "agent is busy, no idea what
+    # it's doing" without re-reading the heartbeat file at render time.
+    phase: str | None = None
+    current_tool: str | None = None
+    retry_attempt: int = 0
 
 
 @dataclass
@@ -682,12 +690,14 @@ _PHASE_TO_STATE: dict[str, AgentState] = {
 }
 
 
-def _state_from_heartbeat(
-    pid: int, now: float
-) -> tuple[AgentState, Path | None] | None:
+def _state_from_heartbeat(pid: int, now: float):
     """Read the heartbeat for `pid` and map it to a state. Returns
-    `(state, session_file)` when the heartbeat is fresh and its phase
-    is recognized; `None` otherwise so the caller falls back to JSONL.
+    `(state, heartbeat)` when the heartbeat is fresh and its phase is
+    recognized; `None` otherwise so the caller falls back to JSONL.
+
+    The full Heartbeat is returned (rather than just the session file)
+    so the resolver can plumb phase / current_tool / retry_attempt into
+    PaneStatus for the UI to surface "running bash" vs plain "working".
 
     Imports are local to keep `state.py` import-light when the optional
     heartbeat module isn't present (e.g. in stripped test environments).
@@ -700,7 +710,7 @@ def _state_from_heartbeat(
     state = _PHASE_TO_STATE.get(hb.phase)
     if state is None:
         return None
-    return state, hb.session_file
+    return state, hb
 
 
 # ---------------------------------------------------------------------------
@@ -783,17 +793,20 @@ class StateResolver:
                 if pi_pid is not None:
                     hb_state = _state_from_heartbeat(pi_pid, now)
                     if hb_state is not None:
-                        state, hb_session_file = hb_state
-                        if hb_session_file is not None:
-                            claimed.add(hb_session_file)
+                        state, hb = hb_state
+                        if hb.session_file is not None:
+                            claimed.add(hb.session_file)
                         # idle_seconds is moot for heartbeat-driven
                         # status (the freshness window is the timeout).
                         results[ref.pane_id] = PaneStatus(
                             pane_id=ref.pane_id,
                             state=state,
-                            session_file=hb_session_file,
+                            session_file=hb.session_file,
                             snapshot=None,
                             idle_seconds=0.0,
+                            phase=hb.phase,
+                            current_tool=hb.current_tool,
+                            retry_attempt=hb.retry_attempt,
                         )
                         continue
 

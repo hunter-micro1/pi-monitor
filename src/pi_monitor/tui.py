@@ -544,34 +544,78 @@ def _lerp_color(c1: str, c2: str, t: float) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-def _state_tag(
-    state: AgentState,
-    idle_seconds: float,
+def _truncate(text: str, width: int) -> str:
+    """Right-truncate `text` to `width` cells, replacing the last char
+    with ‘…’ if it didn't fit. Width 0 collapses to empty; width 1
+    keeps a single ellipsis as a placeholder."""
+    if width <= 0:
+        return ""
+    if len(text) <= width:
+        return text
+    return text[: max(width - 1, 0)] + "…"
+
+
+# Maximum visible width for a tool name in the activity tag. Keeps the
+# right column predictable when an agent is running a long-named tool
+# like `replace_in_file` — we'd rather show `running replace…` than
+# blow out the row width.
+_TAG_TOOL_MAX = 10
+
+
+def _working_verb(status: PaneStatus) -> str:
+    """Compact activity verb for a WORKING row, derived from the
+    heartbeat extension's phase + current_tool when available.
+
+    Without the heartbeat (phase is None) we fall back to plain `working`
+    so users with the JSONL-only fast-path still get a sensible badge.
+    """
+    phase = status.phase
+    tool = status.current_tool
+    if phase == "tool_running" and tool:
+        return f"running {_truncate(tool, _TAG_TOOL_MAX)}"
+    if phase == "tool_running":
+        return "running tool"
+    if phase == "compacting":
+        return "compacting"
+    if phase == "agent_running":
+        return "thinking"
+    return "working"
+
+
+def _activity_tag(
+    status: PaneStatus,
     *,
     working_color: str | None = None,
 ) -> str:
-    """Right-side state word for a pane row, colored by state.
+    """Right-side activity word for a pane row, colored by state.
 
-    Verbs are short on purpose so the right column reads as a status badge
-    rather than a sentence. WORKING uses `working_color` when given so it
-    pulses in lockstep with the title.
+    Surfaces the heartbeat phase + current_tool when available so users
+    see what an agent is doing right now (`running bash`, `compacting`,
+    `thinking`) instead of a generic `working`. Falls back to a plain
+    state verb when the heartbeat isn't available.
+
+    WORKING uses `working_color` when given so its tag pulses in lockstep
+    with the title.
     """
+    state = status.state
     color = STATE_COLORS.get(state, "grey50")
     if state == AgentState.WORKING:
         c = working_color or color
-        return f"[{c}]working[/{c}]"
+        return f"[{c}]{_working_verb(status)}[/{c}]"
     if state == AgentState.IDLE:
-        idle = fmt_idle(idle_seconds)
+        idle = fmt_idle(status.idle_seconds)
         verb = f"idle {idle}" if idle else "idle"
         return f"[{color}]{verb}[/{color}]"
     if state == AgentState.ERROR:
-        idle = fmt_idle(idle_seconds)
-        verb = f"error {idle}" if idle else "error"
+        idle = fmt_idle(status.idle_seconds)
+        verb = f"errored {idle}" if idle else "errored"
         return f"[{color}]{verb}[/{color}]"
     if state == AgentState.WAITING:
-        return f"[{color}]waiting[/{color}]"
+        return f"[{color}]awaiting input[/{color}]"
     if state == AgentState.RETRYING:
-        return f"[{color}]retrying[/{color}]"
+        n = status.retry_attempt
+        verb = f"retrying #{n}" if n else "retrying"
+        return f"[{color}]{verb}[/{color}]"
     if state == AgentState.NO_PI:
         return f"[{color}]no pi[/{color}]"
     return f"[{color}]unknown[/{color}]"
@@ -613,8 +657,8 @@ def fmt_row_tag(
     *,
     working_color: str | None = None,
 ) -> str:
-    """Markup for the RIGHT half of a pane row: just the state word."""
-    return _state_tag(status.state, status.idle_seconds, working_color=working_color)
+    """Markup for the RIGHT half of a pane row: the activity tag."""
+    return _activity_tag(status, working_color=working_color)
 
 
 def fmt_session_header(session: str) -> str:
@@ -701,12 +745,24 @@ class PaneRow(Container):
         */
         background: ansi_bright_black;
     }
+    /* Brightness hierarchy: inactive rows render the agent name in
+       muted foreground so the eye walks past them quickly; the cursor
+       row — plus rows in the focused card — step up to full foreground.
+       WORKING rows already paint their title in the pulse color via Rich
+       markup, which overrides this CSS color so the pulse always wins. */
     PaneRow > #row-main {
         width: 1fr;
         height: 1;
         background: transparent;
+        color: $foreground-muted;
         text-overflow: ellipsis;
         text-wrap: nowrap;
+    }
+    PaneRow.selected > #row-main {
+        color: $foreground;
+    }
+    SessionGroup.active-group PaneRow > #row-main {
+        color: $foreground;
     }
     PaneRow > #row-tag {
         width: auto;
@@ -762,11 +818,19 @@ class SessionGroup(Container):
         width: 100%;
         margin: 1 1 0 1;
         padding: 0 1;
-        border: round $primary 60%;
+        /* Default — calmer border; the focused card upgrades to solid
+           $primary via the .active-group class so it stands out. Border
+           transition makes the focus shift visible (Textual smoothly
+           interpolates the alpha). */
+        border: round $primary 30%;
         border-title-color: $primary;
         border-title-style: bold;
         border-title-align: left;
         background: transparent;
+        transition: border 220ms in_out_cubic;
+    }
+    SessionGroup.active-group {
+        border: round $primary;
     }
     """
 
@@ -1263,18 +1327,23 @@ class PiMonitorApp(App):
             chips.append(f"[{color}]{n} {label}[/{color}]")
         chips_str = "  [dim]·[/dim]  ".join(chips)
 
-        info_bits = [
-            f"{total} pane{'s' if total != 1 else ''}",
-            f"sort:{self.sort_mode}",
-            self._theme_name,
-        ]
+        # Calmer top chrome: drop the pane count (sum of state counts is
+        # implied by the chips), the `sort:` prefix (just show the mode),
+        # and the theme name (the theme is what you see; it doesn't need
+        # a label). The mute indicator stays — it's a behavioral state
+        # users need to remember.
+        suffix_bits: list[str] = []
+        if self.sort_mode != "tmux":
+            suffix_bits.append(self.sort_mode)
         if not self.notifier.enabled:
-            info_bits.append("muted")
-        info = "  [dim]·[/dim]  ".join(info_bits)
-
-        self._title_bar.update(
-            f"{brand}   {chips_str}   [dim]·[/dim]   [dim]{info}[/dim]"
+            suffix_bits.append("muted")
+        suffix = (
+            f"   [dim]·[/dim]   [dim]{'  [dim]·[/dim]  '.join(suffix_bits)}[/dim]"
+            if suffix_bits
+            else ""
         )
+
+        self._title_bar.update(f"{brand}   {chips_str}{suffix}")
 
         self._update_attention_banner(statuses, counts)
 
@@ -1476,6 +1545,17 @@ class PiMonitorApp(App):
                 target_row = row
             else:
                 row.remove_class("selected")
+
+        # Active-card emphasis: the SessionGroup containing the cursor
+        # gets the `.active-group` class, which the CSS uses to upgrade
+        # the border from $primary 30% to solid $primary and brighten
+        # all of that card's row titles. Other groups go calm.
+        active_card = self._card_for_position(pos)
+        for name, group in self._groups.items():
+            if name == active_card:
+                group.add_class("active-group")
+            else:
+                group.remove_class("active-group")
 
         try:
             if target_row is not None:
