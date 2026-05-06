@@ -28,7 +28,12 @@ from typing import Callable, Iterable
 
 from .state import AgentState, is_retryable_error_message
 
-ATTENTION_STATES = frozenset({AgentState.IDLE, AgentState.ERROR})
+# All states that warrant a desktop notification on entry. WAITING
+# (heartbeat-only) is included because it means the agent is blocked on
+# a user decision — every bit as much "needs you" as IDLE. RETRYING is
+# deliberately NOT here: pi handles retries without user action, so we
+# stay silent and let the user keep doing whatever they were doing.
+ATTENTION_STATES = frozenset({AgentState.IDLE, AgentState.WAITING, AgentState.ERROR})
 
 CONFIG_PATH = Path.home() / ".config" / "pi-monitor" / "config.json"
 DEFAULT_CONFIG = {
