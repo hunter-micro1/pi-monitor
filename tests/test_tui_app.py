@@ -82,19 +82,21 @@ def _stub_world(panes: list[Pane], statuses: dict[str, PaneStatus]):
         # back the canned PaneStatus per ref.
         return {r.pane_id: statuses[r.pane_id] for r in refs}
 
-    with patch("pi_monitor.tui.list_panes", return_value=panes), \
-         patch("pi_monitor.state.StateResolver.resolve", fake_resolve), \
-         patch("pi_monitor.tui.set_status_widget"), \
-         patch("pi_monitor.tui.is_viewer_session", return_value=False), \
-         patch("pi_monitor.tui.ensure_linked_viewer", return_value="viewer-x"), \
-         patch("pi_monitor.tui.viewer_focus_pane"), \
-         patch("pi_monitor.tui.viewer_zoom_to_pane"), \
-         patch("pi_monitor.tui.attach_right_slot_to_viewer"), \
-         patch("pi_monitor.tui.kill_linked_viewer"), \
-         patch("pi_monitor.tui.reset_right_slot_to_placeholder"), \
-         patch("pi_monitor.tui.cleanup_orphan_viewers"), \
-         patch("pi_monitor.tui.kill_monitor_session"), \
-         patch("pi_monitor.tui.branch_for_cwd", return_value="main"):
+    with (
+        patch("pi_monitor.tui.list_panes", return_value=panes),
+        patch("pi_monitor.state.StateResolver.resolve", fake_resolve),
+        patch("pi_monitor.tui.set_status_widget"),
+        patch("pi_monitor.tui.is_viewer_session", return_value=False),
+        patch("pi_monitor.tui.ensure_linked_viewer", return_value="viewer-x"),
+        patch("pi_monitor.tui.viewer_focus_pane"),
+        patch("pi_monitor.tui.viewer_zoom_to_pane"),
+        patch("pi_monitor.tui.attach_right_slot_to_viewer"),
+        patch("pi_monitor.tui.kill_linked_viewer"),
+        patch("pi_monitor.tui.reset_right_slot_to_placeholder"),
+        patch("pi_monitor.tui.cleanup_orphan_viewers"),
+        patch("pi_monitor.tui.kill_monitor_session"),
+        patch("pi_monitor.tui.branch_for_cwd", return_value="main"),
+    ):
         yield
 
 
@@ -169,9 +171,7 @@ def _two_session_world():
     ]
     statuses = {
         "cape:1.0": _status("cape:1.0", AgentState.ERROR, idle=12.0, error="oops"),
-        "cape:0.0": _status(
-            "cape:0.0", AgentState.WORKING, phase="agent_running"
-        ),
+        "cape:0.0": _status("cape:0.0", AgentState.WORKING, phase="agent_running"),
         "contracts:5.0": _status(
             "contracts:5.0", AgentState.WORKING, phase="tool_running", tool="bash"
         ),
@@ -290,7 +290,11 @@ def test_active_group_class_tracks_cursor():
                 # j until we land in 'contracts'; first pane is in cape.
                 while True:
                     pos = app._current_position()
-                    entry = app._latest_statuses.get(pos[1]) if pos and pos[0] == "pane" else None
+                    entry = (
+                        app._latest_statuses.get(pos[1])
+                        if pos and pos[0] == "pane"
+                        else None
+                    )
                     if entry is not None and entry[0].session == "contracts":
                         break
                     await pilot.press("j")
@@ -392,10 +396,7 @@ def test_activity_description_renders_in_row_activity():
                     if entry is None:
                         continue
                     pane, status = entry
-                    if (
-                        status.phase == "tool_running"
-                        and status.current_tool == "bash"
-                    ):
+                    if status.phase == "tool_running" and status.current_tool == "bash":
                         assert "executing bash" in str(row._activity.render())
                         return
                 raise AssertionError("no tool_running+bash row found in fixture")
@@ -451,5 +452,160 @@ def test_jump_out_of_range_is_noop():
                 await pilot.press("9")
                 await pilot.pause()
                 assert app._cursor_idx == before
+
+    asyncio.run(go())
+
+
+# ---------------------------------------------------------------------------
+# View / behavior actions: sort cycle, theme cycle, mute, show non-pi
+# ---------------------------------------------------------------------------
+
+
+def test_cycle_sort_toggles_mode_and_persists():
+    """`s` flips sort_mode between 'tmux' and 'status' and writes the
+    choice through `save_config` so the next launch remembers it."""
+
+    async def go():
+        panes, statuses = _two_session_world()
+        with patch("pi_monitor.tui.save_config") as msave:
+            app = PiMonitorApp()
+            with _stub_world(panes, statuses):
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    initial = app.sort_mode
+                    await pilot.press("s")
+                    await pilot.pause()
+                    assert app.sort_mode != initial
+                    # The persisted dict must carry the new mode.
+                    assert any(
+                        c.args
+                        and c.args[0].get("sort_mode") == app.sort_mode
+                        for c in msave.call_args_list
+                    )
+                    # Toggle back.
+                    await pilot.press("s")
+                    await pilot.pause()
+                    assert app.sort_mode == initial
+
+    asyncio.run(go())
+
+
+def test_cycle_theme_advances_through_cycle():
+    """`t` advances to the next theme in the THEMES tuple, persists the
+    choice, and refreshes the existing session-card border titles so
+    their accent color tracks the new palette."""
+
+    async def go():
+        from pi_monitor.tui import THEMES
+        panes, statuses = _two_session_world()
+        with patch("pi_monitor.tui.save_config") as msave:
+            app = PiMonitorApp()
+            with _stub_world(panes, statuses):
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    starting = app._theme_name
+                    starting_idx = THEMES.index(starting)
+                    await pilot.press("t")
+                    await pilot.pause()
+                    expected = THEMES[(starting_idx + 1) % len(THEMES)]
+                    assert app._theme_name == expected
+                    assert any(
+                        c.args
+                        and c.args[0].get("theme") == expected
+                        for c in msave.call_args_list
+                    )
+                    # Every existing SessionGroup's border_title is the
+                    # bold-accent session name; must not be empty.
+                    for group in app._groups.values():
+                        assert group.session in str(group.border_title)
+
+    asyncio.run(go())
+
+
+def test_toggle_mute_flips_notifier_and_persists():
+    """`m` flips notifier.enabled; the new value is persisted under
+    `notifications_enabled`."""
+
+    async def go():
+        panes, statuses = _two_session_world()
+        with patch("pi_monitor.tui.save_config") as msave:
+            app = PiMonitorApp()
+            with _stub_world(panes, statuses):
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    initial = app.notifier.enabled
+                    await pilot.press("m")
+                    await pilot.pause()
+                    assert app.notifier.enabled != initial
+                    assert any(
+                        c.args
+                        and c.args[0].get("notifications_enabled")
+                        == app.notifier.enabled
+                        for c in msave.call_args_list
+                    )
+
+    asyncio.run(go())
+
+
+def test_toggle_show_non_pi_flips_flag():
+    """`Shift+H` flips the show_non_pi flag; non-pi panes are then
+    included in the next render. This test only checks the flag (the
+    render path uses it as a filter on `list_panes`)."""
+
+    async def go():
+        panes, statuses = _two_session_world()
+        app = PiMonitorApp()
+        with _stub_world(panes, statuses):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert app.show_non_pi is False
+                # The binding is registered as `shift+h` (the modifier
+                # form), not the uppercase letter — Textual treats them
+                # as distinct keys, so we send the modified form.
+                await pilot.press("shift+h")
+                await pilot.pause()
+                assert app.show_non_pi is True
+
+    asyncio.run(go())
+
+
+def test_show_help_pushes_help_screen():
+    """`?` pushes the HelpScreen modal onto the screen stack."""
+
+    async def go():
+        from pi_monitor.tui import HelpScreen
+        panes, statuses = _two_session_world()
+        app = PiMonitorApp()
+        with _stub_world(panes, statuses):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await pilot.press("?")
+                await pilot.pause()
+                assert isinstance(app.screen, HelpScreen)
+
+    asyncio.run(go())
+
+
+def test_help_screen_dismisses_on_any_key():
+    """HelpScreen catches the next keypress and dismisses itself, so the
+    help overlay is a momentary lookup rather than something the user
+    has to remember to close."""
+
+    async def go():
+        from pi_monitor.tui import HelpScreen
+        panes, statuses = _two_session_world()
+        app = PiMonitorApp()
+        with _stub_world(panes, statuses):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await pilot.press("?")
+                await pilot.pause()
+                assert isinstance(app.screen, HelpScreen)
+                # Any key dismisses; pick escape to avoid triggering an
+                # action on the underlying app screen if the press
+                # somehow leaks through.
+                await pilot.press("escape")
+                await pilot.pause()
+                assert not isinstance(app.screen, HelpScreen)
 
     asyncio.run(go())
