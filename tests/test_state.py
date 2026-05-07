@@ -12,6 +12,7 @@ from pi_monitor.state import (
     AgentState,
     JsonlReader,
     JsonlSnapshot,
+    _first_text_preview,
     _scan_lines,
     infer_state,
 )
@@ -139,6 +140,115 @@ def test_scan_lines_empty_file():
     snap = _scan_lines(b"", mtime=100.0)
     assert snap.last_role is None
     assert snap.pending_tool_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# last_assistant_preview: first text chunk of the latest assistant message
+# ---------------------------------------------------------------------------
+
+
+def test_first_text_preview_picks_first_text_chunk():
+    content = [{"type": "text", "text": "hello world"}]
+    assert _first_text_preview(content) == "hello world"
+
+
+def test_first_text_preview_strips_leading_whitespace():
+    content = [{"type": "text", "text": "   indented response"}]
+    assert _first_text_preview(content) == "indented response"
+
+
+def test_first_text_preview_skips_empty_strings():
+    content = [
+        {"type": "text", "text": "   "},  # whitespace only, skipped
+        {"type": "text", "text": "actual content"},
+    ]
+    assert _first_text_preview(content) == "actual content"
+
+
+def test_first_text_preview_ignores_tool_calls():
+    content = [
+        {"type": "toolCall", "name": "bash", "id": "1"},
+        {"type": "text", "text": "after the tool"},
+    ]
+    assert _first_text_preview(content) == "after the tool"
+
+
+def test_first_text_preview_returns_none_for_tool_only_content():
+    content = [{"type": "toolCall", "name": "bash", "id": "1"}]
+    assert _first_text_preview(content) is None
+
+
+def test_first_text_preview_caps_at_200_chars():
+    long = "x" * 500
+    out = _first_text_preview([{"type": "text", "text": long}])
+    assert out is not None
+    assert len(out) == 200
+
+
+def test_first_text_preview_handles_non_list_content():
+    """Defensive: pi sometimes emits content as a plain string, or null.
+    The helper must not crash; it just returns None."""
+    assert _first_text_preview(None) is None
+    assert _first_text_preview("some string") is None
+    assert _first_text_preview({}) is None
+
+
+def test_scan_lines_captures_assistant_preview():
+    blob = (
+        json.dumps(
+            _msg(
+                "assistant",
+                content=[
+                    {"type": "text", "text": "All four browser themes are aligned."}
+                ],
+                stopReason="stop",
+            )
+        )
+        + "\n"
+    ).encode()
+    snap = _scan_lines(blob, mtime=100.0)
+    assert snap.last_assistant_preview == "All four browser themes are aligned."
+
+
+def test_scan_lines_assistant_preview_persists_through_tool_round_trip():
+    """After an assistant text message the user still wants to see what
+    the agent said while a follow-up tool runs — the preview shouldn't
+    be erased by the toolResult turn."""
+    entries = [
+        _msg(
+            "assistant",
+            content=[
+                {"type": "text", "text": "running the migration now"},
+                {"type": "toolCall", "id": "t1", "name": "bash", "arguments": {}},
+            ],
+            stopReason="toolUse",
+        ),
+        _msg(
+            "toolResult",
+            toolCallId="t1",
+            content=[{"type": "text", "text": "ok"}],
+        ),
+    ]
+    blob = ("\n".join(json.dumps(e) for e in entries) + "\n").encode()
+    snap = _scan_lines(blob, mtime=100.0)
+    assert snap.last_assistant_preview == "running the migration now"
+
+
+def test_scan_lines_no_text_content_leaves_preview_none():
+    blob = (
+        json.dumps(
+            _msg(
+                "assistant",
+                content=[
+                    {"type": "toolCall", "name": "bash", "id": "1", "arguments": {}}
+                ],
+                stopReason="toolUse",
+            )
+        )
+        + "\n"
+    ).encode()
+    snap = _scan_lines(blob, mtime=100.0)
+    assert snap.last_assistant_preview is None
 
 
 # ---------------------------------------------------------------------------
