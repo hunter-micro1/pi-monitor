@@ -122,21 +122,33 @@ PULSE_INTERVAL_S = 0.08
 PULSE_PERIOD_S = 1.5
 
 # Curated subset of Textual's built-in themes. Press `t` to cycle.
-# Order is intentional: dark themes first, then a couple of light ones at
-# the end so users who want light just keep tapping past the dark set.
+# Order matters: the t-key cycles through this tuple front-to-back, so
+# the leading entries are the ones we lean on by default. The first
+# five are curated for translucent terminals — their accent + state
+# colors stay distinct and legible when the App is running in `:ansi`
+# mode (where `$background` is replaced with the terminal's translucent
+# default and the wallpaper bleeds through). The trailing entries are
+# kept resolvable so users who pinned them in config still get them,
+# but the cycle starts on the curated set.
 THEMES: tuple[str, ...] = (
-    "textual-dark",
+    # Curated for translucency — these stay legible over a wallpaper.
     "tokyo-night",
     "catppuccin-mocha",
     "dracula",
-    "nord",
     "gruvbox",
+    "textual-dark",
+    # Available but tend to wash out over busy wallpapers; kept so users
+    # with a specific config-pinned favorite don't get bumped to default.
+    "nord",
     "monokai",
     "solarized-dark",
     "textual-light",
     "solarized-light",
 )
-DEFAULT_THEME = "textual-dark"
+# tokyo-night ships well-saturated state colors and a deep accent blue
+# that reads cleanly over a translucent terminal regardless of the
+# user's wallpaper hue. Best general-purpose default.
+DEFAULT_THEME = "tokyo-night"
 
 # Per-state colors are derived from the active Textual theme on every
 # theme switch. Traffic-light semantics:
@@ -651,7 +663,11 @@ def _activity_description(status: PaneStatus) -> str:
         return "drafting response"
     if status.phase == "retrying":
         n = status.retry_attempt
-        return f"retrying after transient error (attempt {n})" if n else "retrying after transient error"
+        return (
+            f"retrying after transient error (attempt {n})"
+            if n
+            else "retrying after transient error"
+        )
     if status.phase == "awaiting_permission":
         return "waiting for your decision"
 
@@ -1229,10 +1245,18 @@ class PiMonitorApp(App):
     # -- Animation ---------------------------------------------------------
 
     def _pulse_color(self) -> str:
-        """Current WORKING-pulse color. Sine wave between dim and bright
-        success over PULSE_PERIOD_S; 0.55..1.0 keeps the dim end legible."""
+        """Current WORKING-pulse color. Sine wave between a brightness
+        floor and full saturation over PULSE_PERIOD_S.
+
+        The floor (0.55 of the bright color, lerped from WORKING_PULSE_DIM)
+        was too dim against translucent terminals — the trough of the
+        pulse blended into the wallpaper and made working titles feel
+        "missing" rather than alive. We tightened the range to 0.70..1.00
+        so the dim end stays clearly legible while the breathe is still
+        visible.
+        """
         elapsed = (time.monotonic() - self._pulse_t0) % PULSE_PERIOD_S
-        fraction = 0.55 + 0.45 * math.sin(2 * math.pi * elapsed / PULSE_PERIOD_S)
+        fraction = 0.70 + 0.30 * math.sin(2 * math.pi * elapsed / PULSE_PERIOD_S)
         if fraction < 0:
             fraction = 0.0
         elif fraction > 1:
