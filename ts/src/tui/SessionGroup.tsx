@@ -15,23 +15,23 @@
 import { Box, Text } from "ink";
 import type { ReactElement, ReactNode } from "react";
 
-import { STATE_COLORS, fmtSessionHeader } from "../format/row.js";
+import { fmtSessionHeader, STATE_COLORS } from "../format/row.js";
 import type { AgentState } from "../state/types.js";
-import { ACCENT, FOREGROUND_MUTED } from "./colors.js";
+import { ACCENT, FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
 
 export interface SessionGroupProps {
-  /** Session name (border title). */
-  session: string;
-  /**
-   * The single highest-priority issue chip to render next to the
-   * name, e.g. "2 idle" or "1 error". null when nothing is
-   * stuck. Mirrors `_session_chip` in the Python build.
-   */
-  chip?: { count: number; state: AgentState } | null;
-  /** True iff the cursor is on a row inside this card. */
-  active?: boolean;
-  /** PaneRow children. */
-  children: ReactNode;
+	/** Session name (border title). */
+	session: string;
+	/**
+	 * The single highest-priority issue chip to render next to the
+	 * name, e.g. "2 idle" or "1 error". null when nothing is
+	 * stuck. Mirrors `_session_chip` in the Python build.
+	 */
+	chip?: { count: number; state: AgentState } | null;
+	/** True iff the cursor is on a row inside this card. */
+	active?: boolean;
+	/** PaneRow children. */
+	children: ReactNode;
 }
 
 /**
@@ -40,58 +40,63 @@ export interface SessionGroupProps {
  * statuses and returns the most attention-worthy state count.
  */
 export function pickSessionChip(
-  statuses: { state: AgentState }[],
+	statuses: { state: AgentState }[],
 ): { count: number; state: AgentState } | null {
-  const counts = new Map<AgentState, number>();
-  for (const s of statuses) {
-    counts.set(s.state, (counts.get(s.state) ?? 0) + 1);
-  }
-  for (const state of ["error", "waiting", "idle", "retrying"] as AgentState[]) {
-    const n = counts.get(state) ?? 0;
-    if (n > 0) return { count: n, state };
-  }
-  const working = counts.get("working") ?? 0;
-  if (working > 0) return { count: working, state: "working" };
-  return null;
+	const counts = new Map<AgentState, number>();
+	for (const s of statuses) {
+		counts.set(s.state, (counts.get(s.state) ?? 0) + 1);
+	}
+	for (const state of [
+		"error",
+		"waiting",
+		"idle",
+		"retrying",
+	] as AgentState[]) {
+		const n = counts.get(state) ?? 0;
+		if (n > 0) return { count: n, state };
+	}
+	const working = counts.get("working") ?? 0;
+	if (working > 0) return { count: working, state: "working" };
+	return null;
 }
 
 export function SessionGroup({
-  session,
-  chip = null,
-  active = false,
-  children,
+	session,
+	chip = null,
+	active = false,
+	children,
 }: SessionGroupProps): ReactElement {
-  const borderColor = active ? ACCENT : FOREGROUND_MUTED;
+	const borderColor = active ? ACCENT : FOREGROUND_MUTED;
 
-  return (
-    <Box flexDirection="column" marginTop={1}>
-      {/* Header chip-row sits flush against the top border of the
+	return (
+		<Box flexDirection="column" marginTop={1}>
+			{/* Header chip-row sits flush against the top border of the
           bordered box below — visual link between name and card.
           Ink's <Box borderStyle="round"> has no built-in title
           slot, so we approximate it via tight vertical spacing
           (no marginBottom on the header, no marginTop on the box). */}
-      <Box paddingLeft={3}>
-        <Text bold color={active ? ACCENT : FOREGROUND_MUTED}>
-          {fmtSessionHeader(session)}
-        </Text>
-        {chip !== null && (
-          <>
-            <Text color={FOREGROUND_MUTED}>{"  "}</Text>
-            <Text color={STATE_COLORS[chip.state]}>
-              {chip.count} {chip.state}
-            </Text>
-          </>
-        )}
-      </Box>
+			<Box paddingLeft={3}>
+				<Text bold color={active ? ACCENT : FOREGROUND_MUTED}>
+					{fmtSessionHeader(session)}
+				</Text>
+				{chip !== null && (
+					<>
+						<Text color={FOREGROUND_MUTED}>{"   "}</Text>
+						<Text color={STATE_COLORS[chip.state]}>{"● "}</Text>
+						<Text color={FOREGROUND}>{chip.count}</Text>
+						<Text color={FOREGROUND_MUTED}>{` ${chip.state}`}</Text>
+					</>
+				)}
+			</Box>
 
-      <Box
-        flexDirection="column"
-        borderStyle="round"
-        borderColor={borderColor}
-        paddingX={1}
-      >
-        {children}
-      </Box>
-    </Box>
-  );
+			<Box
+				flexDirection="column"
+				borderStyle="round"
+				borderColor={borderColor}
+				paddingX={1}
+			>
+				{children}
+			</Box>
+		</Box>
+	);
 }
