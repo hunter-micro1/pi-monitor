@@ -18,7 +18,7 @@
 import { Box, Text, useApp, useInput } from "ink";
 import { type ReactElement, useEffect, useReducer, useRef, useState } from "react";
 
-import { STATE_COLORS, fmtSessionHeader, fmtStatusWidget } from "../format/row.js";
+import { STATE_COLORS, fmtStatusWidget } from "../format/row.js";
 import { Notifier } from "../notify/notifier.js";
 import type { AgentState, PaneStatus } from "../state/types.js";
 import { EmptyState } from "./EmptyState.js";
@@ -459,10 +459,6 @@ function TitleBar({ counts }: TitleBarProps): ReactElement {
         <Text bold color={ACCENT}>
           pi-monitor
         </Text>
-        <Text color={FOREGROUND_MUTED}>
-          {"  "}
-          {fmtSessionHeader("status")}
-        </Text>
       </Box>
       <Box flexDirection="row">
         {chips.map((c, i) => (
@@ -479,20 +475,20 @@ function TitleBar({ counts }: TitleBarProps): ReactElement {
 
 function Footer(): ReactElement {
   const hints: Array<{ key: string; label: string }> = [
-    { key: "j/k", label: "move" },
-    { key: "g/G", label: "top/bot" },
+    { key: "j k", label: "move" },
+    { key: "↵", label: "focus" },
     { key: "o", label: "new" },
     { key: "?", label: "help" },
     { key: "q", label: "quit" },
   ];
   return (
-    <Box paddingX={2} marginTop={1}>
+    <Box paddingX={2} marginTop={1} flexDirection="row">
       {hints.map((h, i) => (
-        <Box key={h.key} marginLeft={i === 0 ? 0 : 3}>
+        <Box key={h.key} marginLeft={i === 0 ? 0 : 4}>
           <Text bold color={ACCENT}>
             {h.key}
           </Text>
-          <Text color={FOREGROUND_MUTED}> {h.label}</Text>
+          <Text color={FOREGROUND_MUTED}>{`  ${h.label}`}</Text>
         </Box>
       ))}
     </Box>

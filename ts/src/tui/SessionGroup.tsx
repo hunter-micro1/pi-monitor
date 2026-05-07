@@ -65,17 +65,18 @@ export function SessionGroup({
 
   return (
     <Box flexDirection="column" marginTop={1}>
-      {/* Header line above the border: bold name + optional chip.
-          Ink's <Box borderStyle="round"> has no title slot, so we
-          render the header here and align it to the left padding of
-          the bordered box. */}
-      <Box paddingLeft={2}>
-        <Text bold color={ACCENT}>
+      {/* Header chip-row sits flush against the top border of the
+          bordered box below — visual link between name and card.
+          Ink's <Box borderStyle="round"> has no built-in title
+          slot, so we approximate it via tight vertical spacing
+          (no marginBottom on the header, no marginTop on the box). */}
+      <Box paddingLeft={3}>
+        <Text bold color={active ? ACCENT : FOREGROUND_MUTED}>
           {fmtSessionHeader(session)}
         </Text>
         {chip !== null && (
           <>
-            <Text color={FOREGROUND_MUTED}>{"  \u00b7  "}</Text>
+            <Text color={FOREGROUND_MUTED}>{"  "}</Text>
             <Text color={STATE_COLORS[chip.state]}>
               {chip.count} {chip.state}
             </Text>

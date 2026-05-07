@@ -1,21 +1,14 @@
 /**
  * One agent row inside a SessionGroup. Two visible lines:
  *
- *   line 1: `<name> \u00b7 <branch>` flex-left, `<state-tag>` flex-right
- *   line 2: dim activity description, indented past the title
+ *   line 1: `<bar> <name> · <branch>`  flex-left, `<state-tag>` flex-right
+ *   line 2: dim activity description, indented past the leading bar
  *
- * Mirrors the Python `PaneRow` widget. The Ink/JSX shape replaces
- * Textual's CSS classes with explicit props \u2014 the App computes
- * `selected`, `inActiveCard`, and the live `workingColor` once per
- * tick and threads them in.
- *
- * Visual differences from the Python build:
- *   - Ink's `<Box>` doesn't have `backgroundColor`, so the
- *     `selection bar` from Textual becomes a brightness lift +
- *     `inverse` text style instead. Same effect (cursor row pops),
- *     fewer rendering surprises.
- *   - All other styling (bold name, dim branch, colored state tag,
- *     dim activity line) ports byte-for-byte.
+ * Selected rows get a vertical-bar marker `▎` in the leftmost column
+ * (accent-colored). Non-selected rows get a single space in that
+ * column so all rows align. This replaces the inverse-text highlight
+ * the earlier build used; the bar is less harsh than full-row
+ * inverse and cleaner over translucent backgrounds.
  */
 
 import { Box, Text } from "ink";
@@ -28,7 +21,10 @@ import {
   fmtRowMain,
 } from "../format/row.js";
 import type { PaneStatus } from "../state/types.js";
-import { FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
+import { ACCENT, FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
+
+/** Column reserved for the selection bar (1 cell + 1 space). */
+const SELECTION_COL = 2;
 
 export interface PaneRowProps {
   /** PaneStatus from the resolver. Drives every visible field. */
@@ -39,15 +35,12 @@ export interface PaneRowProps {
   paneIndex: number;
   /** Current git branch for the agent's cwd, or null. */
   branch: string | null;
-  /**
-   * True iff this row is the cursor target. Title flips to full
-   * foreground + `inverse` text-style for an obvious highlight.
-   */
+  /** True iff this row is the cursor target. Renders the bar marker. */
   selected?: boolean;
   /**
    * True iff this row sits inside the SessionGroup that contains
-   * the cursor. Brightness lift to full foreground without the
-   * `inverse` flip \u2014 lets the eye land on the focused card.
+   * the cursor. Brightness lift to full foreground; lets the eye
+   * land on the focused card without flipping the row.
    */
   inActiveCard?: boolean;
   /**
@@ -89,28 +82,31 @@ export function PaneRow({
 
   return (
     <Box flexDirection="column">
-      {/* Top line: name + branch on the left (flex-grow), state tag on the right (auto). */}
-      <Box flexDirection="row" paddingX={1}>
+      {/* Top line: selection bar + name + branch on the left, state tag on the right. */}
+      <Box flexDirection="row">
+        <Box width={SELECTION_COL}>
+          <Text bold color={ACCENT}>
+            {selected ? "\u258e" : " "}
+          </Text>
+        </Box>
         <Box flexGrow={1} flexShrink={1}>
-          <Text bold color={titleColor} inverse={selected}>
+          <Text bold color={titleColor}>
             {main.name}
           </Text>
           {main.branch !== null && (
-            <Text color={FOREGROUND_MUTED} inverse={selected}>
+            <Text color={FOREGROUND_MUTED}>
               {" \u00b7 "}
               {main.branch}
             </Text>
           )}
         </Box>
         <Box marginLeft={2}>
-          <Text color={tag.color} inverse={selected}>
-            {tag.verb}
-          </Text>
+          <Text color={tag.color}>{tag.verb}</Text>
         </Box>
       </Box>
 
-      {/* Activity line: dim, indented two cells past the title. */}
-      <Box paddingLeft={3} paddingRight={1}>
+      {/* Activity line: dim, indented past the selection column + 2. */}
+      <Box paddingLeft={SELECTION_COL + 2} paddingRight={1}>
         <Text dimColor color={FOREGROUND_MUTED}>
           {description}
         </Text>
