@@ -7,6 +7,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.4] — 2026-05-07
+
+- **package.json `bin` path fix.** npm 10 silently dropped the
+  `./dist/cli.js` bin entry on publish ("script name was invalid"),
+  which would have shipped 0.4.3 without a working `pi-monitor`
+  binary on PATH. `npm pkg fix` strips the `./` prefix; the publish
+  warning is gone and the bin entry now survives. No code change
+  beyond the version bump.
+
 ## [0.4.3] — 2026-05-07
 
 - **Sandboxed live tmux smoke test.** New `pnpm smoke` script
