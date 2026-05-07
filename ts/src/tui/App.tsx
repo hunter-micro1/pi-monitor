@@ -16,13 +16,15 @@
  */
 
 import { Box, Text, useApp, useInput } from "ink";
-import { type ReactElement, useEffect, useReducer, useState } from "react";
+import { type ReactElement, useEffect, useReducer, useRef, useState } from "react";
 
 import { STATE_COLORS, fmtSessionHeader, fmtStatusWidget } from "../format/row.js";
+import { Notifier } from "../notify/notifier.js";
 import type { AgentState, PaneStatus } from "../state/types.js";
 import { EmptyState } from "./EmptyState.js";
 import { HelpScreen } from "./HelpScreen.js";
 import { type NewPiResult, NewPiScreen } from "./NewPiScreen.js";
+import { type BannerNotification, NotificationBanner } from "./NotificationBanner.js";
 import { PaneRow } from "./PaneRow.js";
 import { SessionGroup, pickSessionChip } from "./SessionGroup.js";
 import { ACCENT, FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
@@ -93,6 +95,14 @@ export interface AppProps {
    * passes `setStatusWidget` from `tmux/monitor.ts`.
    */
   readonly setStatusWidget?: (text: string) => void;
+  /**
+   * Whether the in-TUI notification banner is enabled. Default true.
+   * Tests pass `false` to disable banner state churn when they don't
+   * care about it.
+   */
+  readonly notificationsEnabled?: boolean;
+  /** Banner auto-dismiss timeout (ms). Default 5000. */
+  readonly notificationDismissMs?: number;
 }
 
 type AppMode = "list" | "help" | "newSession" | "newWindow";
@@ -108,6 +118,8 @@ export function App(props: AppProps): ReactElement {
     defaultCwd = process.cwd(),
     listDir,
     setStatusWidget,
+    notificationsEnabled = true,
+    notificationDismissMs = 5000,
   } = props;
 
   const ink = useApp();
@@ -123,6 +135,29 @@ export function App(props: AppProps): ReactElement {
   } | null>(null);
 
   const tmux = props.tmux ?? null;
+
+  // In-TUI notification banner. Notifier instance is owned by a ref
+  // so it survives across renders; its onTransition callback pushes
+  // into local React state, which an auto-dismiss effect clears
+  // after notificationDismissMs.
+  const [banner, setBanner] = useState<BannerNotification | null>(null);
+  const notifierRef = useRef<Notifier | null>(null);
+  if (notifierRef.current === null) {
+    notifierRef.current = new Notifier({
+      enabled: notificationsEnabled,
+      onTransition: (_paneId, state, title, body) => {
+        setBanner({
+          title,
+          body,
+          severity: state === "error" ? "critical" : "normal",
+        });
+      },
+    });
+  }
+  // Keep enabled flag in sync if the prop ever flips.
+  if (notifierRef.current.enabled !== notificationsEnabled) {
+    notifierRef.current.enabled = notificationsEnabled;
+  }
 
   // Pulse animation state. Anchor t0 once and recompute the live
   // color on the pulseInterval timer; PaneRow consumes it via prop.
@@ -173,6 +208,34 @@ export function App(props: AppProps): ReactElement {
     }, pulseIntervalMs);
     return () => clearInterval(id);
   }, [pulseT0, pulseIntervalMs]);
+
+  // ---------------------------------------------------------------------
+  // Notifier driving. transition() is called per pane on every
+  // entries-change; tick() runs on the same cadence so deferred
+  // retryable errors get released after their suppression window.
+  // ---------------------------------------------------------------------
+  // biome-ignore lint/correctness/useExhaustiveDependencies: notifierRef.current intentionally not a dep.
+  useEffect(() => {
+    const notifier = notifierRef.current;
+    if (notifier === null) return;
+    for (const e of entries) {
+      notifier.transition(e.paneId, e.status.state, {
+        errorMessage: e.status.snapshot?.lastError ?? null,
+      });
+    }
+    notifier.tick();
+  }, [entries]);
+
+  // ---------------------------------------------------------------------
+  // Banner auto-dismiss. Clears the banner state notificationDismissMs
+  // after it was last set. New notifications reset the timer because
+  // the effect re-runs on every banner change.
+  // ---------------------------------------------------------------------
+  useEffect(() => {
+    if (banner === null) return;
+    const id = setTimeout(() => setBanner(null), notificationDismissMs);
+    return () => clearTimeout(id);
+  }, [banner, notificationDismissMs]);
 
   // ---------------------------------------------------------------------
   // Tmux status-line widget. Updated on every entries change so the
@@ -325,6 +388,7 @@ export function App(props: AppProps): ReactElement {
   return (
     <Box flexDirection="column">
       <TitleBar counts={counts} />
+      {banner !== null && <NotificationBanner notification={banner} />}
 
       <Box flexDirection="column" paddingX={2}>
         <Box marginTop={1}>

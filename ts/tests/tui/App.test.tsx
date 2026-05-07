@@ -672,3 +672,94 @@ describe("App status widget", () => {
     expect(last).toContain("❌1");
   });
 });
+
+describe("App notification banner", () => {
+  it("does not render a banner before any state transitions", async () => {
+    const { lastFrame } = render(
+      <App
+        getEntries={() => [
+          entry({ paneId: "%1", status: status({ state: "working" }) }),
+        ]}
+        branchForCwd={() => null}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+        notificationDismissMs={9999}
+      />,
+    );
+    await wait();
+    // No banner; just the chrome.
+    expect(lastFrame() ?? "").not.toContain("agent state:");
+  });
+
+  it("shows a banner when a pane transitions to idle", async () => {
+    let phase = 0;
+    const get = (): AppEntry[] => {
+      phase += 1;
+      const state = phase === 1 ? "working" : "idle";
+      return [entry({ paneId: "%1", status: status({ state }) })];
+    };
+    const { lastFrame } = render(
+      <App
+        getEntries={get}
+        branchForCwd={() => null}
+        pollIntervalMs={30}
+        pulseIntervalMs={9999}
+        notificationDismissMs={9999}
+      />,
+    );
+    await wait();
+    // First tick: working. No banner.
+    expect(lastFrame() ?? "").not.toContain("agent state: idle");
+    await wait(60);
+    // Second tick: idle. Banner now visible.
+    const out = lastFrame() ?? "";
+    expect(out).toContain("agent state: idle");
+    expect(out).toContain("%1");
+  });
+
+  it("auto-dismisses the banner after notificationDismissMs", async () => {
+    let phase = 0;
+    const get = (): AppEntry[] => {
+      phase += 1;
+      const state = phase === 1 ? "working" : "idle";
+      return [entry({ paneId: "%1", status: status({ state }) })];
+    };
+    const { lastFrame } = render(
+      <App
+        getEntries={get}
+        branchForCwd={() => null}
+        pollIntervalMs={30}
+        pulseIntervalMs={9999}
+        notificationDismissMs={50}
+      />,
+    );
+    await wait(60);
+    // Banner is up.
+    expect(lastFrame() ?? "").toContain("agent state: idle");
+    // Wait long enough for the dismiss timer.
+    await wait(80);
+    expect(lastFrame() ?? "").not.toContain("agent state: idle");
+  });
+
+  it("does not show a banner when notificationsEnabled is false", async () => {
+    let phase = 0;
+    const get = (): AppEntry[] => {
+      phase += 1;
+      const state = phase === 1 ? "working" : "idle";
+      return [entry({ paneId: "%1", status: status({ state }) })];
+    };
+    const { lastFrame } = render(
+      <App
+        getEntries={get}
+        branchForCwd={() => null}
+        pollIntervalMs={30}
+        pulseIntervalMs={9999}
+        notificationsEnabled={false}
+        notificationDismissMs={9999}
+      />,
+    );
+    await wait(60);
+    // No banner despite the transition.
+    expect(lastFrame() ?? "").not.toContain("agent state: idle");
+  });
+});
