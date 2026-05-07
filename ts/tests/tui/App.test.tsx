@@ -516,3 +516,87 @@ describe("App tmux bridge", () => {
     expect(onQuit).toHaveBeenCalled();
   });
 });
+
+describe("App new-pi targetSession", () => {
+  it("session mode submits without targetSession", async () => {
+    const onLaunchPi = vi.fn();
+    const { stdin } = render(
+      <App
+        getEntries={() => []}
+        branchForCwd={() => null}
+        defaultCwd="/home/u"
+        onLaunchPi={onLaunchPi}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    stdin.write("o");
+    await wait();
+    stdin.write("\r");
+    await wait();
+    expect(onLaunchPi).toHaveBeenCalledWith({
+      mode: "session",
+      cwd: "/home/u",
+    });
+    // targetSession field is absent on session-mode submissions.
+    expect(onLaunchPi.mock.calls[0]?.[0]).not.toHaveProperty("targetSession");
+  });
+
+  it("window mode carries targetSession from the cursored pane", async () => {
+    const onLaunchPi = vi.fn();
+    const entries = [
+      entry({
+        paneId: "%1",
+        session: "alpha",
+        cwd: "/home/u/proj",
+      }),
+    ];
+    const { stdin } = render(
+      <App
+        getEntries={() => entries}
+        branchForCwd={() => null}
+        defaultCwd="/home/u"
+        onLaunchPi={onLaunchPi}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    // Cursor is auto-focused on the first pane => 'o' opens window mode.
+    stdin.write("o");
+    await wait();
+    stdin.write("\r");
+    await wait();
+    expect(onLaunchPi).toHaveBeenCalledWith({
+      mode: "window",
+      cwd: "/home/u/proj",
+      targetSession: "alpha",
+    });
+  });
+
+  it("window mode pre-fills the modal with the pane's cwd, not defaultCwd", async () => {
+    const entries = [
+      entry({
+        paneId: "%1",
+        session: "alpha",
+        cwd: "/home/u/proj",
+      }),
+    ];
+    const { stdin, lastFrame } = render(
+      <App
+        getEntries={() => entries}
+        branchForCwd={() => null}
+        defaultCwd="/different/place"
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    stdin.write("o");
+    await wait();
+    const out = lastFrame() ?? "";
+    expect(out).toContain("/home/u/proj");
+    expect(out).not.toContain("/different/place");
+  });
+});

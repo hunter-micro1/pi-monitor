@@ -19,6 +19,12 @@ export type NewPiMode = "session" | "window";
 
 export interface NewPiResult {
   readonly mode: NewPiMode;
+  /**
+   * For window mode: the tmux session the new window should be
+   * added to. Set by App from the cursored pane's session before
+   * dispatching to onLaunchPi. Always undefined for session mode.
+   */
+  readonly targetSession?: string;
   readonly cwd: string;
 }
 

@@ -106,6 +106,13 @@ export function App(props: AppProps): ReactElement {
   const [entries, setEntries] = useState<readonly AppEntry[]>([]);
   const [cursor, dispatch] = useReducer(cursorReducer, INITIAL_CURSOR);
   const [mode, setMode] = useState<AppMode>("list");
+  // Captured at the moment the user presses 'o' on a pane row, so
+  // the new-pi modal can carry the target session through to
+  // onLaunchPi when the cursor moves before submission.
+  const [windowTarget, setWindowTarget] = useState<{
+    session: string;
+    cwd: string;
+  } | null>(null);
 
   const tmux = props.tmux ?? null;
 
@@ -224,10 +231,14 @@ export function App(props: AppProps): ReactElement {
         // 'o' on the new-row affordance (or empty) => new session.
         const pos = currentPos(cursor);
         if (pos !== null && pos.kind === "pane") {
-          setMode("newWindow");
-        } else {
-          setMode("newSession");
+          const e = entries.find((x) => x.paneId === pos.paneId);
+          if (e !== undefined) {
+            setWindowTarget({ session: e.session, cwd: e.cwd });
+            setMode("newWindow");
+            return;
+          }
         }
+        setMode("newSession");
         return;
       }
       if (input === "j" || key.downArrow) {
@@ -261,14 +272,24 @@ export function App(props: AppProps): ReactElement {
   }
   if (mode === "newSession" || mode === "newWindow") {
     const newPiMode = mode === "newSession" ? "session" : "window";
+    const cwdHint =
+      mode === "newWindow" && windowTarget !== null ? windowTarget.cwd : defaultCwd;
     return (
       <NewPiScreen
         mode={newPiMode}
-        defaultCwd={defaultCwd}
-        onCancel={() => setMode("list")}
+        defaultCwd={cwdHint}
+        onCancel={() => {
+          setMode("list");
+          setWindowTarget(null);
+        }}
         onSubmit={(result) => {
           setMode("list");
-          onLaunchPi?.(result);
+          const enriched: NewPiResult =
+            mode === "newWindow" && windowTarget !== null
+              ? { ...result, targetSession: windowTarget.session }
+              : result;
+          setWindowTarget(null);
+          onLaunchPi?.(enriched);
         }}
         listDir={listDir}
       />
