@@ -18,7 +18,7 @@
 import { Box, Text, useApp, useInput } from "ink";
 import { type ReactElement, useEffect, useReducer, useState } from "react";
 
-import { STATE_COLORS, fmtSessionHeader } from "../format/row.js";
+import { STATE_COLORS, fmtSessionHeader, fmtStatusWidget } from "../format/row.js";
 import type { AgentState, PaneStatus } from "../state/types.js";
 import { EmptyState } from "./EmptyState.js";
 import { HelpScreen } from "./HelpScreen.js";
@@ -86,6 +86,13 @@ export interface AppProps {
    * is no tmux integration (display-only mode).
    */
   readonly tmux?: TmuxBridge;
+  /**
+   * Tmux status-line writer. Receives the formatted attention-state
+   * summary on every resolver tick. Hosts the empty string between
+   * mount and the first tick. Tests pass a vi.fn(); the real cli.ts
+   * passes `setStatusWidget` from `tmux/monitor.ts`.
+   */
+  readonly setStatusWidget?: (text: string) => void;
 }
 
 type AppMode = "list" | "help" | "newSession" | "newWindow";
@@ -100,6 +107,7 @@ export function App(props: AppProps): ReactElement {
     onLaunchPi,
     defaultCwd = process.cwd(),
     listDir,
+    setStatusWidget,
   } = props;
 
   const ink = useApp();
@@ -165,6 +173,16 @@ export function App(props: AppProps): ReactElement {
     }, pulseIntervalMs);
     return () => clearInterval(id);
   }, [pulseT0, pulseIntervalMs]);
+
+  // ---------------------------------------------------------------------
+  // Tmux status-line widget. Updated on every entries change so the
+  // user's status-right (`#{@pi-monitor-status}`) reflects live
+  // attention counts. Empty string when nothing is interesting.
+  // ---------------------------------------------------------------------
+  useEffect(() => {
+    if (setStatusWidget === undefined) return;
+    setStatusWidget(fmtStatusWidget(entries.map((e) => e.status.state)));
+  }, [entries, setStatusWidget]);
 
   // ---------------------------------------------------------------------
   // Tmux right-slot integration. Drive the linked viewer + status

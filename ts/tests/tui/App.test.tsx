@@ -600,3 +600,75 @@ describe("App new-pi targetSession", () => {
     expect(out).not.toContain("/different/place");
   });
 });
+
+describe("App status widget", () => {
+  it("calls setStatusWidget on first sync with the formatted summary", async () => {
+    const setStatusWidget = vi.fn();
+    const entries = [
+      entry({ paneId: "%1", status: status({ state: "working" }) }),
+      entry({ paneId: "%2", status: status({ state: "idle" }) }),
+    ];
+    render(
+      <App
+        getEntries={() => entries}
+        branchForCwd={() => null}
+        setStatusWidget={setStatusWidget}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    expect(setStatusWidget).toHaveBeenCalled();
+    const last = setStatusWidget.mock.calls.at(-1)?.[0] as string;
+    // Order: idle before working (priority lattice).
+    expect(last).toContain("1");
+    expect(last).toMatch(/🔴|🟢/);
+  });
+
+  it("calls setStatusWidget with empty string when no panes", async () => {
+    const setStatusWidget = vi.fn();
+    render(
+      <App
+        getEntries={() => []}
+        branchForCwd={() => null}
+        setStatusWidget={setStatusWidget}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    expect(setStatusWidget).toHaveBeenCalledWith("");
+  });
+
+  it("re-emits setStatusWidget on every poll tick", async () => {
+    const setStatusWidget = vi.fn();
+    let phase = 0;
+    const get = (): AppEntry[] => {
+      phase += 1;
+      if (phase === 1) {
+        return [entry({ paneId: "%1", status: status({ state: "idle" }) })];
+      }
+      return [
+        entry({ paneId: "%1", status: status({ state: "idle" }) }),
+        entry({ paneId: "%2", status: status({ state: "error" }) }),
+      ];
+    };
+    render(
+      <App
+        getEntries={get}
+        branchForCwd={() => null}
+        setStatusWidget={setStatusWidget}
+        pollIntervalMs={30}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    const before = setStatusWidget.mock.calls.length;
+    await wait(60);
+    const after = setStatusWidget.mock.calls.length;
+    expect(after).toBeGreaterThan(before);
+    // Last call now contains the new error count.
+    const last = setStatusWidget.mock.calls.at(-1)?.[0] as string;
+    expect(last).toContain("❌1");
+  });
+});

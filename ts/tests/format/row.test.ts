@@ -18,11 +18,13 @@ import { describe, expect, it } from "vitest";
 import {
   ACTIVITY_MAX_CHARS,
   STATE_COLORS,
+  STATE_GLYPHS,
   activityDescription,
   activityTag,
   fmtIdle,
   fmtRowMain,
   fmtSessionHeader,
+  fmtStatusWidget,
   truncate,
   workingVerb,
 } from "../../src/format/row.js";
@@ -384,5 +386,37 @@ describe("fmtSessionHeader", () => {
     // renderer doesn't have a markup interpretation step \u2014 so
     // brackets pass through.
     expect(fmtSessionHeader("session [name]")).toBe("session [name]");
+  });
+});
+
+describe("fmtStatusWidget", () => {
+  it("returns empty string when there are no states", () => {
+    expect(fmtStatusWidget([])).toBe("");
+  });
+
+  it("returns empty string when only unknown / no_pi states are present", () => {
+    expect(fmtStatusWidget(["unknown", "no_pi", "unknown"])).toBe("");
+  });
+
+  it("renders a single state with its glyph + count", () => {
+    expect(fmtStatusWidget(["working", "working", "working"])).toBe(
+      `${STATE_GLYPHS.working}3`,
+    );
+  });
+
+  it("orders states by attention priority (error > waiting > idle > retrying > working)", () => {
+    const out = fmtStatusWidget(["working", "idle", "error", "waiting", "retrying"]);
+    expect(out).toBe(
+      `${STATE_GLYPHS.error}1 ${STATE_GLYPHS.waiting}1 ${STATE_GLYPHS.idle}1 ${STATE_GLYPHS.retrying}1 ${STATE_GLYPHS.working}1`,
+    );
+  });
+
+  it("counts duplicates of the same state", () => {
+    expect(fmtStatusWidget(["error", "error", "error"])).toBe(`${STATE_GLYPHS.error}3`);
+  });
+
+  it("suppresses unknown / no_pi when other states are present", () => {
+    const out = fmtStatusWidget(["working", "unknown", "no_pi", "unknown"]);
+    expect(out).toBe(`${STATE_GLYPHS.working}1`);
   });
 });

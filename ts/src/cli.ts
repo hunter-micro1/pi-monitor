@@ -158,7 +158,11 @@ async function runTui(): Promise<number> {
     }
   };
 
-  setStatusWidget("pi-monitor running");
+  // App's tick effect will overwrite this with the live
+  // attention-state summary on the first poll; until then a
+  // placeholder so the widget shows something the moment the
+  // user attaches.
+  setStatusWidget("pi-monitor");
 
   const { waitUntilExit } = render(
     createElement(App, {
@@ -166,6 +170,7 @@ async function runTui(): Promise<number> {
       tmux,
       onLaunchPi,
       defaultCwd: homedir(),
+      setStatusWidget,
     }),
   );
 

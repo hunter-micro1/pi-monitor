@@ -271,3 +271,54 @@ export function fmtRowMain(args: {
 export function fmtSessionHeader(session: string): string {
   return session;
 }
+
+// ---------------------------------------------------------------------------
+// Tmux status-widget summary
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-state emoji glyphs for the tmux status-line summary. Ports
+ * `STATE_GLYPHS` in `tui.py`. unknown / no_pi suppressed in the
+ * widget output below; they don't represent attention-worthy state.
+ */
+export const STATE_GLYPHS: Record<AgentState, string> = {
+  idle: "🔴",
+  working: "🟢",
+  error: "❌",
+  waiting: "🟠",
+  retrying: "🔵",
+  unknown: "❓",
+  no_pi: "⚫",
+};
+
+/**
+ * Build the tmux status-widget string. Format: `<glyph><count>` per
+ * non-zero state, space-separated, in attention-priority order:
+ * error -> waiting -> idle -> retrying -> working. unknown / no_pi
+ * suppressed.
+ *
+ * Returns "" when nothing is interesting (e.g. the only states are
+ * unknown / no_pi). The caller pushes this verbatim into the
+ * `@pi-monitor-status` user option, which the user's `status-right`
+ * references via `#{@pi-monitor-status}`.
+ *
+ * Mirrors `fmt_status_widget` in `tui.py`.
+ */
+export function fmtStatusWidget(states: readonly AgentState[]): string {
+  const counts: Partial<Record<AgentState, number>> = {};
+  for (const s of states) {
+    counts[s] = (counts[s] ?? 0) + 1;
+  }
+  const parts: string[] = [];
+  for (const state of [
+    "error",
+    "waiting",
+    "idle",
+    "retrying",
+    "working",
+  ] as AgentState[]) {
+    const n = counts[state] ?? 0;
+    if (n > 0) parts.push(`${STATE_GLYPHS[state]}${n}`);
+  }
+  return parts.join(" ");
+}
