@@ -1125,6 +1125,11 @@ class PiMonitorApp(App):
         # ("new",) or ("pane", pane_id).
         self._cursor_positions: list[tuple] = [("new",)]
         self._cursor_idx: int = 0
+        # On the very first render pass we want to land on the first
+        # pane row when any are visible (matches cmux/Warp — the user
+        # opens the app and the first agent is already focused). After
+        # that, ticks preserve whatever the user navigated to.
+        self._first_render_done: bool = False
 
         # The viewer session currently attached in the right tmux pane (or
         # None when the right pane is at its placeholder).
@@ -1599,8 +1604,17 @@ class PiMonitorApp(App):
 
     def _rebuild_cursor_positions(self) -> None:
         """Walk the visible group/row structure and recompute the cursor
-        position list. Preserves the current cursor when its target is
-        still visible; otherwise lands on the first pane row.
+        position list.
+
+        - On the very first render pass: land on the first pane row when
+          any are visible (so opening pi-monitor with existing agents
+          drops you on the first agent, the way cmux/Warp do). With no
+          panes, stay on the affordance.
+        - On subsequent renders: preserve the user's cursor when its
+          target is still visible. If the previously-cursored pane has
+          vanished (process died, session killed externally), fall back
+          to the first pane row — better than dumping the cursor onto
+          the affordance every time something dies.
         """
         prev_pos = (
             self._cursor_positions[self._cursor_idx]
@@ -1618,14 +1632,25 @@ class PiMonitorApp(App):
                     positions.append(("pane", child.pane_id))
 
         self._cursor_positions = positions
+
+        if not self._first_render_done:
+            # First tick: skip the affordance when at least one real pane
+            # exists. The initial `("new",)` cursor in __init__ exists so
+            # `_apply_selection` has *something* valid to highlight before
+            # the first tick mounts any rows; we override it here.
+            self._first_render_done = True
+            self._cursor_idx = 1 if len(positions) > 1 else 0
+            return
+
         if prev_pos is not None:
             try:
                 self._cursor_idx = positions.index(prev_pos)
                 return
             except ValueError:
                 pass
-        # Fallback: prefer the first pane over the affordance so power
-        # users land on a real row after the very first tick.
+        # Cursor's previous target vanished: prefer the first pane over
+        # the affordance so we don't dump the user onto `+ new session`
+        # every time a process dies.
         if len(positions) > 1:
             self._cursor_idx = 1
         else:
