@@ -6,16 +6,19 @@ We never scrape `tmux capture-pane`; the JSONL plus mtime is sufficient.
 
 Pane → JSONL mapping: pi stores sessions per cwd at
 `~/.pi/agent/sessions/--<cwd-with-/-replaced-by->--/<timestamp>_<uuid>.jsonl`,
-but multiple pi processes can share a cwd (and therefore a session directory).
-Pi opens-writes-closes the file on every append, so `/proc/<pid>/fd` does
-NOT reveal which JSONL belongs to which pi. The filename embeds an ISO
-timestamp captured the moment pi created the session, which is the only
-reliable per-process anchor we have from outside.
+but multiple pi processes can share a cwd (and therefore a session
+directory). Pi opens-writes-closes the file on every append, so the OS-
+level fd table does NOT reveal which JSONL belongs to which pi. The
+filename embeds an ISO timestamp captured the moment pi created the
+session, which is the only reliable per-process anchor we have from
+outside.
 
 We disambiguate per-cwd by:
 
-  1. Walking each pane's process tree to find its live `pi` descendant pid.
-  2. Reading that pid's start time from `/proc/<pid>/stat` + `/proc/uptime`.
+  1. Walking each pane's process tree (via psutil so the same code runs
+     on Linux and macOS) to find its live `pi` descendant pid.
+  2. Reading that pid's `create_time()` (psutil normalizes `/proc/<pid>
+     /stat` on Linux and `kinfo_proc` on macOS to the same Unix time).
   3. Sorting the cwd's pi panes by start time ASC (oldest first) and, for
      each pi P, claiming an unclaimed JSONL by:
        a. **Owned** — filename timestamp ∈ [P.start − ε, next_P.start − ε)
@@ -45,6 +48,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+
+import psutil
 
 # Minimum stable-mtime time before we promote "assistant just stopped" to
 # `idle`. We deliberately do NOT track a separate "stalled" state — from
@@ -528,71 +533,69 @@ def _list_jsonl_with_mtime(directory: Path) -> list[tuple[Path, float]]:
     return [(p, p.stat().st_mtime) for p in directory.iterdir() if p.suffix == ".jsonl"]
 
 
-_PROC = Path("/proc")
+# Errors psutil raises when a process disappears between when we found
+# it and when we read its details, or when the OS denies us access
+# (e.g. a process owned by another user we can't introspect on macOS).
+# We treat all three the same way — the pid effectively doesn't exist
+# for our purposes — so callers can swallow them in one tuple.
+_PSUTIL_NOT_OURS = (
+    psutil.NoSuchProcess,
+    psutil.AccessDenied,
+    psutil.ZombieProcess,
+)
 
 
 def _proc_starttime(pid: int) -> float | None:
-    """Absolute unix time when `pid` was created, or None if pid is gone.
+    """Absolute unix time when `pid` was created, or None if the pid is
+    gone or we can't see it.
 
-    Reads field 22 (starttime, in clock ticks since boot) from /proc/<pid>/stat
-    and combines with /proc/uptime. The comm field can contain spaces and
-    parentheses, so we slice past the last `)` before splitting.
+    Backed by psutil so the same call works on Linux (reads field 22 of
+    `/proc/<pid>/stat` plus boot time, same as our previous /proc-only
+    implementation) and on macOS (uses `kinfo_proc`). Returning a float
+    in both cases lets the rest of the resolver stay platform-agnostic.
     """
     try:
-        stat = (_PROC / str(pid) / "stat").read_text()
-        rparen = stat.rfind(")")
-        if rparen == -1:
-            return None
-        fields = stat[rparen + 2 :].split()
-        # After comm, fields are state(3) ppid(4) ... starttime(22).
-        # We sliced past pid+comm, so starttime is index 19.
-        starttime_ticks = int(fields[19])
-        uptime_s = float((_PROC / "uptime").read_text().split()[0])
-    except (FileNotFoundError, ValueError, IndexError, PermissionError):
+        return psutil.Process(pid).create_time()
+    except _PSUTIL_NOT_OURS:
         return None
-    boot_time = time.time() - uptime_s
-    clock_ticks = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
-    return boot_time + (starttime_ticks / clock_ticks)
-
-
-def _walk_pi_descendant(root_pid: int, max_depth: int = 6) -> int | None:
-    """Find a descendant of `root_pid` whose comm is exactly 'pi'.
-
-    Iterative BFS with a depth cap so we never recurse forever on a corrupt
-    /proc snapshot. Returns the first matching pid or None.
-    """
-    queue: list[tuple[int, int]] = [(root_pid, 0)]
-    while queue:
-        pid, depth = queue.pop(0)
-        try:
-            comm = (_PROC / str(pid) / "comm").read_text().strip()
-        except (FileNotFoundError, PermissionError):
-            continue
-        if comm == "pi":
-            return pid
-        if depth >= max_depth:
-            continue
-        try:
-            children_raw = (
-                _PROC / str(pid) / "task" / str(pid) / "children"
-            ).read_text()
-        except (FileNotFoundError, PermissionError):
-            continue
-        for child_str in children_raw.split():
-            try:
-                queue.append((int(child_str), depth + 1))
-            except ValueError:
-                continue
-    return None
 
 
 def find_pi_pid_for_pane(pane_pid: int) -> int | None:
-    """Walk the process tree from a tmux pane's pid to find its `pi` descendant.
+    """Walk the process tree from a tmux pane's pid to find its `pi`
+    descendant.
 
-    The pane_pid is typically the pane's shell (zsh/bash); pi runs as a child.
-    Returns None if no pi descendant is alive.
+    The pane_pid is typically the pane's shell (zsh/bash); pi usually
+    runs as a child of that shell. We check the pane pid itself first
+    (in case the user launched pi with `exec pi`, replacing the shell
+    process), then walk all descendants. Returns None when no live pi
+    descendant is found.
+
+    `psutil.Process.children(recursive=True)` handles the recursion and
+    cycle detection internally, so we don't need the depth cap the
+    previous /proc-walking implementation used. The total descendant
+    count under a tmux pane shell is small (1–3 typically), so a
+    recursive walk per pane per tick is cheap.
     """
-    return _walk_pi_descendant(pane_pid)
+    try:
+        proc = psutil.Process(pane_pid)
+    except _PSUTIL_NOT_OURS:
+        return None
+    try:
+        if proc.name() == "pi":
+            return proc.pid
+    except _PSUTIL_NOT_OURS:
+        return None
+    try:
+        descendants = proc.children(recursive=True)
+    except _PSUTIL_NOT_OURS:
+        return None
+    for child in descendants:
+        try:
+            if child.name() == "pi":
+                return child.pid
+        except _PSUTIL_NOT_OURS:
+            continue
+    return None
 
 
 def _claim_session_file(

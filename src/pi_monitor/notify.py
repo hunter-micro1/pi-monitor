@@ -226,25 +226,57 @@ class Notifier:
 
 
 # ---------------------------------------------------------------------------
-# notify-send wrapper
+# Desktop notification wrapper
 # ---------------------------------------------------------------------------
 
 
 def _send_notification(title: str, body: str, urgency: str = "normal") -> None:
-    if shutil.which("notify-send") is None:
+    """Fire a desktop notification, picking the right transport for the OS.
+
+    Linux / *BSD with libnotify: shells out to `notify-send` (the same
+    integration we've always had).
+
+    macOS: shells out to `osascript` and uses AppleScript's `display
+    notification` action, which routes through Notification Center. The
+    body and title are quoted via `json.dumps` so any embedded quotes
+    don't break the AppleScript expression — JSON's string escaping
+    happens to be a strict subset of AppleScript's, so this is safe.
+    `urgency` is a libnotify concept that AppleScript doesn't support,
+    so it's ignored on macOS.
+
+    Falls back to a no-op when neither tool is available (e.g. headless
+    SSH sessions, CI). Notifications are advisory; never raise.
+    """
+    if shutil.which("notify-send") is not None:
+        try:
+            subprocess.run(
+                [
+                    "notify-send",
+                    "--app-name=pi-monitor",
+                    "--urgency",
+                    urgency,
+                    title,
+                    body,
+                ],
+                capture_output=True,
+                timeout=2.0,
+            )
+        except (subprocess.SubprocessError, OSError):
+            pass
         return
-    try:
-        subprocess.run(
-            [
-                "notify-send",
-                "--app-name=pi-monitor",
-                "--urgency",
-                urgency,
-                title,
-                body,
-            ],
-            capture_output=True,
-            timeout=2.0,
+    if shutil.which("osascript") is not None:
+        # `json.dumps` gives us a properly-escaped, double-quoted string
+        # that AppleScript will accept verbatim.
+        script = (
+            f"display notification {json.dumps(body)} "
+            f"with title {json.dumps(title)}"
         )
-    except (subprocess.SubprocessError, OSError):
-        pass
+        try:
+            subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                timeout=2.0,
+            )
+        except (subprocess.SubprocessError, OSError):
+            pass
+        return

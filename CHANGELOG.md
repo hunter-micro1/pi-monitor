@@ -4,6 +4,70 @@ All notable changes to pi-monitor are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-05-07
+
+Cross-platform release. The TUI now runs unchanged on macOS as well as
+Linux; CI is hardened with app-level tests and an empty-state polish.
+
+### Added
+
+- **macOS support.** Process resolution (walking each pane's tree to its
+  `pi` descendant + reading the pi process's start time to disambiguate
+  panes that share a cwd) is now backed by [psutil](https://github.com/giampaolo/psutil),
+  so the same code runs on Linux (`/proc`) and macOS (`kinfo_proc`).
+  Notifications fall back to `osascript` (Notification Center) when
+  `notify-send` isn't on PATH; in headless SSH sessions notifications
+  are silently skipped while the in-TUI toast still fires.
+- **15 app-level tests** (`tests/test_tui_app.py`) driving `PiMonitorApp`
+  via Textual's headless `run_test()` Pilot. Covers the cursor model
+  under j/k, `.selected` / `.active-group` class toggling, mount/unmount
+  diff against synthetic pane data, the empty-state welcome, the jump
+  shortcut, and the SessionGroup header-first invariant.
+- **14 cross-platform tests** (`tests/test_cross_platform.py`) for the
+  notification dispatch (notify-send, osascript fallback, no-transport
+  no-op, JSON-escaping a body with quotes, swallowed subprocess errors)
+  and the psutil-backed process resolver (create_time pass-through,
+  NoSuchProcess / AccessDenied / ZombieProcess handling, descendant
+  walking with a dead pid mid-walk).
+- **Polished zero-sessions empty state.** With no agents present the
+  scroll area expands a centered welcome block: bold accent heading
+  `No pi sessions yet`, then `Press o to launch a new agent` and
+  `Press ? to see all keybindings` with the action keys highlighted in
+  the brand accent. Title bar stays plain so the eye lands on the
+  call-to-action.
+- **GitHub Actions CI** running ruff + pytest on Python 3.9 (the
+  `requires-python` floor) and 3.13, plus a wheel/sdist build job that
+  uploads the artifacts. Matrix uses concurrency cancellation so stale
+  pushes don't burn minutes.
+- **PEP 735 dev dependency group** (`pytest>=8`, `ruff>=0.13`) so a
+  fresh `uv sync` has the test/lint stack available without any extra
+  opt-in.
+- **`uv.lock`** committed for reproducible installs and CI cache key
+  generation.
+
+### Changed
+
+- **`psutil>=5.9`** added to runtime dependencies.
+- **`_proc_starttime` and `find_pi_pid_for_pane`** rewritten on top of
+  psutil. The public API and call sites are unchanged — existing
+  state.py monkeypatch tests keep working — but the internals no longer
+  read `/proc/<pid>/stat`, `/proc/uptime`, or `/proc/<pid>/task/<pid>/children`,
+  so they work on any psutil-supported platform.
+- **README**: dropped the macOS-not-supported note in Known Limitations,
+  updated Requirements to mention psutil and macOS support, expanded
+  the Notifications section to document the dual notify-send / osascript
+  transport.
+
+### Fixed
+
+- **Cursor now lands on the first pane row on launch** when at least one
+  pane is visible (matches cmux/Warp). Previously `_rebuild_cursor_positions`
+  preserved the seed `("new",)` cursor on first tick instead of
+  promoting to the first pane, because the seed was always present in
+  the rebuilt positions list and the fallback only fired when the
+  previous position had vanished. New `_first_render_done` flag
+  distinguishes initial paint from steady-state ticks.
+
 ## [0.2.0] — 2026-05-07
 
 A full visual rewrite of the left pane to match the cmux/Warp design

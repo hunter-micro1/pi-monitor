@@ -151,23 +151,22 @@ The selected row uses `ansi_bright_black` (an ANSI palette gray) instead of an a
 
 ## Notifications
 
-By default, `pi-monitor` fires a `notify-send` desktop notification when a pane transitions into `idle`, `waiting`, or `error` (not into `working` or `retrying`). Each pane has a 2-second debounce to suppress flapping. Errors whose message matches pi's auto-retry regex are deferred 10 s — if pi recovers in that window the notification is dropped entirely.
+By default, `pi-monitor` fires a desktop notification when a pane transitions into `idle`, `waiting`, or `error` (not into `working` or `retrying`). The transport is picked at call time: `notify-send` on Linux/*BSD with libnotify, `osascript` (Notification Center) on macOS. If neither is on PATH — e.g. a headless SSH session — notifications are silently skipped; the in-TUI toast still fires. Each pane has a 2-second debounce to suppress flapping. Errors whose message matches pi's auto-retry regex are deferred 10 s — if pi recovers in that window the notification is dropped entirely.
 
 Press `m` in the TUI to mute / unmute. The setting persists in `~/.config/pi-monitor/config.json`.
 
 ## Requirements
 
-- Linux with `/proc` (used to walk each tmux pane's process tree to its `pi` descendant; pi's start time is read from `/proc/<pid>/stat` to disambiguate panes that share a cwd).
+- Linux or macOS. Process resolution (walking each tmux pane's tree to its `pi` descendant + reading the pi process's start time to disambiguate panes that share a cwd) is backed by [psutil](https://github.com/giampaolo/psutil), so the same code runs on both.
 - tmux ≥ 3.2 with `set -g mouse on`.
 - A pi install that writes session files to the default location (`~/.pi/agent/sessions/`).
 
-## Known limitations (v1)
+## Known limitations
 
 - pi sessions started with `--no-session` produce no JSONL and show as `?`.
 - pi sessions launched with a custom `--session-dir` are not detected.
 - pi running over ssh inside a pane is not detected (the pane shows `cmd=ssh`).
 - The right slot shares the source session's window with all of its other panes. If your source window is split, the right slot mirrors that split — input still goes to the cursored pane (we set `select-pane` in the sister), but you'll see the neighbouring panes shrunk alongside.
-- macOS is not supported. The linked-session flow is tmux-native and would work, but the `notify-send` integration assumes libnotify and the `/proc`-based pi-pid resolution would need an `lsof`/`ps` fallback.
 
 ## License
 
