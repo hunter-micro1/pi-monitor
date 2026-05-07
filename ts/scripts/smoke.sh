@@ -104,8 +104,12 @@ run_iso new-session -d -s keepalive -x 200 -y 50 "sleep 3600"
 # bootstrap one; switchClientToMonitor will fail because no client is
 # attached, but the monitor session is created -- which is what we
 # verify next.
+# Note: we unset CI as well as TMUX. Ink (or one of its is-tty deps)
+# refuses to render when CI=true is set, which is the GitHub Actions
+# default. Without this the inner pi-monitor pane stays blank even
+# though the node process is alive and tmux's pseudo-TTY is fine.
 run_iso new-session -d -s host -x 200 -y 50 \
-	"env -u TMUX TMUX_TMPDIR='$ISO_TMPDIR' '$NODE' '$CLI'; sleep 5"
+	"env -u TMUX -u CI TMUX_TMPDIR='$ISO_TMPDIR' '$NODE' '$CLI'; sleep 5"
 
 # Wait up to 5 sec for the monitor session to appear in the isolated
 # server.
