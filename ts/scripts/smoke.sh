@@ -146,8 +146,13 @@ while :; do
 	fi
 	attempts=$((attempts + 1))
 	if [[ $attempts -gt 50 ]]; then
-		echo "smoke: TUI pane output missing 'pi-monitor' title after 10s:" >&2
+		echo "smoke: TUI pane output missing 'pi-monitor' title after 10s." >&2
+		echo "---- monitor:0.0 (TUI pane) ----" >&2
 		echo "$tui_out" >&2
+		echo "---- host:0.0 (bootstrap pane) ----" >&2
+		run_iso capture-pane -p -t host:0.0 >&2 || true
+		echo "---- monitor pane list ----" >&2
+		run_iso list-panes -t monitor:0 -F '#{pane_id} #{pane_index} #{pane_pid} #{pane_current_command} #{pane_dead}' >&2 || true
 		fail "TUI title bar not rendered"
 	fi
 	sleep 0.2
