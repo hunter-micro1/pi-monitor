@@ -19,5 +19,14 @@ pi-monitor = "pi_monitor.cli:main"
 Homepage = "https://github.com/hshayde/pi-monitor"
 Repository = "https://github.com/hshayde/pi-monitor"
 
+# PEP 735 dev-dep group. `uv sync` includes this by default, so a fresh
+# clone has pytest + ruff available without any extra opt-in. CI also
+# relies on this so the same versions run locally and in GitHub Actions.
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.13",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/pi_monitor"]
