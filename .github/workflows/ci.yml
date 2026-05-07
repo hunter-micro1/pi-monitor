@@ -68,10 +68,9 @@ jobs:
           if-no-files-found: error
 
   ts:
-    # Phase 0 of the TypeScript rewrite (see docs/REWRITE_PLAN.md).
-    # The Python build above stays the canonical install during the
-    # port; this job runs the TS scaffold so each phase commit can be
-    # gated on green CI before merging.
+    # Canonical TypeScript build (npm 'pi-monitor' >= 0.4.0). The
+    # Python build (PyPI) continues at 0.3.x in parallel; both jobs
+    # gate every PR.
     name: ts (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
     strategy:
@@ -110,3 +109,9 @@ jobs:
 
       - name: Build bundle (tsup)
         run: pnpm build
+
+      - name: Install tmux for the smoke test
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Smoke (isolated tmux server)
+        run: pnpm smoke

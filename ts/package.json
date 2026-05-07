@@ -1,6 +1,6 @@
 {
   "name": "pi-monitor",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Live tmux-aware status monitor for pi coding agents.",
   "type": "module",
   "license": "MIT",
@@ -14,11 +14,7 @@
   "bin": {
     "pi-monitor": "./dist/cli.js"
   },
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE"
-  ],
+  "files": ["dist", "README.md", "LICENSE"],
   "engines": {
     "node": ">=20.0.0"
   },
@@ -29,7 +25,8 @@
     "test:watch": "vitest",
     "check": "biome check src/ tests/",
     "format": "biome format --write src/ tests/",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "smoke": "bash scripts/smoke.sh"
   },
   "dependencies": {
     "ink": "^5.2.1",

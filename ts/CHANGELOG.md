@@ -7,6 +7,18 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.3] — 2026-05-07
+
+- **Sandboxed live tmux smoke test.** New `pnpm smoke` script
+  (`ts/scripts/smoke.sh`) runs in two tiers: subprocess-only
+  `--help` / `--version` checks, and an isolated-tmux-server tier
+  that spins up a fresh server in a private `TMUX_TMPDIR`,
+  runs the bundled binary, verifies the monitor session +
+  2-pane layout + TUI render, sends `q`, and asserts the
+  cleanup path. Wired into CI — the `ts` job now installs tmux
+  via apt and runs the smoke after the build. Closes the last
+  deferred item from 0.4.0's release notes.
+
 ## [0.4.2] — 2026-05-07
 
 - **In-TUI notification banner.** Agent-state transitions to attention
@@ -35,7 +47,7 @@ ships as the canonical npm package while the Python build continues at
 ### Added
 
 - **Bundled npm CLI** (`pi-monitor`) installable via `npm install -g
-  pi-monitor` / `pnpm add -g pi-monitor`. Single-file ESM bundle with
+pi-monitor` / `pnpm add -g pi-monitor`. Single-file ESM bundle with
   shebang injected at build time; cold-start lazy-imports React + Ink
   so `--help` / `--version` stay fast.
 - **Ink + React TUI** mirroring the Python Textual UI: bordered session
@@ -61,8 +73,8 @@ ships as the canonical npm package while the Python build continues at
   ownership window is bounded above by the next-younger sibling's
   start time. Two panes can never bind to the same JSONL.
 - **macOS support** via `ps -A -o pid=,ppid=,comm=,etimes=` with `LC_ALL=C`
-  + a 200ms cache. Linux still uses `/proc/<pid>` directly (ctime for
-  start time, comm for binary name, task/children for the tree walk).
+  - a 200ms cache. Linux still uses `/proc/<pid>` directly (ctime for
+    start time, comm for binary name, task/children for the tree walk).
 - **Notifier** with `ATTENTION_STATES` set, 2s debounce, 10s retry
   suppression, pluggable transport. Matches the Python build's notify.py.
 - **Test suite** of 334 vitest tests across 25 files. Pure-function

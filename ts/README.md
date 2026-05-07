@@ -34,13 +34,32 @@ pi-monitor --version      # print version + exit
 cd ts
 pnpm install
 pnpm dev          # run the cli without bundling (tsx)
-pnpm test         # vitest (334 tests)
+pnpm test         # vitest (350 tests)
 pnpm test:watch   # vitest in watch mode
 pnpm typecheck    # tsc --noEmit
 pnpm check        # biome lint + format check
 pnpm format       # biome --write to fix lint/format issues
 pnpm build        # tsup bundle to ./dist
+pnpm smoke        # end-to-end smoke (after `pnpm build`)
 ```
+
+## Smoke test
+
+`pnpm smoke` runs `scripts/smoke.sh`. Two tiers:
+
+1. **Tier 1** (always runs): subprocess checks against the bundled
+   `dist/cli.js` — `--help`, `--version`, `-h`, `-V`. Doesn't touch
+   tmux.
+2. **Tier 2** (skipped if tmux is missing): isolates a fresh tmux
+   server inside a private `TMUX_TMPDIR`, runs the binary as the
+   command of an attached session, verifies the monitor session is
+   created with two panes, asserts the TUI title bar rendered, sends
+   `q`, asserts the monitor session shut down. The isolated server
+   is killed and the tmpdir removed on EXIT — your real tmux state
+   is untouched.
+
+CI runs both tiers on every push (the Tier-2 job installs tmux via
+apt before invoking `pnpm smoke`).
 
 ## Tooling
 
