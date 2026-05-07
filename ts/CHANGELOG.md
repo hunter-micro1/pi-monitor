@@ -7,6 +7,44 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.6] — 2026-05-07
+
+UI polish release. Three focused passes on the rendered TUI; no
+functional changes. The look targets cmux's flat-list sidebar more
+directly, with status-pill indicators and a brief flash animation
+on cursor moves.
+
+- **Cursor highlight via a left-edge bar marker (`▎`).** Replaces
+  the earlier `inverse` text-style highlight, which read as harsh
+  on translucent backgrounds. Selected rows show the bar in accent
+  color; non-selected rows reserve the same column with a space so
+  all rows align.
+- **Status pills with colored dots.** Title-bar state counts and
+  per-section chips now render as `● 1 error` (state-colored
+  dot, full-foreground count, dim label) instead of plain colored
+  text. Reads as an indicator at a glance.
+- **Flat list with horizontal dividers.** Session cards no longer
+  use rounded bordered boxes. Sections are separated by a single
+  thin dim divider (Ink `borderTop`) and each section is a header
+  + rows. Mirrors cmux's sidebar layout.
+- **Cursor-flash animation.** When the cursor moves to a new row,
+  the bar briefly lerps from accent toward white and decays back
+  over 250ms. Cheap (piggybacks on the existing pulse interval);
+  gives the cursor a visible beat that Ink's atomic frame
+  rendering can't otherwise provide.
+- **Footer cleanup.** `j/k move   g/G top/bot   o new   ? help   q quit`
+  becomes `j k move    ↵ focus    o new    ? help    q quit`
+  (drop g/G; surface the Tab/Enter handoff to the right pane).
+- **Width cap on wide terminals.** Content capped at 100 cols via
+  `useStdout`. Wide terminals (200+ cols) no longer have stretchy
+  cards; the right side becomes wallpaper bleed-through.
+- **Title-bar cleanup.** Drops the leftover `status` placeholder
+  text that had been sitting next to the brand name.
+- **`scripts/render-png.sh`** — new tooling that renders the App
+  via tmux capture-pane + ANSI-to-HTML + headless Chrome. Useful
+  for design reviews of the live colored output without a real
+  interactive client.
+
 ## [0.4.5] — 2026-05-07
 
 - **Renamed npm package to `@hshayde/pi-monitor`** because the
