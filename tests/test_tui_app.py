@@ -773,3 +773,171 @@ def test_handle_launch_result_none_is_noop():
                     assert mwin.call_count == 0
 
     asyncio.run(go())
+
+
+# ---------------------------------------------------------------------------
+# Theme refresh: cycling t actually re-derives state colors
+# ---------------------------------------------------------------------------
+
+
+def test_theme_cycle_re_derives_state_colors():
+    """`t` should not just persist a name string — it must call
+    `_refresh_state_colors` so STATE_COLORS, ACCENT, and WORKING_PULSE_DIM
+    actually pick up the new theme's palette. Otherwise the row tags and
+    the title bar stay tinted with the old theme until the next tick."""
+
+    async def go():
+        import pi_monitor.tui as tui_mod
+        from pi_monitor.tui import THEMES
+        panes, statuses = _two_session_world()
+        with patch("pi_monitor.tui.save_config"):
+            app = PiMonitorApp()
+            with _stub_world(panes, statuses):
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    starting = app._theme_name
+                    starting_idx = THEMES.index(starting)
+                    accent_before = tui_mod.ACCENT
+                    success_before = tui_mod.STATE_COLORS[
+                        tui_mod.AgentState.WORKING
+                    ]
+                    await pilot.press("t")
+                    await pilot.pause()
+                    expected = THEMES[(starting_idx + 1) % len(THEMES)]
+                    assert app._theme_name == expected
+                    # At least ONE of the derived colors must change
+                    # across themes (textual-dark <-> tokyo-night both
+                    # ship distinct accent + success). If both stay
+                    # identical the refresh path is a no-op and the UI
+                    # would silently keep the old colors.
+                    accent_after = tui_mod.ACCENT
+                    success_after = tui_mod.STATE_COLORS[
+                        tui_mod.AgentState.WORKING
+                    ]
+                    assert (
+                        accent_after != accent_before
+                        or success_after != success_before
+                    ), (
+                        f"theme cycle from {starting} to {expected} did not "
+                        f"change ACCENT ({accent_before}) or success "
+                        f"({success_before}); _refresh_state_colors not wired"
+                    )
+
+    asyncio.run(go())
+
+
+# ---------------------------------------------------------------------------
+# _reconcile_active_viewer: cleans up after a vanished source session
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_active_viewer_kills_orphaned_viewer():
+    """If the user externally kills the source tmux session that the
+    right pane was mirroring, the next tick should detect the orphan
+    and reset the right slot back to its placeholder. Otherwise the
+    user is left staring at a frozen viewer for a session that no
+    longer exists."""
+
+    async def go():
+        panes, statuses = _two_session_world()
+        with patch("pi_monitor.tui.kill_linked_viewer") as mkill, \
+             patch("pi_monitor.tui.reset_right_slot_to_placeholder") as mreset:
+            app = PiMonitorApp()
+            # Pretend the right slot is currently attached to a viewer
+            # for a session that won't appear in the next list_panes
+            # result \u2014 the viewer is now orphaned.
+            app._active_viewer = "pi-monitor-view-deadsession"
+            app._reconcile_active_viewer(visible_panes=[])
+            assert mkill.called
+            assert mreset.called
+            assert app._active_viewer is None
+
+    asyncio.run(go())
+
+
+def test_reconcile_active_viewer_keeps_live_viewer():
+    """If the source session is still in the live pane list, leave the
+    viewer alone. We only clean up orphans; we don't churn viewers
+    that are still legitimately attached."""
+
+    async def go():
+        panes, statuses = _two_session_world()
+        # cape and contracts are both live in our fixture.
+        with patch("pi_monitor.tui.kill_linked_viewer") as mkill, \
+             patch("pi_monitor.tui.reset_right_slot_to_placeholder") as mreset:
+            app = PiMonitorApp()
+            app._active_viewer = "pi-monitor-view-cape"
+            app._reconcile_active_viewer(visible_panes=panes)
+            assert mkill.call_count == 0
+            assert mreset.call_count == 0
+            assert app._active_viewer == "pi-monitor-view-cape"
+
+    asyncio.run(go())
+
+
+# ---------------------------------------------------------------------------
+# _on_transition: notifier callback bridges to the TUI toast
+# ---------------------------------------------------------------------------
+
+
+def test_on_transition_fires_in_app_toast_at_correct_severity():
+    """When the Notifier observes an attention-state transition, the
+    on_transition callback must surface it as an in-TUI toast at the
+    right severity (warning for IDLE/WAITING, error for ERROR)."""
+
+    async def go():
+        from pi_monitor.state import AgentState as S
+        panes, statuses = _two_session_world()
+        app = PiMonitorApp()
+        with _stub_world(panes, statuses):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                with patch.object(app, "notify") as mnotify:
+                    app._on_transition("%1", S.IDLE, "title", "body")
+                    args, kwargs = mnotify.call_args
+                    assert kwargs.get("severity") == "warning"
+                    assert kwargs.get("title") == "title"
+                    # ERROR transitions escalate to error severity.
+                    mnotify.reset_mock()
+                    app._on_transition("%1", S.ERROR, "title", "body")
+                    assert mnotify.call_args.kwargs.get("severity") == "error"
+                    # WAITING also warning.
+                    mnotify.reset_mock()
+                    app._on_transition("%1", S.WAITING, "title", "body")
+                    assert mnotify.call_args.kwargs.get("severity") == "warning"
+
+    asyncio.run(go())
+
+
+# ---------------------------------------------------------------------------
+# _handle_launch_result: TmuxError swallowed + surfaced as a toast
+# ---------------------------------------------------------------------------
+
+
+def test_handle_launch_result_swallows_tmux_error():
+    """If create_pi_session raises a TmuxError (couldn't spawn for any
+    reason), _handle_launch_result must catch it and surface a toast
+    instead of crashing the App. Same for create_pi_window."""
+
+    async def go():
+        from pi_monitor.tmux import TmuxError
+        panes, statuses = _two_session_world()
+        with patch(
+            "pi_monitor.tmux.create_pi_session",
+            side_effect=TmuxError("boom"),
+        ):
+            app = PiMonitorApp()
+            with _stub_world(panes, statuses):
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    with patch.object(app, "notify") as mnotify:
+                        # Must not raise.
+                        app._handle_launch_result(("session", "/tmp/x"))
+                        await pilot.pause()
+                        # Surfaces an error toast.
+                        notified = " ".join(
+                            str(c.args[0]) for c in mnotify.call_args_list
+                        )
+                        assert "launch failed" in notified
+
+    asyncio.run(go())
