@@ -2,11 +2,12 @@
  * Top-level Ink component. Owns:
  *   - the resolver tick (default 500ms)
  *   - the WORKING-row pulse animation (default 80ms)
- *   - the cursor reducer (j/k navigation, g/G to top/bottom, 1\u20139 jumps)
+ *   - the cursor reducer (j/k navigation, g/G to top/bottom, 1-9 jumps)
  *   - the title bar + footer chrome
+ *   - modal mode switching (help, new-pi)
  *
- * Mirrors `PiMonitorApp` in `tui.py` for the read-only parts. Modal
- * screens (Help, NewPi) and tmux integration land in 4.3 / 4.4.
+ * Mirrors `PiMonitorApp` in `tui.py` for the read-only parts. Tmux
+ * right-slot integration lands in 4.4.
  *
  * Data source is injected via the `getEntries` prop so tests can
  * supply canned data without touching the real resolver / tmux.
@@ -18,10 +19,13 @@ import { type ReactElement, useEffect, useReducer, useState } from "react";
 import { STATE_COLORS, fmtSessionHeader } from "../format/row.js";
 import type { AgentState, PaneStatus } from "../state/types.js";
 import { EmptyState } from "./EmptyState.js";
+import { HelpScreen } from "./HelpScreen.js";
+import { type NewPiResult, NewPiScreen } from "./NewPiScreen.js";
 import { PaneRow } from "./PaneRow.js";
 import { SessionGroup, pickSessionChip } from "./SessionGroup.js";
 import { ACCENT, FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
 import { INITIAL_CURSOR, currentPos, cursorReducer } from "./cursor.js";
+import type { ListDir } from "./dirComplete.js";
 import { branchForCwd as defaultBranchForCwd } from "./git.js";
 import { pulseColor } from "./pulse.js";
 
@@ -45,7 +49,7 @@ export interface AppProps {
   /**
    * Returns the current set of pi panes + their statuses. Called
    * synchronously on first render and then on every tick. Async
-   * implementations are awaited \u2014 data races are guarded with a
+   * implementations are awaited; data races are guarded with a
    * `mounted` flag.
    */
   readonly getEntries: () => AppEntry[] | Promise<AppEntry[]>;
@@ -60,7 +64,19 @@ export interface AppProps {
    * `branchForCwd` from `tui/git.ts`.
    */
   readonly branchForCwd?: (cwd: string) => string | null;
+  /**
+   * Called when the user submits the new-pi modal. The App returns
+   * to list mode immediately after; the caller is responsible for
+   * the actual tmux invocation. Defaults to a no-op.
+   */
+  readonly onLaunchPi?: (result: NewPiResult) => void;
+  /** Initial cwd for the new-pi modal. Defaults to `process.cwd()`. */
+  readonly defaultCwd?: string;
+  /** Optional listDir override forwarded to NewPiScreen (tests). */
+  readonly listDir?: ListDir;
 }
+
+type AppMode = "list" | "help" | "newSession" | "newWindow";
 
 export function App(props: AppProps): ReactElement {
   const {
@@ -69,11 +85,15 @@ export function App(props: AppProps): ReactElement {
     pollIntervalMs = 500,
     pulseIntervalMs = 80,
     branchForCwd = defaultBranchForCwd,
+    onLaunchPi,
+    defaultCwd = process.cwd(),
+    listDir,
   } = props;
 
   const ink = useApp();
   const [entries, setEntries] = useState<readonly AppEntry[]>([]);
   const [cursor, dispatch] = useReducer(cursorReducer, INITIAL_CURSOR);
+  const [mode, setMode] = useState<AppMode>("list");
 
   // Pulse animation state. Anchor t0 once and recompute the live
   // color on the pulseInterval timer; PaneRow consumes it via prop.
@@ -91,8 +111,8 @@ export function App(props: AppProps): ReactElement {
         if (!mounted) return;
         setEntries(result);
       } catch {
-        // Swallow \u2014 we don't want a transient resolver failure to
-        // crash the whole TUI. Next tick will retry.
+        // Swallow; transient resolver failures shouldn't kill the
+        // TUI. Next tick retries.
       }
     };
     void tick();
@@ -107,7 +127,7 @@ export function App(props: AppProps): ReactElement {
   // Cursor sync. When entries change, recompute selectable positions
   // and try to keep the user's selection alive.
   // ---------------------------------------------------------------------
-  // biome-ignore lint/correctness/useExhaustiveDependencies: cursor.* identity is intentionally not a dep \u2014 sync is driven by entries.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: cursor.* identity is intentionally not a dep.
   useEffect(() => {
     dispatch({
       type: "sync",
@@ -126,41 +146,80 @@ export function App(props: AppProps): ReactElement {
   }, [pulseT0, pulseIntervalMs]);
 
   // ---------------------------------------------------------------------
-  // Keybindings.
+  // Keybindings. Disabled while a modal is up; the modal owns
+  // input and dismisses itself by calling its onCancel/onSubmit/
+  // onDismiss callbacks.
   // ---------------------------------------------------------------------
-  useInput((input, key) => {
-    if (input === "q") {
-      (onQuit ?? ink.exit)();
-      return;
-    }
-    if (key.ctrl && input === "c") {
-      (onQuit ?? ink.exit)();
-      return;
-    }
-    if (input === "j" || key.downArrow) {
-      dispatch({ type: "down" });
-      return;
-    }
-    if (input === "k" || key.upArrow) {
-      dispatch({ type: "up" });
-      return;
-    }
-    if (input === "g") {
-      dispatch({ type: "top" });
-      return;
-    }
-    if (input === "G") {
-      dispatch({ type: "bottom" });
-      return;
-    }
-    if (input.length === 1 && input >= "1" && input <= "9") {
-      dispatch({ type: "jump", n: Number.parseInt(input, 10) });
-    }
-  });
+  useInput(
+    (input, key) => {
+      if (input === "q") {
+        (onQuit ?? ink.exit)();
+        return;
+      }
+      if (key.ctrl && input === "c") {
+        (onQuit ?? ink.exit)();
+        return;
+      }
+      if (input === "?") {
+        setMode("help");
+        return;
+      }
+      if (input === "o") {
+        // 'o' on a pane row => new window inside that pane's session.
+        // 'o' on the new-row affordance (or empty) => new session.
+        const pos = currentPos(cursor);
+        if (pos !== null && pos.kind === "pane") {
+          setMode("newWindow");
+        } else {
+          setMode("newSession");
+        }
+        return;
+      }
+      if (input === "j" || key.downArrow) {
+        dispatch({ type: "down" });
+        return;
+      }
+      if (input === "k" || key.upArrow) {
+        dispatch({ type: "up" });
+        return;
+      }
+      if (input === "g") {
+        dispatch({ type: "top" });
+        return;
+      }
+      if (input === "G") {
+        dispatch({ type: "bottom" });
+        return;
+      }
+      if (input.length === 1 && input >= "1" && input <= "9") {
+        dispatch({ type: "jump", n: Number.parseInt(input, 10) });
+      }
+    },
+    { isActive: mode === "list" },
+  );
 
   // ---------------------------------------------------------------------
   // Render.
   // ---------------------------------------------------------------------
+  if (mode === "help") {
+    return <HelpScreen onDismiss={() => setMode("list")} />;
+  }
+  if (mode === "newSession" || mode === "newWindow") {
+    const newPiMode = mode === "newSession" ? "session" : "window";
+    return (
+      <NewPiScreen
+        mode={newPiMode}
+        defaultCwd={defaultCwd}
+        onCancel={() => setMode("list")}
+        onSubmit={(result) => {
+          setMode("list");
+          onLaunchPi?.(result);
+        }}
+        listDir={listDir}
+      />
+    );
+  }
+
   const groups = groupBySession(entries);
   const cursorPos = currentPos(cursor);
   const selectedPaneId =

@@ -229,3 +229,120 @@ describe("App render", () => {
     expect(lastFrame() ?? "").toContain("running bash");
   });
 });
+
+describe("App modal mode", () => {
+  it("opens HelpScreen when the user presses ?", async () => {
+    const { stdin, lastFrame } = render(
+      <App
+        getEntries={() => []}
+        branchForCwd={() => null}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    stdin.write("?");
+    await wait();
+    const out = lastFrame() ?? "";
+    expect(out).toContain("keybindings");
+    expect(out).toContain("press any key to dismiss");
+  });
+
+  it("closes HelpScreen on any keystroke", async () => {
+    const { stdin, lastFrame } = render(
+      <App
+        getEntries={() => []}
+        branchForCwd={() => null}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    stdin.write("?");
+    await wait();
+    // 'press any key to dismiss' is unique to HelpScreen.
+    expect(lastFrame() ?? "").toContain("press any key to dismiss");
+    stdin.write("x");
+    await wait();
+    expect(lastFrame() ?? "").not.toContain("press any key to dismiss");
+  });
+
+  it("opens NewPiScreen in 'session' mode when 'o' is pressed and no panes exist", async () => {
+    const { stdin, lastFrame } = render(
+      <App
+        getEntries={() => []}
+        branchForCwd={() => null}
+        defaultCwd="/home/u"
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    stdin.write("o");
+    await wait();
+    expect(lastFrame() ?? "").toContain("Launch pi in a new tmux session");
+  });
+
+  it("opens NewPiScreen in 'window' mode when 'o' is pressed on a pane row", async () => {
+    const { stdin, lastFrame } = render(
+      <App
+        getEntries={() => [entry({ paneId: "%1" })]}
+        branchForCwd={() => null}
+        defaultCwd="/home/u"
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    // First pane is auto-focused on first sync.
+    stdin.write("o");
+    await wait();
+    expect(lastFrame() ?? "").toContain("Launch pi in a new window (current session)");
+  });
+
+  it("calls onLaunchPi and returns to list when NewPiScreen submits", async () => {
+    const onLaunchPi = vi.fn();
+    const { stdin, lastFrame } = render(
+      <App
+        getEntries={() => []}
+        branchForCwd={() => null}
+        defaultCwd="/home/u"
+        onLaunchPi={onLaunchPi}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    stdin.write("o");
+    await wait();
+    stdin.write("\r");
+    await wait();
+    expect(onLaunchPi).toHaveBeenCalledWith({
+      mode: "session",
+      cwd: "/home/u",
+    });
+    // Back on the list.
+    expect(lastFrame() ?? "").not.toContain("Launch pi in a new");
+  });
+
+  it("returns to list mode without calling onLaunchPi when NewPiScreen is cancelled", async () => {
+    const onLaunchPi = vi.fn();
+    const { stdin, lastFrame } = render(
+      <App
+        getEntries={() => []}
+        branchForCwd={() => null}
+        defaultCwd="/home/u"
+        onLaunchPi={onLaunchPi}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    stdin.write("o");
+    await wait();
+    stdin.write("\u001b");
+    await wait();
+    expect(onLaunchPi).not.toHaveBeenCalled();
+    expect(lastFrame() ?? "").not.toContain("Launch pi in a new");
+  });
+});
