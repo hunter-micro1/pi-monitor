@@ -7,6 +7,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.5] — 2026-05-07
+
+- **Renamed npm package to `@hshayde/pi-monitor`** because the
+  unscoped `pi-monitor` name was already taken on the registry by
+  an unrelated project. The git repository, source tree, the
+  binary on PATH (`pi-monitor`), and the import paths are all
+  unchanged — only the npm package name moved. Install:
+  `npm install -g @hshayde/pi-monitor`.
+
 ## [0.4.4] — 2026-05-07
 
 - **package.json `bin` path fix.** npm 10 silently dropped the
@@ -56,7 +65,7 @@ ships as the canonical npm package while the Python build continues at
 ### Added
 
 - **Bundled npm CLI** (`pi-monitor`) installable via `npm install -g
-pi-monitor` / `pnpm add -g pi-monitor`. Single-file ESM bundle with
+@hshayde/pi-monitor` / `pnpm add -g @hshayde/pi-monitor`. Single-file ESM bundle with
   shebang injected at build time; cold-start lazy-imports React + Ink
   so `--help` / `--version` stay fast.
 - **Ink + React TUI** mirroring the Python Textual UI: bordered session

@@ -1,6 +1,6 @@
 {
-  "name": "pi-monitor",
-  "version": "0.4.4",
+  "name": "@hshayde/pi-monitor",
+  "version": "0.4.5",
   "description": "Live tmux-aware status monitor for pi coding agents.",
   "type": "module",
   "license": "MIT",
@@ -14,11 +14,7 @@
   "bin": {
     "pi-monitor": "dist/cli.js"
   },
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE"
-  ],
+  "files": ["dist", "README.md", "LICENSE"],
   "engines": {
     "node": ">=20.0.0"
   },

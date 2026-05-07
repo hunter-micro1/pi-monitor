@@ -10,11 +10,13 @@ This file tracks the **Python** build (PyPI). The TypeScript build
 
 ## [0.4.0 (TypeScript)] — 2026-05-07
 
-The TypeScript build at [`ts/`](./ts) ships as `pi-monitor` 0.4.0 on npm.
-Functional parity with the Python 0.3.0 build; same product, same UX,
-different runtime. Both packages are supported in parallel:
+The TypeScript build at [`ts/`](./ts) ships as `@hshayde/pi-monitor` on
+npm (scoped because the unscoped `pi-monitor` name was already taken;
+the installed binary on PATH is still `pi-monitor`). Functional parity
+with the Python 0.3.0 build; same product, same UX, different runtime.
+Both packages are supported in parallel:
 
-- `npm install -g pi-monitor` — TS build (canonical going forward).
+- `npm install -g @hshayde/pi-monitor` — TS build (canonical going forward).
 - `uv tool install --from git+https://github.com/hshayde/pi-monitor pi-monitor`
   — Python build (continues at 0.3.x; receives bug fixes).
 

@@ -12,13 +12,17 @@ tmux configuration, etc.).
 ## Install
 
 ```bash
-npm install -g pi-monitor
+npm install -g @hshayde/pi-monitor
 # or
-pnpm add -g pi-monitor
+pnpm add -g @hshayde/pi-monitor
 ```
 
 This installs the `pi-monitor` binary on your PATH. Requires Node 20+
 and tmux on PATH.
+
+> The npm package is scoped (`@hshayde/`) because the unscoped
+> `pi-monitor` name was already taken on the registry by an unrelated
+> project. The installed binary on PATH is still just `pi-monitor`.
 
 ## Run
 
