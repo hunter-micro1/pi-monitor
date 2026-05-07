@@ -1,0 +1,160 @@
+/**
+ * macOS process-tree resolver.
+ *
+ * No `/proc` on Darwin, so we shell out to `ps`. Single per-snapshot
+ * call lists every running process; we cache the result for a short
+ * window so the resolver can do per-pane lookups without firing N
+ * subprocesses per tick.
+ *
+ * Public API matches `proc/linux.ts` so `proc/index.ts` can dispatch
+ * on `process.platform`.
+ */
+
+import { execFileSync } from "node:child_process";
+
+/**
+ * How long a `ps -A` snapshot is reused across `procStartTime` /
+ * `findPiPidForPane` calls. The resolver runs every ~500 ms; 200 ms
+ * is enough to amortize all the per-pane lookups in a single tick
+ * while still being responsive to processes that come/go between
+ * ticks.
+ */
+const CACHE_TTL_MS = 200;
+
+interface PsRow {
+  pid: number;
+  ppid: number;
+  comm: string;
+  /** Elapsed seconds since process start (from `ps -o etimes=`). */
+  etimes: number;
+}
+
+let cached: { atMs: number; rows: Map<number, PsRow> } | null = null;
+
+/**
+ * Run `ps -A -o pid=,ppid=,comm=,etimes=` and parse the output into
+ * a pid -> row map. Caches for `CACHE_TTL_MS` ms.
+ *
+ * `LC_ALL=C` is forced so the output is ASCII-stable across locales;
+ * without it some macOS configurations localize the column headers
+ * (which we suppress with `=`) and number formatting.
+ *
+ * Exposed for tests; production callers go through `procStartTime`
+ * and `findPiPidForPane`.
+ */
+export function readPsSnapshot(
+  options: { force?: boolean; nowMs?: number } = {},
+): Map<number, PsRow> {
+  const now = options.nowMs ?? Date.now();
+  if (!options.force && cached !== null && now - cached.atMs < CACHE_TTL_MS) {
+    return cached.rows;
+  }
+  let raw = "";
+  try {
+    raw = execFileSync("ps", ["-A", "-o", "pid=,ppid=,comm=,etimes="], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C" },
+      // ps shouldn't take more than a second under any reasonable
+      // load. Cap so a hung subprocess can't block the App.
+      timeout: 2_000,
+    });
+  } catch {
+    // ps not on PATH, killed, or non-zero exit. Treat as empty
+    // snapshot \u2014 callers will return null for everything.
+    cached = { atMs: now, rows: new Map() };
+    return cached.rows;
+  }
+
+  const rows = new Map<number, PsRow>();
+  for (const line of raw.split("\n")) {
+    // Output looks like: "  1234   5678 zsh        12345"
+    // Three numeric columns + a comm column that may itself have
+    // spaces. Pull pid, ppid, etimes from the ends and keep
+    // everything in between as comm. (`-o pid=` suppresses the
+    // header so we don't have to skip a row.)
+    const trimmed = line.trim();
+    if (trimmed === "") continue;
+    const tokens = trimmed.split(/\s+/);
+    if (tokens.length < 4) continue;
+    const pidS = tokens[0] as string;
+    const ppidS = tokens[1] as string;
+    const etimesS = tokens[tokens.length - 1] as string;
+    const comm = tokens.slice(2, -1).join(" ");
+
+    const pid = Number(pidS);
+    const ppid = Number(ppidS);
+    const etimes = Number(etimesS);
+    if (!Number.isInteger(pid) || !Number.isInteger(ppid) || !Number.isFinite(etimes)) {
+      continue;
+    }
+    rows.set(pid, { pid, ppid, comm, etimes });
+  }
+
+  cached = { atMs: now, rows };
+  return rows;
+}
+
+/**
+ * Reset the snapshot cache. Useful between unit tests so a stub
+ * `execFileSync` mock doesn't leak across cases. Production callers
+ * should not need this.
+ */
+export function _resetPsCacheForTests(): void {
+  cached = null;
+}
+
+/**
+ * Process start time in unix seconds. Computed as
+ * `now - etimes` from the cached `ps` snapshot.
+ *
+ * Mirrors `_proc_starttime` in the Python build.
+ */
+export function procStartTime(pid: number): number | null {
+  const snap = readPsSnapshot();
+  const row = snap.get(pid);
+  if (row === undefined) return null;
+  return Date.now() / 1000 - row.etimes;
+}
+
+/**
+ * Walk the process tree from `panePid` and return the first
+ * descendant (inclusive) whose `comm` is exactly `pi`.
+ *
+ * Builds a parent-to-children index from the cached `ps` snapshot
+ * and BFSes from `panePid`. Same shape as the Linux version.
+ */
+export function findPiPidForPane(panePid: number): number | null {
+  const snap = readPsSnapshot();
+
+  // Build parent -> children index from the snapshot. Cheap; the
+  // overall snapshot is at most a few hundred entries.
+  const childrenByPpid = new Map<number, number[]>();
+  for (const row of snap.values()) {
+    let list = childrenByPpid.get(row.ppid);
+    if (list === undefined) {
+      list = [];
+      childrenByPpid.set(row.ppid, list);
+    }
+    list.push(row.pid);
+  }
+
+  const queue: number[] = [panePid];
+  const seen = new Set<number>();
+
+  while (queue.length > 0) {
+    const pid = queue.shift() as number;
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+
+    const row = snap.get(pid);
+    if (row === undefined) continue;
+    if (row.comm === "pi") return pid;
+
+    const kids = childrenByPpid.get(pid);
+    if (kids === undefined) continue;
+    for (const kpid of kids) {
+      if (!seen.has(kpid)) queue.push(kpid);
+    }
+  }
+  return null;
+}
