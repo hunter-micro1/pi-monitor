@@ -20,7 +20,7 @@
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 
-const VERSION = "0.4.6";
+const VERSION = "0.4.7";
 
 async function main(argv: readonly string[]): Promise<number> {
   if (argv.includes("--help") || argv.includes("-h")) {
@@ -39,12 +39,28 @@ async function main(argv: readonly string[]): Promise<number> {
 
   // Late imports so --help / --version don't pay the React + Ink
   // cost (~50ms cold-start hit on small machines).
-  const { serverRunning } = await import("./tmux/client.js");
+  const { serverRunning, TmuxError } = await import("./tmux/client.js");
   if (!serverRunning()) {
     process.stderr.write(
       "pi-monitor: no tmux server running. Start tmux first (e.g. `tmux new -s work`).\n",
     );
     return 2;
+  }
+
+  // --reset: nuke an existing 'monitor' session (typically left over
+  // from a previous binary version) and any pi-monitor-view-*
+  // viewers, then continue with the normal bootstrap. Useful after
+  // upgrading the npm package -- the old monitor session would
+  // otherwise keep its pane 0 running the previous binary.
+  if (argv.includes("--reset")) {
+    const { killMonitorSession } = await import("./tmux/monitor.js");
+    const { cleanupOrphanViewers } = await import("./tmux/viewer.js");
+    try {
+      cleanupOrphanViewers();
+      killMonitorSession();
+    } catch (err) {
+      if (!(err instanceof TmuxError)) throw err;
+    }
   }
 
   if (insideMonitorSession()) {
@@ -243,8 +259,10 @@ function helpText(): string {
     "pi-monitor \u2014 live tmux-aware status monitor for pi coding agents",
     "",
     "Usage:",
-    "  pi-monitor          run the monitor (bootstrap into a tmux session)",
-    "  pi-monitor --help   show this help",
+    "  pi-monitor            run the monitor (bootstrap into a tmux session)",
+    "  pi-monitor --reset    kill the existing monitor session before bootstrapping",
+    "                        (use after upgrading the npm package)",
+    "  pi-monitor --help     show this help",
     "  pi-monitor --version  print version and exit",
     "",
     `version: ${VERSION}`,

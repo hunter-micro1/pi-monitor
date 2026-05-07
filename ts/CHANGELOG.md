@@ -7,6 +7,24 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.7] — 2026-05-07
+
+- **`--reset` flag** to nuke the existing `monitor` tmux session
+  before bootstrapping. Necessary after upgrading the npm package:
+  the bootstrap path is normally a no-op when a session named
+  `monitor` already exists, so pane 0 keeps running the previous
+  binary's process and you don't see the new UI. Run
+  `pi-monitor --reset` once after `npm install -g @hshayde/pi-monitor@latest`
+  to get a fresh session running the new binary.
+- **State-colored leading dot on activity descriptions.** Each
+  pane row's bottom line (the dim activity-line) now leads with
+  a `●` colored by the row's state, matching the title-bar
+  status pills and section chips. Every state cue across the
+  TUI now uses the same dot grammar.
+- Activity-line render is suppressed entirely when there's no
+  description (e.g. `no_pi` rows), so we don't render an orphan
+  dot on a blank line.
+
 ## [0.4.6] — 2026-05-07
 
 UI polish release. Three focused passes on the rendered TUI; no
@@ -26,7 +44,7 @@ on cursor moves.
 - **Flat list with horizontal dividers.** Session cards no longer
   use rounded bordered boxes. Sections are separated by a single
   thin dim divider (Ink `borderTop`) and each section is a header
-  + rows. Mirrors cmux's sidebar layout.
+  - rows. Mirrors cmux's sidebar layout.
 - **Cursor-flash animation.** When the cursor moves to a new row,
   the bar briefly lerps from accent toward white and decays back
   over 250ms. Cheap (piggybacks on the existing pulse interval);

@@ -1,21 +1,32 @@
 /**
- * One agent row inside a SessionGroup. Two visible lines:
+ * One agent row. Two visible lines:
  *
  *   line 1: `<bar> <name> · <branch>`  flex-left, `<state-tag>` flex-right
- *   line 2: dim activity description, indented past the leading bar
+ *   line 2: `   <state-dot> <activity description>` (dim, state-colored
+ *                                                    leading dot)
  *
- * Selected rows get a vertical-bar marker `▎` in the leftmost column
- * (accent-colored). Non-selected rows get a single space in that
- * column so all rows align. This replaces the inverse-text highlight
- * the earlier build used; the bar is less harsh than full-row
- * inverse and cleaner over translucent backgrounds.
+ * Selection model:
+ *   - The leftmost column reserves 2 cells. When a row is selected
+ *     the cursor bar `\u258e` (a thin half-block) renders there in the
+ *     `cursorBarColor` (the App lerps it brightward on cursor moves).
+ *   - The selected row's title also brightens to FOREGROUND so the
+ *     row reads as the active one beyond just the bar marker.
+ *
+ * Activity-line state dot:
+ *   - cmux uses small icons before each activity verb. We use a
+ *     `\u25cf` colored by the row's state to match the rest of the
+ *     design system (status pills in the title bar + section chips
+ *     all use the same dot character).
+ *   - Dot is suppressed entirely when there's no activity description
+ *     (e.g. no_pi rows) so we don't render an orphan dot on a blank
+ *     line.
  */
 
 import { Box, Text } from "ink";
 import type { ReactElement } from "react";
-
 import {
   type ActivityTag,
+  STATE_COLORS,
   activityDescription,
   activityTag,
   fmtRowMain,
@@ -27,34 +38,13 @@ import { ACCENT, FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
 const SELECTION_COL = 2;
 
 export interface PaneRowProps {
-  /** PaneStatus from the resolver. Drives every visible field. */
   status: PaneStatus;
-  /** `pane_title` from tmux. Falls back to `pane <index>` when empty. */
   paneTitle: string | null;
-  /** Numeric pane index for the fallback title. */
   paneIndex: number;
-  /** Current git branch for the agent's cwd, or null. */
   branch: string | null;
-  /** True iff this row is the cursor target. Renders the bar marker. */
   selected?: boolean;
-  /**
-   * True iff this row sits inside the SessionGroup that contains
-   * the cursor. Brightness lift to full foreground; lets the eye
-   * land on the focused card without flipping the row.
-   */
   inActiveCard?: boolean;
-  /**
-   * Pulse color for WORKING titles. The App's animation timer
-   * computes one new color per frame and threads it in here. When
-   * null we fall back to the static STATE_COLORS.working.
-   */
   workingColor?: string | null;
-  /**
-   * Selection-bar color. The App lerps this from accent toward
-   * white briefly when the cursor moves to a new row, then settles
-   * back to ACCENT. Renders only when `selected` is true; otherwise
-   * the column is a blank space and this prop is ignored.
-   */
   cursorBarColor?: string;
 }
 
@@ -88,6 +78,11 @@ export function PaneRow({
         ? FOREGROUND
         : FOREGROUND_MUTED;
 
+  const stateDotColor =
+    workingColor && status.state === "working"
+      ? workingColor
+      : (STATE_COLORS[status.state] ?? FOREGROUND_MUTED);
+
   return (
     <Box flexDirection="column">
       {/* Top line: selection bar + name + branch on the left, state tag on the right. */}
@@ -113,12 +108,18 @@ export function PaneRow({
         </Box>
       </Box>
 
-      {/* Activity line: dim, indented past the selection column + 2. */}
-      <Box paddingLeft={SELECTION_COL + 2} paddingRight={1}>
-        <Text dimColor color={FOREGROUND_MUTED}>
-          {description}
-        </Text>
-      </Box>
+      {/* Activity line: dim with a state-colored leading dot. The
+          dot makes the row's state visible at the activity-line beat
+          even if the right-side tag scrolled out of view on a narrow
+          terminal. */}
+      {description !== "" && (
+        <Box flexDirection="row" paddingLeft={SELECTION_COL + 2}>
+          <Text color={stateDotColor}>{"\u25cf "}</Text>
+          <Text dimColor color={FOREGROUND_MUTED}>
+            {description}
+          </Text>
+        </Box>
+      )}
     </Box>
   );
 }
