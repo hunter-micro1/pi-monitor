@@ -134,13 +134,24 @@ if [[ "$pane_count" -ne 2 ]]; then
 fi
 pass "monitor session has 2 panes"
 
-# Capture the TUI pane and verify the title bar rendered.
-tui_out=$(run_iso capture-pane -p -t monitor:0.0)
-if ! echo "$tui_out" | grep -q "pi-monitor"; then
-	echo "smoke: TUI pane output missing 'pi-monitor' title:" >&2
-	echo "$tui_out" >&2
-	fail "TUI title bar not rendered"
-fi
+# Poll the TUI pane until the title bar shows up. Slow CI runners can
+# take a few seconds for Ink to mount + render after the bootstrap
+# re-execs pi-monitor as the left pane's command. Up to 10s.
+attempts=0
+tui_out=""
+while :; do
+	tui_out=$(run_iso capture-pane -p -t monitor:0.0 2>/dev/null || echo "")
+	if echo "$tui_out" | grep -q "pi-monitor"; then
+		break
+	fi
+	attempts=$((attempts + 1))
+	if [[ $attempts -gt 50 ]]; then
+		echo "smoke: TUI pane output missing 'pi-monitor' title after 10s:" >&2
+		echo "$tui_out" >&2
+		fail "TUI title bar not rendered"
+	fi
+	sleep 0.2
+done
 pass "TUI title bar rendered in pane 0"
 
 # Send 'q' to the TUI pane. App.handleQuit calls tmux.shutdown() which
