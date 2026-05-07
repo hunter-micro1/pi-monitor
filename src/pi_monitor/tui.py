@@ -790,9 +790,11 @@ class PaneRow(Container):
     where every row tells you what's happening, not just what state
     it's in.
 
-    Selection is a CSS class toggle on the row; the bg tint fades via
-    `transition: background`. The activity line stays dim regardless of
-    selection so the eye scans line 1 first, line 2 only when needed.
+    Selection is a CSS class toggle on the row; `transition: background`
+    fades the bg tint in/out smoothly when the cursor moves, which is
+    the visual cue replacing the glyph rail of the previous design.
+    The activity line stays dim regardless of selection so the eye
+    scans line 1 first, line 2 only when needed.
     """
 
     DEFAULT_CSS = """
@@ -1130,6 +1132,14 @@ class PiMonitorApp(App):
         # opens the app and the first agent is already focused). After
         # that, ticks preserve whatever the user navigated to.
         self._first_render_done: bool = False
+
+        # Tracking refs for `_apply_selection` so cursor moves are O(1)
+        # in the row count, not O(N). The previous implementation
+        # iterated every PaneRow on every keystroke to flip the
+        # `.selected` class — fine at 10 panes, ~500ms/keystroke at 100.
+        # We now only diff against the previously-selected row/group.
+        self._selected_row: PaneRow | None = None
+        self._active_group: SessionGroup | None = None
 
         # The viewer session currently attached in the right tmux pane (or
         # None when the right pane is at its placeholder).
@@ -1664,36 +1674,63 @@ class PiMonitorApp(App):
     def _apply_selection(self) -> None:
         """Reflect the cursor on the actual widgets — toggle the
         `.selected` class on the row that owns the current position,
-        scroll it into view, and trigger a hover-preview if it's a pane
-        row. Selection bg fades in/out via the row's CSS transition."""
+        toggle `.active-group` on its parent card, scroll it into view,
+        and trigger a hover-preview if it's a pane row.
+
+        Implementation note: every `add_class` / `remove_class` triggers
+        a Textual refresh on that widget. Iterating *all* rows on every
+        keystroke turned cursor nav into a ~500ms-per-press wall under
+        100 panes. We now keep `self._selected_row` / `self._active_group`
+        as the previously-applied tracking refs and only flip classes
+        on the diff — O(1) per cursor move regardless of pane count.
+        Stale refs (widget unmounted between calls because the pane
+        died) are invalidated up front so we never call `.remove_class`
+        on a removed widget.
+        """
         pos = self._current_position()
+
+        # Invalidate any tracking refs that point at widgets that have
+        # been unmounted since the last call (e.g. a pi process died and
+        # `_render` removed its row).
+        if self._selected_row is not None and self._selected_row.pane_id not in self._rows:
+            self._selected_row = None
+        if self._active_group is not None and self._active_group.session not in self._groups:
+            self._active_group = None
+
+        # Affordance row.
         if pos == ("new",):
             self._new_session_row.add_class("selected")
         else:
             self._new_session_row.remove_class("selected")
 
-        target_row: PaneRow | None = None
-        for pane_id, row in self._rows.items():
-            if pos is not None and pos[0] == "pane" and pos[1] == pane_id:
-                row.add_class("selected")
-                target_row = row
-            else:
-                row.remove_class("selected")
+        # Compute the new selected row (None when cursor is on the
+        # affordance) and only flip classes on the diff against the
+        # previously-selected row.
+        new_selected_row: PaneRow | None = None
+        if pos is not None and pos[0] == "pane":
+            new_selected_row = self._rows.get(pos[1])
+        if new_selected_row is not self._selected_row:
+            if self._selected_row is not None:
+                self._selected_row.remove_class("selected")
+            if new_selected_row is not None:
+                new_selected_row.add_class("selected")
+            self._selected_row = new_selected_row
 
-        # Active-card emphasis: the SessionGroup containing the cursor
-        # gets the `.active-group` class, which the CSS uses to upgrade
-        # the border from $primary 30% to solid $primary and brighten
-        # all of that card's row titles. Other groups go calm.
-        active_card = self._card_for_position(pos)
-        for name, group in self._groups.items():
-            if name == active_card:
-                group.add_class("active-group")
-            else:
-                group.remove_class("active-group")
+        # Same diff approach for the active group.
+        active_card_name = self._card_for_position(pos)
+        new_active_group = (
+            self._groups.get(active_card_name) if active_card_name else None
+        )
+        if new_active_group is not self._active_group:
+            if self._active_group is not None:
+                self._active_group.remove_class("active-group")
+            if new_active_group is not None:
+                new_active_group.add_class("active-group")
+            self._active_group = new_active_group
 
         try:
-            if target_row is not None:
-                self._session_list.scroll_to_widget(target_row, animate=False)
+            if new_selected_row is not None:
+                self._session_list.scroll_to_widget(new_selected_row, animate=False)
             elif pos == ("new",):
                 self._session_list.scroll_to_widget(
                     self._new_session_row, animate=False
