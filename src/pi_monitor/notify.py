@@ -268,8 +268,7 @@ def _send_notification(title: str, body: str, urgency: str = "normal") -> None:
         # `json.dumps` gives us a properly-escaped, double-quoted string
         # that AppleScript will accept verbatim.
         script = (
-            f"display notification {json.dumps(body)} "
-            f"with title {json.dumps(title)}"
+            f"display notification {json.dumps(body)} with title {json.dumps(title)}"
         )
         try:
             subprocess.run(

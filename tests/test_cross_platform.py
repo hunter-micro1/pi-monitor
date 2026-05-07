@@ -43,8 +43,10 @@ def test_send_notification_uses_notify_send_when_available():
     def which(name):
         return "/usr/bin/notify-send" if name == "notify-send" else "/usr/bin/osascript"
 
-    with patch("pi_monitor.notify.shutil.which", side_effect=which), \
-         patch("pi_monitor.notify.subprocess.run") as mrun:
+    with (
+        patch("pi_monitor.notify.shutil.which", side_effect=which),
+        patch("pi_monitor.notify.subprocess.run") as mrun,
+    ):
         _send_notification("hello", "body text", urgency="critical")
         assert mrun.call_count == 1
         args, kwargs = mrun.call_args
@@ -64,8 +66,10 @@ def test_send_notification_falls_back_to_osascript_on_macos():
     def which(name):
         return "/usr/bin/osascript" if name == "osascript" else None
 
-    with patch("pi_monitor.notify.shutil.which", side_effect=which), \
-         patch("pi_monitor.notify.subprocess.run") as mrun:
+    with (
+        patch("pi_monitor.notify.shutil.which", side_effect=which),
+        patch("pi_monitor.notify.subprocess.run") as mrun,
+    ):
         _send_notification("hello", "body text")
         assert mrun.call_count == 1
         cmd = mrun.call_args[0][0]
@@ -88,8 +92,10 @@ def test_send_notification_escapes_quotes_in_body():
         return "/usr/bin/osascript" if name == "osascript" else None
 
     nasty = 'message with "quotes" and \\backslashes'
-    with patch("pi_monitor.notify.shutil.which", side_effect=which), \
-         patch("pi_monitor.notify.subprocess.run") as mrun:
+    with (
+        patch("pi_monitor.notify.shutil.which", side_effect=which),
+        patch("pi_monitor.notify.subprocess.run") as mrun,
+    ):
         _send_notification("title", nasty)
         script = mrun.call_args[0][0][2]
         # The escaped form must be present (json.dumps wraps + escapes).
@@ -101,8 +107,10 @@ def test_send_notification_noop_when_no_transport():
     """SSH session into a headless box \u2014 neither notify-send nor osascript
     available. Must not raise, must not attempt to spawn anything."""
 
-    with patch("pi_monitor.notify.shutil.which", return_value=None), \
-         patch("pi_monitor.notify.subprocess.run") as mrun:
+    with (
+        patch("pi_monitor.notify.shutil.which", return_value=None),
+        patch("pi_monitor.notify.subprocess.run") as mrun,
+    ):
         _send_notification("hello", "body")
         assert mrun.call_count == 0
 
@@ -115,11 +123,13 @@ def test_send_notification_swallows_subprocess_errors():
     def which(name):
         return "/usr/bin/notify-send" if name == "notify-send" else None
 
-    with patch("pi_monitor.notify.shutil.which", side_effect=which), \
-         patch(
-             "pi_monitor.notify.subprocess.run",
-             side_effect=OSError("daemon down"),
-         ):
+    with (
+        patch("pi_monitor.notify.shutil.which", side_effect=which),
+        patch(
+            "pi_monitor.notify.subprocess.run",
+            side_effect=OSError("daemon down"),
+        ),
+    ):
         # The point is just that this returns normally instead of raising.
         _send_notification("hello", "body")
 

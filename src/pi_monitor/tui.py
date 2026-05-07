@@ -1692,9 +1692,15 @@ class PiMonitorApp(App):
         # Invalidate any tracking refs that point at widgets that have
         # been unmounted since the last call (e.g. a pi process died and
         # `_render` removed its row).
-        if self._selected_row is not None and self._selected_row.pane_id not in self._rows:
+        if (
+            self._selected_row is not None
+            and self._selected_row.pane_id not in self._rows
+        ):
             self._selected_row = None
-        if self._active_group is not None and self._active_group.session not in self._groups:
+        if (
+            self._active_group is not None
+            and self._active_group.session not in self._groups
+        ):
             self._active_group = None
 
         # Affordance row.

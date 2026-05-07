@@ -93,19 +93,21 @@ def _stub_world(panes, statuses):
     def fake_resolve(self, refs):
         return {r.pane_id: statuses[r.pane_id] for r in refs}
 
-    with patch("pi_monitor.tui.list_panes", return_value=panes), \
-         patch("pi_monitor.state.StateResolver.resolve", fake_resolve), \
-         patch("pi_monitor.tui.set_status_widget"), \
-         patch("pi_monitor.tui.is_viewer_session", return_value=False), \
-         patch("pi_monitor.tui.ensure_linked_viewer", return_value="viewer-x"), \
-         patch("pi_monitor.tui.viewer_focus_pane"), \
-         patch("pi_monitor.tui.viewer_zoom_to_pane"), \
-         patch("pi_monitor.tui.attach_right_slot_to_viewer"), \
-         patch("pi_monitor.tui.kill_linked_viewer"), \
-         patch("pi_monitor.tui.reset_right_slot_to_placeholder"), \
-         patch("pi_monitor.tui.cleanup_orphan_viewers"), \
-         patch("pi_monitor.tui.kill_monitor_session"), \
-         patch("pi_monitor.tui.branch_for_cwd", return_value="main"):
+    with (
+        patch("pi_monitor.tui.list_panes", return_value=panes),
+        patch("pi_monitor.state.StateResolver.resolve", fake_resolve),
+        patch("pi_monitor.tui.set_status_widget"),
+        patch("pi_monitor.tui.is_viewer_session", return_value=False),
+        patch("pi_monitor.tui.ensure_linked_viewer", return_value="viewer-x"),
+        patch("pi_monitor.tui.viewer_focus_pane"),
+        patch("pi_monitor.tui.viewer_zoom_to_pane"),
+        patch("pi_monitor.tui.attach_right_slot_to_viewer"),
+        patch("pi_monitor.tui.kill_linked_viewer"),
+        patch("pi_monitor.tui.reset_right_slot_to_placeholder"),
+        patch("pi_monitor.tui.cleanup_orphan_viewers"),
+        patch("pi_monitor.tui.kill_monitor_session"),
+        patch("pi_monitor.tui.branch_for_cwd", return_value="main"),
+    ):
         yield
 
 
