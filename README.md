@@ -151,7 +151,7 @@ The selected row uses `ansi_bright_black` (an ANSI palette gray) instead of an a
 
 ## Notifications
 
-By default, `pi-monitor` fires a desktop notification when a pane transitions into `idle`, `waiting`, or `error` (not into `working` or `retrying`). The transport is picked at call time: `notify-send` on Linux/*BSD with libnotify, `osascript` (Notification Center) on macOS. If neither is on PATH — e.g. a headless SSH session — notifications are silently skipped; the in-TUI toast still fires. Each pane has a 2-second debounce to suppress flapping. Errors whose message matches pi's auto-retry regex are deferred 10 s — if pi recovers in that window the notification is dropped entirely.
+By default, `pi-monitor` fires a desktop notification when a pane transitions into `idle`, `waiting`, or `error` (not into `working` or `retrying`). The transport is picked at call time: `notify-send` on Linux/\*BSD with libnotify, `osascript` (Notification Center) on macOS. If neither is on PATH — e.g. a headless SSH session — notifications are silently skipped; the in-TUI toast still fires. Each pane has a 2-second debounce to suppress flapping. Errors whose message matches pi's auto-retry regex are deferred 10 s — if pi recovers in that window the notification is dropped entirely.
 
 Press `m` in the TUI to mute / unmute. The setting persists in `~/.config/pi-monitor/config.json`.
 
@@ -167,6 +167,12 @@ Press `m` in the TUI to mute / unmute. The setting persists in `~/.config/pi-mon
 - pi sessions launched with a custom `--session-dir` are not detected.
 - pi running over ssh inside a pane is not detected (the pane shows `cmd=ssh`).
 - The right slot shares the source session's window with all of its other panes. If your source window is split, the right slot mirrors that split — input still goes to the cursored pane (we set `select-pane` in the sister), but you'll see the neighbouring panes shrunk alongside.
+
+## Troubleshooting
+
+For common issues (empty list, all-`unknown` panes, missing
+translucency, branch column blank, notifications not firing on macOS,
+activity tag stuck on `working`), see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
 
 ## License
 
