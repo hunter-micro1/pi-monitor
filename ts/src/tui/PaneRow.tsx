@@ -49,6 +49,13 @@ export interface PaneRowProps {
    * null we fall back to the static STATE_COLORS.working.
    */
   workingColor?: string | null;
+  /**
+   * Selection-bar color. The App lerps this from accent toward
+   * white briefly when the cursor moves to a new row, then settles
+   * back to ACCENT. Renders only when `selected` is true; otherwise
+   * the column is a blank space and this prop is ignored.
+   */
+  cursorBarColor?: string;
 }
 
 export function PaneRow({
@@ -59,6 +66,7 @@ export function PaneRow({
   selected = false,
   inActiveCard = false,
   workingColor = null,
+  cursorBarColor = ACCENT,
 }: PaneRowProps): ReactElement {
   const main = fmtRowMain({
     paneTitle,
@@ -85,7 +93,7 @@ export function PaneRow({
       {/* Top line: selection bar + name + branch on the left, state tag on the right. */}
       <Box flexDirection="row">
         <Box width={SELECTION_COL}>
-          <Text bold color={ACCENT}>
+          <Text bold color={selected ? cursorBarColor : ACCENT}>
             {selected ? "\u258e" : " "}
           </Text>
         </Box>

@@ -1,37 +1,38 @@
 /**
- * Bordered card containing one tmux session's pi panes.
+ * Session "section" containing one tmux session's pi panes.
  *
- * Mirrors the Python `SessionGroup` widget. Visual differences:
- *   - Textual paints the session name into the border title via
- *     `border-title-align: left`. Ink's `<Box borderStyle="round">`
- *     doesn't have a built-in title slot, so we render the title as
- *     a separate Text element above the bordered box. Slight visual
- *     gap from the Python version, but the structure is the same:
- *     name + count chip floats over a bordered card.
- *   - Active-card emphasis becomes a brighter borderColor + bold
- *     title instead of a CSS class swap.
+ * Visual model: cmux-style flat list. There is NO bordered box;
+ * sections are just a stack of rows separated by a single thin
+ * divider line. The session name + chip lives at the top of each
+ * section as a header. Cards visually separate via that divider,
+ * not via individual border lines, so neighboring sections read as
+ * one continuous list with subtle group breaks.
+ *
+ * Mirrors the cmux sidebar layout we're targeting for visual parity.
  */
 
 import { Box, Text } from "ink";
 import type { ReactElement, ReactNode } from "react";
 
-import { fmtSessionHeader, STATE_COLORS } from "../format/row.js";
+import { STATE_COLORS, fmtSessionHeader } from "../format/row.js";
 import type { AgentState } from "../state/types.js";
 import { ACCENT, FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
 
 export interface SessionGroupProps {
-	/** Session name (border title). */
-	session: string;
-	/**
-	 * The single highest-priority issue chip to render next to the
-	 * name, e.g. "2 idle" or "1 error". null when nothing is
-	 * stuck. Mirrors `_session_chip` in the Python build.
-	 */
-	chip?: { count: number; state: AgentState } | null;
-	/** True iff the cursor is on a row inside this card. */
-	active?: boolean;
-	/** PaneRow children. */
-	children: ReactNode;
+  /** Session name (header). */
+  session: string;
+  /**
+   * The single highest-priority issue chip to render next to the
+   * name, e.g. "1 idle" or "1 error". null when nothing is stuck.
+   * Mirrors `_session_chip` in the Python build.
+   */
+  chip?: { count: number; state: AgentState } | null;
+  /** True iff the cursor is on a row inside this section. */
+  active?: boolean;
+  /** True for the topmost section (skips the leading divider). */
+  first?: boolean;
+  /** PaneRow children. */
+  children: ReactNode;
 }
 
 /**
@@ -40,63 +41,71 @@ export interface SessionGroupProps {
  * statuses and returns the most attention-worthy state count.
  */
 export function pickSessionChip(
-	statuses: { state: AgentState }[],
+  statuses: { state: AgentState }[],
 ): { count: number; state: AgentState } | null {
-	const counts = new Map<AgentState, number>();
-	for (const s of statuses) {
-		counts.set(s.state, (counts.get(s.state) ?? 0) + 1);
-	}
-	for (const state of [
-		"error",
-		"waiting",
-		"idle",
-		"retrying",
-	] as AgentState[]) {
-		const n = counts.get(state) ?? 0;
-		if (n > 0) return { count: n, state };
-	}
-	const working = counts.get("working") ?? 0;
-	if (working > 0) return { count: working, state: "working" };
-	return null;
+  const counts = new Map<AgentState, number>();
+  for (const s of statuses) {
+    counts.set(s.state, (counts.get(s.state) ?? 0) + 1);
+  }
+  for (const state of ["error", "waiting", "idle", "retrying"] as AgentState[]) {
+    const n = counts.get(state) ?? 0;
+    if (n > 0) return { count: n, state };
+  }
+  const working = counts.get("working") ?? 0;
+  if (working > 0) return { count: working, state: "working" };
+  return null;
 }
 
 export function SessionGroup({
-	session,
-	chip = null,
-	active = false,
-	children,
+  session,
+  chip = null,
+  active = false,
+  first = false,
+  children,
 }: SessionGroupProps): ReactElement {
-	const borderColor = active ? ACCENT : FOREGROUND_MUTED;
+  return (
+    <Box flexDirection="column" marginTop={first ? 1 : 0}>
+      {!first && <Divider />}
 
-	return (
-		<Box flexDirection="column" marginTop={1}>
-			{/* Header chip-row sits flush against the top border of the
-          bordered box below — visual link between name and card.
-          Ink's <Box borderStyle="round"> has no built-in title
-          slot, so we approximate it via tight vertical spacing
-          (no marginBottom on the header, no marginTop on the box). */}
-			<Box paddingLeft={3}>
-				<Text bold color={active ? ACCENT : FOREGROUND_MUTED}>
-					{fmtSessionHeader(session)}
-				</Text>
-				{chip !== null && (
-					<>
-						<Text color={FOREGROUND_MUTED}>{"   "}</Text>
-						<Text color={STATE_COLORS[chip.state]}>{"● "}</Text>
-						<Text color={FOREGROUND}>{chip.count}</Text>
-						<Text color={FOREGROUND_MUTED}>{` ${chip.state}`}</Text>
-					</>
-				)}
-			</Box>
+      {/* Section header: bold name + chip. Tight 0-margin on the
+          divider above and the rows below \u2014 the section reads as a
+          single visual block. */}
+      <Box flexDirection="row" marginTop={first ? 0 : 1} marginBottom={1}>
+        <Box width={2} />
+        <Box flexGrow={1}>
+          <Text bold color={active ? ACCENT : FOREGROUND}>
+            {fmtSessionHeader(session)}
+          </Text>
+          {chip !== null && (
+            <>
+              <Text color={FOREGROUND_MUTED}>{"   "}</Text>
+              <Text color={STATE_COLORS[chip.state]}>{"\u25cf "}</Text>
+              <Text color={FOREGROUND}>{chip.count}</Text>
+              <Text color={FOREGROUND_MUTED}>{` ${chip.state}`}</Text>
+            </>
+          )}
+        </Box>
+      </Box>
 
-			<Box
-				flexDirection="column"
-				borderStyle="round"
-				borderColor={borderColor}
-				paddingX={1}
-			>
-				{children}
-			</Box>
-		</Box>
-	);
+      {children}
+    </Box>
+  );
+}
+
+function Divider(): ReactElement {
+  // Use Ink's top-border on a 1-row Box to get an auto-sized
+  // horizontal line that hugs the parent's content width. Avoids
+  // the manual `─`-repeat width math and the wrap edge case it
+  // hit on terminals wider than 100 cols.
+  return (
+    <Box
+      marginX={2}
+      borderStyle="single"
+      borderTop
+      borderRight={false}
+      borderLeft={false}
+      borderBottom={false}
+      borderColor={FOREGROUND_MUTED}
+    />
+  );
 }

@@ -10,9 +10,9 @@ import type { AgentState } from "../../src/state/types.js";
 import { SessionGroup, pickSessionChip } from "../../src/tui/SessionGroup.js";
 
 describe("SessionGroup render", () => {
-  it("renders the session name in the header above the bordered card", () => {
+  it("renders the session name as a header followed by its rows", () => {
     const { lastFrame } = render(
-      <SessionGroup session="contracts">
+      <SessionGroup session="contracts" first>
         <Text>row a</Text>
         <Text>row b</Text>
       </SessionGroup>,
@@ -21,8 +21,30 @@ describe("SessionGroup render", () => {
     expect(out).toContain("contracts");
     expect(out).toContain("row a");
     expect(out).toContain("row b");
-    // Round-border characters must appear somewhere.
-    expect(out).toMatch(/[\u256d\u256e\u2570\u256f]/);
+    // Section ordering: header before rows.
+    const headerIdx = out.indexOf("contracts");
+    const rowAIdx = out.indexOf("row a");
+    expect(headerIdx).toBeLessThan(rowAIdx);
+  });
+
+  it("renders a horizontal divider above non-first sections", () => {
+    const { lastFrame } = render(
+      <SessionGroup session="contracts">
+        <Text>row</Text>
+      </SessionGroup>,
+    );
+    // first=false (default) emits the divider; '─' is the box-
+    // drawing horizontal line Ink renders for borderTop.
+    expect(lastFrame() ?? "").toContain("\u2500");
+  });
+
+  it("omits the divider for the first section", () => {
+    const { lastFrame } = render(
+      <SessionGroup session="contracts" first>
+        <Text>row</Text>
+      </SessionGroup>,
+    );
+    expect(lastFrame() ?? "").not.toContain("\u2500");
   });
 
   it("renders the chip next to the title when one is provided", () => {
