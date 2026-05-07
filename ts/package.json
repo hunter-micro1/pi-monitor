@@ -1,6 +1,6 @@
 {
   "name": "pi-monitor",
-  "version": "0.4.0",
+  "version": "0.4.2",
   "description": "Live tmux-aware status monitor for pi coding agents.",
   "type": "module",
   "license": "MIT",

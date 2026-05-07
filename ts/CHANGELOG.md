@@ -7,6 +7,25 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.2] — 2026-05-07
+
+- **In-TUI notification banner.** Agent-state transitions to attention
+  states (idle / waiting / error) now surface as a top-of-screen banner
+  via the existing `Notifier` class. Critical (error) banners get a red
+  border; normal ones use the accent color. Auto-dismisses after 5s
+  (configurable via `notificationDismissMs`); can be suppressed entirely
+  with `notificationsEnabled: false`. Closes the deferred item from
+  0.4.0's release notes.
+
+## [0.4.1] — 2026-05-07
+
+- **Tick-driven tmux status widget.** The `@pi-monitor-status` user
+  option now refreshes on every resolver tick instead of just on App
+  entry. Format mirrors Python's `fmt_status_widget`: `<glyph><count>`
+  per non-zero state, space-separated, in attention-priority order
+  (error > waiting > idle > retrying > working). Closes the deferred
+  item from 0.4.0's release notes.
+
 ## [0.4.0] — 2026-05-07
 
 First released TS build. Functional parity with the Python build at 0.3.0;
