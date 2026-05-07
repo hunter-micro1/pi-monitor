@@ -629,13 +629,9 @@ def test_resolve_promotes_starting_pi_with_no_file_to_working(
     )
 
     monkeypatch.setattr("pi_monitor.state.SESSIONS_ROOT", tmp_path)
-    monkeypatch.setattr(
-        "pi_monitor.state.find_pi_pid_for_pane", lambda pid: 9999
-    )
+    monkeypatch.setattr("pi_monitor.state.find_pi_pid_for_pane", lambda pid: 9999)
     pi_start = 1000.0
-    monkeypatch.setattr(
-        "pi_monitor.state._proc_starttime", lambda pid: pi_start
-    )
+    monkeypatch.setattr("pi_monitor.state._proc_starttime", lambda pid: pi_start)
 
     resolver = StateResolver()
     refs = [PaneRef(pane_id="fresh", cwd="/no-files", is_pi=True, pane_pid=1)]
@@ -662,13 +658,9 @@ def test_resolve_demotes_long_running_pi_with_no_file_to_unknown(
     )
 
     monkeypatch.setattr("pi_monitor.state.SESSIONS_ROOT", tmp_path)
-    monkeypatch.setattr(
-        "pi_monitor.state.find_pi_pid_for_pane", lambda pid: 9999
-    )
+    monkeypatch.setattr("pi_monitor.state.find_pi_pid_for_pane", lambda pid: 9999)
     pi_start = 1000.0
-    monkeypatch.setattr(
-        "pi_monitor.state._proc_starttime", lambda pid: pi_start
-    )
+    monkeypatch.setattr("pi_monitor.state._proc_starttime", lambda pid: pi_start)
 
     resolver = StateResolver()
     refs = [PaneRef(pane_id="old", cwd="/no-files", is_pi=True, pane_pid=1)]
@@ -716,12 +708,8 @@ def test_filename_starttime_parses_iso_prefix():
 
     from pi_monitor.state import _filename_starttime
 
-    p = Path(
-        "2026-05-03T20-37-34-005Z_019def8f-86b5-77ac-96f5-302472f17757.jsonl"
-    )
-    expected = datetime(
-        2026, 5, 3, 20, 37, 34, 5_000, tzinfo=timezone.utc
-    ).timestamp()
+    p = Path("2026-05-03T20-37-34-005Z_019def8f-86b5-77ac-96f5-302472f17757.jsonl")
+    expected = datetime(2026, 5, 3, 20, 37, 34, 5_000, tzinfo=timezone.utc).timestamp()
     assert _filename_starttime(p) == pytest.approx(expected)
 
 
@@ -780,9 +768,7 @@ def test_resolve_does_not_swap_when_idle_pi_starts_alongside_working_pi(
             )
         ],
     )
-    file_a_ts = datetime(
-        2026, 1, 1, 0, 1, 40, tzinfo=timezone.utc
-    ).timestamp()
+    file_a_ts = datetime(2026, 1, 1, 0, 1, 40, tzinfo=timezone.utc).timestamp()
     _stamp(file_a, file_a_ts + 200.0)  # mtime: "now", well after creation
 
     p_a_start = file_a_ts - 0.2  # P_A booted just before creating its file

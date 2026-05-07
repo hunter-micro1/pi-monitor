@@ -25,7 +25,6 @@ When you run several pi sessions across multiple tmux sessions and panes, it's h
 
 Everything in the left column renders with `background: transparent` so your terminal's translucency / wallpaper bleeds through end-to-end. Each session is a rounded card with the project name in the border title. Each pane row is two lines: `name · git-branch  …  state-tag` on top, dim live activity (`executing bash`, `compressing context history`, the trimmed last assistant response, the error message) on the bottom. The cursor-card border lights up; the cursor row gets a soft selection bg.
 
-
 ## Install
 
 From source (until published to PyPI):
@@ -93,38 +92,38 @@ get the slightly less accurate v1 classification.
 
 ## Keybindings
 
-| Key                   | Action                                                             |
-| --------------------- | ------------------------------------------------------------------ |
-| `j` / `k` / `↓` / `↑` | Move selection. Hovering a pi row previews it live in the right pane, zoomed so non-pi siblings sharing the source window are hidden. Cursor focus stays on the tree. |
-| `Enter` (or click)    | Commit — hand keyboard focus to the right pane so keys go to the agent. |
-| `Tab`                 | Same as Enter for a pane row                                       |
-| tmux `prefix + ←`     | Native tmux nav back to the tree pane                              |
-| `C-a z` (in right pane) | Inner viewer: unzoom to see the source window's other panes      |
-| `C-a "` / `C-a %`     | Inner viewer: split inside the right slot                          |
-| `C-a` (in right pane) | Prefix for the inner viewer client (e.g. `C-a [` to scroll)        |
-| `h` / `l` / `←` / `→` | Jump to the previous / next session card                            |
-| `g` / `G`             | Jump to top / bottom                                               |
-| `s`                   | Cycle sort: tmux-order ↔ needs-attention-first                    |
-| `t`                   | Cycle theme (curated set: tokyo-night, catppuccin-mocha, dracula, gruvbox, textual-dark; pinning others in config still works) |
-| `Shift+H`             | Toggle showing non-pi panes                                        |
-| `r`                   | Force refresh now                                                  |
-| `m`                   | Toggle desktop notifications (mute/unmute)                         |
-| `q`                   | Quit: kill all `pi-monitor-view-*` sisters and the monitor session |
-| `1`–`9`               | Jump to the Nth pane in display order                              |
+| Key                     | Action                                                                                                                                                                |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `j` / `k` / `↓` / `↑`   | Move selection. Hovering a pi row previews it live in the right pane, zoomed so non-pi siblings sharing the source window are hidden. Cursor focus stays on the tree. |
+| `Enter` (or click)      | Commit — hand keyboard focus to the right pane so keys go to the agent.                                                                                               |
+| `Tab`                   | Same as Enter for a pane row                                                                                                                                          |
+| tmux `prefix + ←`       | Native tmux nav back to the tree pane                                                                                                                                 |
+| `C-a z` (in right pane) | Inner viewer: unzoom to see the source window's other panes                                                                                                           |
+| `C-a "` / `C-a %`       | Inner viewer: split inside the right slot                                                                                                                             |
+| `C-a` (in right pane)   | Prefix for the inner viewer client (e.g. `C-a [` to scroll)                                                                                                           |
+| `h` / `l` / `←` / `→`   | Jump to the previous / next session card                                                                                                                              |
+| `g` / `G`               | Jump to top / bottom                                                                                                                                                  |
+| `s`                     | Cycle sort: tmux-order ↔ needs-attention-first                                                                                                                       |
+| `t`                     | Cycle theme (curated set: tokyo-night, catppuccin-mocha, dracula, gruvbox, textual-dark; pinning others in config still works)                                        |
+| `Shift+H`               | Toggle showing non-pi panes                                                                                                                                           |
+| `r`                     | Force refresh now                                                                                                                                                     |
+| `m`                     | Toggle desktop notifications (mute/unmute)                                                                                                                            |
+| `q`                     | Quit: kill all `pi-monitor-view-*` sisters and the monitor session                                                                                                    |
+| `1`–`9`                 | Jump to the Nth pane in display order                                                                                                                                 |
 
 ## States
 
 The TUI itself is glyph-free — state is conveyed by **color** (the row title pulses in the success color while the agent is working; idle / error / waiting / retrying tint the right-hand state tag) and by a short **state word** in that tag. Emojis below are used only by the tmux status-line widget that pi-monitor pushes to `@pi-monitor-status` so you can show aggregate counts in your normal `status-right`.
 
-| State    | Meaning                                                                                              | Emoji (tmux status only) |
-| -------- | ---------------------------------------------------------------------------------------------------- | ------------------------ |
-| working  | agent is streaming, running a tool, or compacting                                                    | 🟢                       |
-| idle     | agent finished, awaiting your next prompt                                                            | 🔴                       |
-| error    | last assistant message has a non-retryable error                                                     | ❌                       |
-| waiting  | agent is blocked on a user decision (heartbeat extension only)                                       | 🟠                       |
-| retrying | pi is auto-retrying a transient API error (heartbeat extension only; no notification)                | 🔵                       |
-| unknown  | pane runs pi but no JSONL detected and no heartbeat                                                  | ❓                       |
-| no pi    | no pi running in this pane                                                                           | ⚫                       |
+| State    | Meaning                                                                               | Emoji (tmux status only) |
+| -------- | ------------------------------------------------------------------------------------- | ------------------------ |
+| working  | agent is streaming, running a tool, or compacting                                     | 🟢                       |
+| idle     | agent finished, awaiting your next prompt                                             | 🔴                       |
+| error    | last assistant message has a non-retryable error                                      | ❌                       |
+| waiting  | agent is blocked on a user decision (heartbeat extension only)                        | 🟠                       |
+| retrying | pi is auto-retrying a transient API error (heartbeat extension only; no notification) | 🔵                       |
+| unknown  | pane runs pi but no JSONL detected and no heartbeat                                   | ❓                       |
+| no pi    | no pi running in this pane                                                            | ⚫                       |
 
 ## Activity descriptions
 
