@@ -2,19 +2,29 @@
 
 Live, tmux-aware status monitor for [pi](https://github.com/badlogic/pi-mono) coding agents.
 
-When you run several pi sessions across multiple tmux sessions and panes, it's hard to tell at a glance which agents are streaming, which are stalled, and which are idle waiting for your next prompt. `pi-monitor` gives you a single split view: a tree of every pi pane on the left with live status badges, and a real, fully-interactive view of the agent you picked on the right — without ever moving the source pane out of its origin tmux session.
+When you run several pi sessions across multiple tmux sessions and panes, it's hard to tell at a glance which agents are streaming, which are stalled, and which are idle waiting for your next prompt. `pi-monitor` gives you a single split view: a card-per-session list of every pi pane on the left with live state + activity, and a real, fully-interactive view of the agent you cursored on the right — without ever moving the source pane out of its origin tmux session.
 
 ```
-┌──────────────────────────────┬───────────────────────────────────┐
-│ ▾ contracts (🔴1 🟡1)         │                                   │
-│   🟢 PSP7-gateway   working   │                                   │
-│   🟡 POWERBI       stalled 8s │   the actual pi agent             │
-│   🔴 Roleplay      idle 4m    │   you selected, fully             │
-│ ▾ CAPE                        │   interactive (real tmux pane)    │
-│   🟢 PC            working    │                                   │
-│   🔴 ANALYST       idle 12s   │                                   │
-└──────────────────────────────┴───────────────────────────────────┘
+┌─────────────────────────────────────────────────┬───────────────────────┐
+│ pi-monitor   2 working · 1 idle · 1 error           │                        │
+│ cape/ANALYST  errored 12s  · press 1–9 to jump      │                        │
+│                                                    │                        │
+│ +  new session                                     │                        │
+│ ╭─ contracts ──────────────────────────────────╮ │                        │
+│ │  PSP7-gateway · feature/auth          running bash│ │   the actual pi agent  │
+│ │    executing bash                                 │ │   you cursored, fully  │
+│ │  POWERBI · feature/billing                idle 12s│ │   interactive (real    │
+│ │    All four browser themes are aligned to the new│ │   tmux pane)           │
+│ ╰─────────────────────────────────────────────────╯ │                        │
+│ ╭─ cape ───────────────────────────────────────╮ │                        │
+│ │  ANALYST · main                       errored 12s │ │                        │
+│ │    ECONNRESET reading model stream                │ │                        │
+│ ╰─────────────────────────────────────────────────╯ │                        │
+└─────────────────────────────────────────────────┴───────────────────────┘
 ```
+
+Everything in the left column renders with `background: transparent` so your terminal's translucency / wallpaper bleeds through end-to-end. Each session is a rounded card with the project name in the border title. Each pane row is two lines: `name · git-branch  …  state-tag` on top, dim live activity (`executing bash`, `compressing context history`, the trimmed last assistant response, the error message) on the bottom. The cursor-card border lights up; the cursor row gets a soft selection bg.
+
 
 ## Install
 
@@ -92,33 +102,53 @@ get the slightly less accurate v1 classification.
 | `C-a z` (in right pane) | Inner viewer: unzoom to see the source window's other panes      |
 | `C-a "` / `C-a %`     | Inner viewer: split inside the right slot                          |
 | `C-a` (in right pane) | Prefix for the inner viewer client (e.g. `C-a [` to scroll)        |
-| `Space`               | Expand / collapse a session header                                 |
+| `h` / `l` / `←` / `→` | Jump to the previous / next session card                            |
 | `g` / `G`             | Jump to top / bottom                                               |
 | `s`                   | Cycle sort: tmux-order ↔ needs-attention-first                    |
-| `t`                   | Cycle theme (textual-dark, tokyo-night, catppuccin-mocha, dracula, nord, gruvbox, monokai, solarized-dark, textual-light, solarized-light) |
-| `H`                   | Toggle showing non-pi panes                                        |
+| `t`                   | Cycle theme (curated set: tokyo-night, catppuccin-mocha, dracula, gruvbox, textual-dark; pinning others in config still works) |
+| `Shift+H`             | Toggle showing non-pi panes                                        |
 | `r`                   | Force refresh now                                                  |
 | `m`                   | Toggle desktop notifications (mute/unmute)                         |
 | `q`                   | Quit: kill all `pi-monitor-view-*` sisters and the monitor session |
-| `1`–`9`               | Jump to the Nth pane in the tree                                   |
+| `1`–`9`               | Jump to the Nth pane in display order                              |
 
 ## States
 
-| Glyph | Meaning                                                                                              |
-| ----- | ---------------------------------------------------------------------------------------------------- |
-| 🟢    | working — agent is streaming, running a tool, or compacting                                          |
-| 🔴    | idle — agent finished, awaiting your next prompt                                                     |
-| ❌    | error — last assistant message has a non-retryable error                                             |
-| 🟠    | waiting — agent is blocked on a user decision (heartbeat extension only)                             |
-| 🔵    | retrying — pi is auto-retrying a transient API error (heartbeat extension only; no notification)     |
-| ❓    | unknown — pane runs pi but no JSONL detected and no heartbeat                                        |
-| ⚫    | no pi running in this pane                                                                           |
+The TUI itself is glyph-free — state is conveyed by **color** (the row title pulses in the success color while the agent is working; idle / error / waiting / retrying tint the right-hand state tag) and by a short **state word** in that tag. Emojis below are used only by the tmux status-line widget that pi-monitor pushes to `@pi-monitor-status` so you can show aggregate counts in your normal `status-right`.
 
-## Theming
+| State    | Meaning                                                                                              | Emoji (tmux status only) |
+| -------- | ---------------------------------------------------------------------------------------------------- | ------------------------ |
+| working  | agent is streaming, running a tool, or compacting                                                    | 🟢                       |
+| idle     | agent finished, awaiting your next prompt                                                            | 🔴                       |
+| error    | last assistant message has a non-retryable error                                                     | ❌                       |
+| waiting  | agent is blocked on a user decision (heartbeat extension only)                                       | 🟠                       |
+| retrying | pi is auto-retrying a transient API error (heartbeat extension only; no notification)                | 🔵                       |
+| unknown  | pane runs pi but no JSONL detected and no heartbeat                                                  | ❓                       |
+| no pi    | no pi running in this pane                                                                           | ⚫                       |
+
+## Activity descriptions
+
+The second line of each pane row is a dim, ellipsized one-liner describing **what the agent is doing right now**, picked in priority order:
+
+1. **Heartbeat phase** (when the [`pi-monitor-heartbeat`](#optional-heartbeat-extension-much-more-accurate-state) extension is running inside that pi):
+   - `tool_running` + `current_tool=bash` → `executing bash`
+   - `compacting` → `compressing context history`
+   - `agent_running` → `drafting response`
+   - `retrying` + `retry_attempt=2` → `retrying after transient error (attempt 2)`
+   - `awaiting_permission` → `waiting for your decision`
+2. **JSONL last_error** (for ERROR rows): the trimmed error message from the trailing assistant turn, e.g. `ECONNRESET reading model stream from Anthropic API`.
+3. **JSONL last_assistant_preview**: the first text chunk of the agent's most recent response, e.g. `All four browser themes are aligned to the new palette.`. Capped at 80 chars in the UI.
+4. **Empty** when none of the above apply (NO_PI, fresh session with no flushed turns, etc.).
+
+The right-hand state tag also surfaces heartbeat info: `working` becomes `running bash`, `compacting`, `thinking`, `retrying #2`, or `awaiting input` when the heartbeat is publishing it.
+
+## Theming & translucency
 
 Press `t` to cycle through the curated theme list. The choice persists in `~/.config/pi-monitor/config.json` and the state colors (working / idle / error) automatically follow the active theme's `success` / `warning` / `error` palette.
 
-The Screen, title bar, footer, and attention banner are rendered with `background: transparent`, so any translucency you have configured in your terminal emulator (kitty `background_opacity`, alacritty `window.opacity`, GNOME Terminal transparency, ...) shows through. The tree card and modal dialogs keep a themed `$surface` so text always lands on a readable backing.
+The App is constructed with Textual's `ansi_color=True`, which activates the `:ansi` pseudo-class and switches the root background to the special `ansi_default` value. That makes every transparent-resolved cell emit the ANSI default-bg escape (`ESC[49m`), which the terminal interprets as **its** default background — so any translucency you've configured (kitty `background_opacity`, alacritty `window.opacity`, GNOME Terminal transparency, …) bleeds through end-to-end. State colors keep their explicit RGB hex values so working / idle / error tints survive.
+
+The selected row uses `ansi_bright_black` (an ANSI palette gray) instead of an alpha-tinted theme color — alpha doesn't blend cleanly against `ansi_default`, so the palette color is the predictable choice. Modal dialogs keep a `$surface 70%` frosted tint so dense help/input text stays legible over busy backdrops.
 
 ## Notifications
 
