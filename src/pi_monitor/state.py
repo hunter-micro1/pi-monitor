@@ -141,6 +141,11 @@ class JsonlSnapshot:
     last_stop_reason: str | None = None  # only set when last_role == "assistant"
     last_error: str | None = None  # assistant errorMessage if any
     pending_tool_calls: int = 0  # unmatched tool calls from latest toolUse turn
+    # First text chunk of the latest assistant message (truncated to a
+    # generous bound at parse time). Lets the UI surface a verbose
+    # “here's what the agent just said” preview on the activity line
+    # without having to re-read the JSONL itself.
+    last_assistant_preview: str | None = None
 
 
 @dataclass
@@ -378,6 +383,37 @@ def _inspector_incremental_scan(
     return prior
 
 
+# Cap on the assistant-text preview captured from a JSONL line. The UI
+# truncates further to fit the row width; this bound just keeps an
+# absurdly-long single-text-block message from bloating the cached
+# snapshot.
+_PREVIEW_MAX_CHARS = 200
+
+
+def _first_text_preview(content) -> str | None:
+    """Return the first text chunk of an assistant message's `content`,
+    trimmed of leading whitespace, capped at `_PREVIEW_MAX_CHARS`.
+    None when no text content is present (tool-only messages, etc.).
+    """
+    if not isinstance(content, list):
+        return None
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "text":
+            continue
+        text = item.get("text")
+        if not isinstance(text, str):
+            continue
+        stripped = text.lstrip()
+        if not stripped:
+            continue
+        if len(stripped) > _PREVIEW_MAX_CHARS:
+            stripped = stripped[:_PREVIEW_MAX_CHARS]
+        return stripped
+    return None
+
+
 def _scan_lines(blob: bytes, mtime: float) -> JsonlSnapshot:
     """Walk forward through the tail bytes, tracking the latest message entry
     plus any open tool-use turn whose tool calls aren't all fulfilled yet."""
@@ -385,6 +421,7 @@ def _scan_lines(blob: bytes, mtime: float) -> JsonlSnapshot:
     last_role: str | None = None
     last_stop_reason: str | None = None
     last_error: str | None = None
+    last_assistant_preview: str | None = None
     open_toolcall_ids: set[str] = set()
 
     for line in blob.splitlines():
@@ -403,6 +440,9 @@ def _scan_lines(blob: bytes, mtime: float) -> JsonlSnapshot:
             last_stop_reason = msg.get("stopReason")
             last_error = msg.get("errorMessage")
             content = msg.get("content") or []
+            preview = _first_text_preview(content)
+            if preview is not None:
+                last_assistant_preview = preview
             tool_ids = {
                 item.get("id")
                 for item in content
@@ -434,6 +474,7 @@ def _scan_lines(blob: bytes, mtime: float) -> JsonlSnapshot:
         last_stop_reason=last_stop_reason,
         last_error=last_error,
         pending_tool_calls=len(open_toolcall_ids),
+        last_assistant_preview=last_assistant_preview,
     )
 
 
@@ -474,10 +515,7 @@ def _filename_starttime(path: Path) -> float | None:
     match = _FILENAME_TS_RE.match(path.name)
     if match is None:
         return None
-    iso = (
-        f"{match['date']}T{match['h']}:{match['m']}:{match['s']}.{match['ms']}"
-        "+00:00"
-    )
+    iso = f"{match['date']}T{match['h']}:{match['m']}:{match['s']}.{match['ms']}+00:00"
     try:
         return datetime.fromisoformat(iso).timestamp()
     except ValueError:
@@ -823,10 +861,7 @@ class StateResolver:
                     # WORKING during the grace window so users don't see
                     # ❓ on every new pi. After the window we fall back
                     # to UNKNOWN — never IDLE, which would notify.
-                    if (
-                        pi_start is not None
-                        and (now - pi_start) < STARTING_GRACE_S
-                    ):
+                    if pi_start is not None and (now - pi_start) < STARTING_GRACE_S:
                         results[ref.pane_id] = PaneStatus(
                             pane_id=ref.pane_id, state=AgentState.WORKING
                         )

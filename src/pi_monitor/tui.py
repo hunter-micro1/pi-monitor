@@ -621,6 +621,54 @@ def _activity_tag(
     return f"[{color}]unknown[/{color}]"
 
 
+# Soft cap on the activity-line text. The Static itself ellipsizes via
+# CSS `text-overflow`, but truncating in markup avoids paying for huge
+# previews on every row repaint.
+_ACTIVITY_MAX_CHARS = 80
+
+
+def _activity_description(status: PaneStatus) -> str:
+    """Verbose second-line description for a pane row.
+
+    Picks the most informative source available, in priority order:
+      heartbeat phase (compacting / tool_running / agent_running) >
+      JSONL last assistant text preview (for IDLE / WORKING / WAITING) >
+      JSONL last error message (for ERROR) > empty string.
+
+    The text is dim by CSS, ellipsized to the row width by CSS, and
+    additionally clamped to `_ACTIVITY_MAX_CHARS` here so a wall-of-text
+    assistant message can't blow out the per-tick render cost.
+    """
+    # Heartbeat-driven phases get fixed, action-oriented text. These
+    # describe "what pi is doing internally right now" and are more
+    # useful than the trailing assistant text during e.g. a 30-second
+    # compaction.
+    if status.phase == "compacting":
+        return "compressing context history"
+    if status.phase == "tool_running" and status.current_tool:
+        return f"executing {escape(status.current_tool)}"
+    if status.phase == "agent_running":
+        return "drafting response"
+    if status.phase == "retrying":
+        n = status.retry_attempt
+        return f"retrying after transient error (attempt {n})" if n else "retrying after transient error"
+    if status.phase == "awaiting_permission":
+        return "waiting for your decision"
+
+    # JSONL-derived previews. ERROR pulls the actual error message;
+    # everything else pulls the latest assistant-text preview so the
+    # second line shows what the agent last said (or is mid-saying for
+    # WORKING rows that don't have heartbeat).
+    snap = status.snapshot
+    if snap is None:
+        return ""
+    if status.state == AgentState.ERROR and snap.last_error:
+        return _truncate(escape(snap.last_error), _ACTIVITY_MAX_CHARS)
+    if snap.last_assistant_preview:
+        return _truncate(escape(snap.last_assistant_preview), _ACTIVITY_MAX_CHARS)
+    return ""
+
+
 def fmt_row_main(
     pane: Pane,
     status: PaneStatus,
@@ -712,25 +760,30 @@ class _SessionScroll(VerticalScroll):
 
 
 class PaneRow(Container):
-    """One pane inside a SessionGroup.
+    """One pane inside a SessionGroup, rendered as two stacked lines.
 
-    Two children laid out horizontally: `#row-main` takes all flexible
-    width (and ellipsizes when the agent name + branch don't fit); the
+    Top line (`#row-top`) is a horizontal split: `#row-main` takes all
+    flexible width (agent name + branch, ellipsizes when narrow) and
     `#row-tag` floats on the right with auto width for the state word.
-    The flex split is what gives agent names every cell we can spare on
-    narrow tmux panes.
 
-    Selection is a CSS class toggle — `transition: background` on the
-    row makes the bg tint fade in/out smoothly when the cursor moves,
-    which is the visual cue replacing the glyph rail of the previous
-    design.
+    Bottom line (`#row-activity`) is a dim, ellipsized one-liner showing
+    *what the agent is doing right now* — e.g. the first sentence of
+    its latest assistant response, the trimmed error message, or a
+    heartbeat-derived verb like “compressing context history”. This is
+    the line that gives the sidebar the same “live” feel as Mux/Warp,
+    where every row tells you what's happening, not just what state
+    it's in.
+
+    Selection is a CSS class toggle on the row; the bg tint fades via
+    `transition: background`. The activity line stays dim regardless of
+    selection so the eye scans line 1 first, line 2 only when needed.
     """
 
     DEFAULT_CSS = """
     PaneRow {
-        height: 1;
+        height: 2;
         width: 100%;
-        layout: horizontal;
+        layout: vertical;
         padding: 0 1;
         background: transparent;
         color: $foreground;
@@ -740,17 +793,23 @@ class PaneRow(Container):
         /* ansi_bright_black is an ANSI palette color; the terminal
            renders it as its "bright black" (gray) consistently across
            themes and — critically — doesn't depend on alpha-blending
-           against ansi_default, which is what made the previous
-           `$primary 18%` selection look muddy.
+           against ansi_default, which is what made an alpha-tinted
+           selection look muddy.
         */
         background: ansi_bright_black;
+    }
+    PaneRow > #row-top {
+        height: 1;
+        width: 100%;
+        layout: horizontal;
+        background: transparent;
     }
     /* Brightness hierarchy: inactive rows render the agent name in
        muted foreground so the eye walks past them quickly; the cursor
        row — plus rows in the focused card — step up to full foreground.
        WORKING rows already paint their title in the pulse color via Rich
        markup, which overrides this CSS color so the pulse always wins. */
-    PaneRow > #row-main {
+    PaneRow #row-main {
         width: 1fr;
         height: 1;
         background: transparent;
@@ -758,17 +817,27 @@ class PaneRow(Container):
         text-overflow: ellipsis;
         text-wrap: nowrap;
     }
-    PaneRow.selected > #row-main {
+    PaneRow.selected #row-main {
         color: $foreground;
     }
-    SessionGroup.active-group PaneRow > #row-main {
+    SessionGroup.active-group PaneRow #row-main {
         color: $foreground;
     }
-    PaneRow > #row-tag {
+    PaneRow #row-tag {
         width: auto;
         height: 1;
         padding: 0 0 0 2;
         background: transparent;
+        text-wrap: nowrap;
+    }
+    PaneRow > #row-activity {
+        height: 1;
+        width: 100%;
+        padding: 0 0 0 2;
+        background: transparent;
+        color: $foreground-muted;
+        text-style: dim;
+        text-overflow: ellipsis;
         text-wrap: nowrap;
     }
     """
@@ -782,7 +851,9 @@ class PaneRow(Container):
         # inverted on the first paint.
         self._main = Static("", id="row-main", markup=True)
         self._tag = Static("", id="row-tag", markup=True)
-        super().__init__(self._main, self._tag)
+        self._top = Container(self._main, self._tag, id="row-top")
+        self._activity = Static("", id="row-activity", markup=True)
+        super().__init__(self._top, self._activity)
         self.pane_id = pane_id
 
     def update_for(
@@ -793,11 +864,12 @@ class PaneRow(Container):
         *,
         working_color: str | None = None,
     ) -> None:
-        """Refresh both halves of the row from the latest snapshot."""
+        """Refresh all three text spans from the latest snapshot."""
         self._main.update(
             fmt_row_main(pane, status, branch, working_color=working_color)
         )
         self._tag.update(fmt_row_tag(status, working_color=working_color))
+        self._activity.update(_activity_description(status))
 
 
 class SessionGroup(Container):
