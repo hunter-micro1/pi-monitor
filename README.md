@@ -25,6 +25,8 @@ When you run several pi sessions across multiple tmux sessions and panes, it's h
 
 Everything in the left column renders with `background: transparent` so your terminal's translucency / wallpaper bleeds through end-to-end. Each session is a rounded card with the project name in the border title. Each pane row is two lines: `name · git-branch  …  state-tag` on top, dim live activity (`executing bash`, `compressing context history`, the trimmed last assistant response, the error message) on the bottom. The cursor-card border lights up; the cursor row gets a soft selection bg.
 
+![pi-monitor screenshot showing two bordered session cards with two-line agent rows and live activity descriptions](./docs/screenshot.png)
+
 ## Install
 
 From source (until published to PyPI):
