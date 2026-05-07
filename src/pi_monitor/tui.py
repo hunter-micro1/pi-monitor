@@ -1011,12 +1011,19 @@ class PiMonitorApp(App):
         text-style: bold;
     }
 
+    /* When zero pi sessions exist the hint expands to fill the rest of
+       the scroll area and centers a multi-line welcome block, instead
+       of being a single dim line tacked under the affordance. New users
+       land here on first launch — it should feel intentional, not
+       half-empty. */
     #empty-hint {
-        height: 1;
-        padding: 0 2;
-        margin: 1 0 0 0;
+        height: 1fr;
+        width: 100%;
+        padding: 4 2;
         background: transparent;
         color: $foreground-muted;
+        content-align: center middle;
+        text-align: center;
     }
 
     #empty-hint.hidden {
@@ -1405,10 +1412,10 @@ class PiMonitorApp(App):
 
         brand = f"[bold {ACCENT}]pi-monitor[/bold {ACCENT}]"
         if total == 0:
-            self._title_bar.update(
-                f"{brand}   [dim]no pi sessions yet · press [/dim]"
-                f"[bold {ACCENT}]o[/bold {ACCENT}][dim] to launch one[/dim]"
-            )
+            # The centered empty-hint block carries the welcome copy now,
+            # so the title bar can stay quiet. Leaving it plain keeps the
+            # eye on the centered call-to-action below.
+            self._title_bar.update(brand)
             self._update_attention_banner(statuses, counts)
             return
 
@@ -1567,10 +1574,16 @@ class PiMonitorApp(App):
         self._group_order = list(desired_sessions)
 
         if not desired_sessions:
+            # Multi-line welcome card. Bold heading in the brand accent,
+            # two action prompts beneath. Keys are highlighted in accent
+            # so they read as the next thing to press, not just text.
             self._empty_hint.update(
-                "[dim]no pi sessions yet · press [/dim]"
-                f"[bold {ACCENT}]o[/bold {ACCENT}]"
-                "[dim] to launch one[/dim]"
+                f"[bold {ACCENT}]No pi sessions yet[/bold {ACCENT}]\n"
+                "\n"
+                f"[dim]Press[/dim] [bold {ACCENT}]o[/bold {ACCENT}]"
+                "[dim] to launch a new agent[/dim]\n"
+                f"[dim]Press[/dim] [bold {ACCENT}]?[/bold {ACCENT}]"
+                "[dim] to see all keybindings[/dim]"
             )
             self._empty_hint.remove_class("hidden")
         else:
