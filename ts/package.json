@@ -31,10 +31,15 @@
     "format": "biome format --write src/ tests/",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {},
+  "dependencies": {
+    "ink": "^5.2.1",
+    "react": "^18.3.1"
+  },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@types/node": "^20.11.0",
+    "@types/react": "^18.3.28",
+    "ink-testing-library": "^4.0.0",
     "tsup": "^8.5.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
