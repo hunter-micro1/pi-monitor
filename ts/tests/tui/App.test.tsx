@@ -34,6 +34,7 @@ function entry(fields: Partial<AppEntry> = {}): AppEntry {
   return {
     paneId: fields.paneId ?? "%1",
     session: fields.session ?? "main",
+    windowIndex: fields.windowIndex ?? 0,
     paneIndex: fields.paneIndex ?? 0,
     paneTitle: fields.paneTitle ?? "agent",
     cwd: fields.cwd ?? "/x",
@@ -344,5 +345,174 @@ describe("App modal mode", () => {
     await wait();
     expect(onLaunchPi).not.toHaveBeenCalled();
     expect(lastFrame() ?? "").not.toContain("Launch pi in a new");
+  });
+});
+
+describe("App tmux bridge", () => {
+  function makeMockBridge() {
+    return {
+      onPaneCursor: vi.fn(),
+      onCursorAway: vi.fn(),
+      focusAgent: vi.fn(),
+      shutdown: vi.fn(),
+    };
+  }
+
+  it("calls onPaneCursor on first sync (auto-focus on first pane)", async () => {
+    const tmux = makeMockBridge();
+    render(
+      <App
+        getEntries={() => [
+          entry({
+            paneId: "%1",
+            session: "alpha",
+            windowIndex: 0,
+            paneIndex: 1,
+            cwd: "/a",
+          }),
+        ]}
+        branchForCwd={() => null}
+        tmux={tmux}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    expect(tmux.onPaneCursor).toHaveBeenCalledWith({
+      session: "alpha",
+      windowIndex: 0,
+      paneIndex: 1,
+      cwd: "/a",
+    });
+  });
+
+  it("calls onCursorAway when there are no panes", async () => {
+    const tmux = makeMockBridge();
+    render(
+      <App
+        getEntries={() => []}
+        branchForCwd={() => null}
+        tmux={tmux}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    expect(tmux.onCursorAway).toHaveBeenCalled();
+    expect(tmux.onPaneCursor).not.toHaveBeenCalled();
+  });
+
+  it("calls onPaneCursor again when cursor moves to a different pane", async () => {
+    const tmux = makeMockBridge();
+    const entries = [
+      entry({ paneId: "%1", session: "a", windowIndex: 0, paneIndex: 0 }),
+      entry({ paneId: "%2", session: "b", windowIndex: 0, paneIndex: 0 }),
+    ];
+    const { stdin } = render(
+      <App
+        getEntries={() => entries}
+        branchForCwd={() => null}
+        tmux={tmux}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    stdin.write("j");
+    await wait();
+    // Two distinct calls: initial auto-focus + j move.
+    expect(tmux.onPaneCursor).toHaveBeenCalledTimes(2);
+    expect(tmux.onPaneCursor).toHaveBeenLastCalledWith(
+      expect.objectContaining({ session: "b" }),
+    );
+  });
+
+  it("calls onCursorAway when cursor moves up to the new-row affordance", async () => {
+    const tmux = makeMockBridge();
+    const { stdin } = render(
+      <App
+        getEntries={() => [entry({ paneId: "%1" })]}
+        branchForCwd={() => null}
+        tmux={tmux}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    // k moves up from the auto-focused first pane to "+ new".
+    stdin.write("k");
+    await wait();
+    expect(tmux.onCursorAway).toHaveBeenCalled();
+  });
+
+  it("calls focusAgent on Enter when cursor is on a pane", async () => {
+    const tmux = makeMockBridge();
+    const { stdin } = render(
+      <App
+        getEntries={() => [entry({ paneId: "%1" })]}
+        branchForCwd={() => null}
+        tmux={tmux}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    stdin.write("\r");
+    await wait();
+    expect(tmux.focusAgent).toHaveBeenCalled();
+  });
+
+  it("calls focusAgent on Tab when cursor is on a pane", async () => {
+    const tmux = makeMockBridge();
+    const { stdin } = render(
+      <App
+        getEntries={() => [entry({ paneId: "%1" })]}
+        branchForCwd={() => null}
+        tmux={tmux}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    stdin.write("\t");
+    await wait();
+    expect(tmux.focusAgent).toHaveBeenCalled();
+  });
+
+  it("does NOT call focusAgent on Enter when cursor is on the new row", async () => {
+    const tmux = makeMockBridge();
+    const { stdin } = render(
+      <App
+        getEntries={() => []}
+        branchForCwd={() => null}
+        tmux={tmux}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    stdin.write("\r");
+    await wait();
+    expect(tmux.focusAgent).not.toHaveBeenCalled();
+  });
+
+  it("calls shutdown on q quit", async () => {
+    const tmux = makeMockBridge();
+    const onQuit = vi.fn();
+    const { stdin } = render(
+      <App
+        getEntries={() => []}
+        branchForCwd={() => null}
+        tmux={tmux}
+        onQuit={onQuit}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    stdin.write("q");
+    await wait();
+    expect(tmux.shutdown).toHaveBeenCalled();
+    expect(onQuit).toHaveBeenCalled();
   });
 });

@@ -5,9 +5,11 @@
  *   - the cursor reducer (j/k navigation, g/G to top/bottom, 1-9 jumps)
  *   - the title bar + footer chrome
  *   - modal mode switching (help, new-pi)
+ *   - tmux right-slot integration via injectable TmuxBridge
  *
- * Mirrors `PiMonitorApp` in `tui.py` for the read-only parts. Tmux
- * right-slot integration lands in 4.4.
+ * Mirrors `PiMonitorApp` in `tui.py`. Tmux side-effects are
+ * routed through a `TmuxBridge` prop so tests can swap a mock in
+ * without subprocesses; cli.ts wires the real bridge.
  *
  * Data source is injected via the `getEntries` prop so tests can
  * supply canned data without touching the real resolver / tmux.
@@ -28,6 +30,7 @@ import { INITIAL_CURSOR, currentPos, cursorReducer } from "./cursor.js";
 import type { ListDir } from "./dirComplete.js";
 import { branchForCwd as defaultBranchForCwd } from "./git.js";
 import { pulseColor } from "./pulse.js";
+import type { TmuxBridge } from "./tmuxBridge.js";
 
 /** One displayable agent. Pane metadata + resolved status. */
 export interface AppEntry {
@@ -35,6 +38,8 @@ export interface AppEntry {
   readonly paneId: string;
   /** Session name the pane lives in. */
   readonly session: string;
+  /** Pane's window index. Threaded into viewerFocusPane. */
+  readonly windowIndex: number;
   /** Pane index inside its window. */
   readonly paneIndex: number;
   /** Pane title from tmux, or null if unset. */
@@ -74,6 +79,13 @@ export interface AppProps {
   readonly defaultCwd?: string;
   /** Optional listDir override forwarded to NewPiScreen (tests). */
   readonly listDir?: ListDir;
+  /**
+   * Tmux right-slot bridge. When provided, App drives the linked
+   * viewer + status widget on cursor changes, focuses the right
+   * slot on Tab/Enter, and shuts the bridge down on quit. Default
+   * is no tmux integration (display-only mode).
+   */
+  readonly tmux?: TmuxBridge;
 }
 
 type AppMode = "list" | "help" | "newSession" | "newWindow";
@@ -94,6 +106,8 @@ export function App(props: AppProps): ReactElement {
   const [entries, setEntries] = useState<readonly AppEntry[]>([]);
   const [cursor, dispatch] = useReducer(cursorReducer, INITIAL_CURSOR);
   const [mode, setMode] = useState<AppMode>("list");
+
+  const tmux = props.tmux ?? null;
 
   // Pulse animation state. Anchor t0 once and recompute the live
   // color on the pulseInterval timer; PaneRow consumes it via prop.
@@ -146,18 +160,59 @@ export function App(props: AppProps): ReactElement {
   }, [pulseT0, pulseIntervalMs]);
 
   // ---------------------------------------------------------------------
+  // Tmux right-slot integration. Drive the linked viewer + status
+  // widget on cursor changes; reset placeholder when the cursor
+  // leaves the pane list.
+  // ---------------------------------------------------------------------
+  const cursorPaneIdForTmux =
+    currentPos(cursor)?.kind === "pane"
+      ? (currentPos(cursor) as { kind: "pane"; paneId: string }).paneId
+      : null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: cursor identity intentionally collapsed into cursorPaneIdForTmux.
+  useEffect(() => {
+    if (tmux === null) return;
+    if (cursorPaneIdForTmux === null) {
+      tmux.onCursorAway();
+      return;
+    }
+    const entry = entries.find((e) => e.paneId === cursorPaneIdForTmux);
+    if (entry === undefined) {
+      tmux.onCursorAway();
+      return;
+    }
+    tmux.onPaneCursor({
+      session: entry.session,
+      windowIndex: entry.windowIndex,
+      paneIndex: entry.paneIndex,
+      cwd: entry.cwd === "" ? null : entry.cwd,
+    });
+  }, [tmux, cursorPaneIdForTmux, entries]);
+
+  // ---------------------------------------------------------------------
   // Keybindings. Disabled while a modal is up; the modal owns
   // input and dismisses itself by calling its onCancel/onSubmit/
   // onDismiss callbacks.
   // ---------------------------------------------------------------------
+  const handleQuit = (): void => {
+    tmux?.shutdown();
+    (onQuit ?? ink.exit)();
+  };
   useInput(
     (input, key) => {
       if (input === "q") {
-        (onQuit ?? ink.exit)();
+        handleQuit();
         return;
       }
       if (key.ctrl && input === "c") {
-        (onQuit ?? ink.exit)();
+        handleQuit();
+        return;
+      }
+      if (key.return || key.tab) {
+        // Enter / Tab: hand keyboard focus to the right slot.
+        // Only meaningful when the cursor is on a pane row.
+        if (currentPos(cursor)?.kind === "pane") {
+          tmux?.focusAgent();
+        }
         return;
       }
       if (input === "?") {
