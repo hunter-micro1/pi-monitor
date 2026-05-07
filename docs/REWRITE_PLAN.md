@@ -1,5 +1,12 @@
 # pi-monitor TypeScript rewrite — scoped plan
 
+> **Status: shipped.** The TS rewrite landed as `pi-monitor` 0.4.0 on
+> npm on 2026-05-07. The Python build at the repo root continues at
+> 0.3.x on PyPI in parallel. See [`../ts/CHANGELOG.md`](../ts/CHANGELOG.md)
+> for the release notes and [`../ts/README.md`](../ts/README.md) for
+> install/usage. This document remains as the historical record of
+> what was planned versus shipped.
+
 This document is a plan for review BEFORE any code is written. The
 goal is to make sure we agree on scope, tooling, layout, and the
 minimum acceptance criteria before either of us spends a day on a
@@ -15,6 +22,7 @@ pi-monitor 0.3.0 and stays as close to cmux/Warp's design language
 as the current Python build does.
 
 Non-goals for v1 of the rewrite:
+
 - Adding capabilities the Python build doesn't have.
 - Windows support (still Linux + macOS).
 - Replacing the heartbeat extension (it's a pi-side TS extension
@@ -23,12 +31,14 @@ Non-goals for v1 of the rewrite:
 ## Why this might or might not be worth it
 
 The honest case for the rewrite (paraphrasing your prior reasoning):
+
 - Single-language stack with the rest of your AI tooling (pi is TS,
   the heartbeat extension is TS).
 - Easier for you to iterate on without context-switching.
 - Node's startup time is faster than CPython's for small CLIs.
 
 The honest case against (concerns I've raised in this session):
+
 - **Translucency works the same way in any TUI:** the program must
   emit `ESC[49m` (ANSI default-bg). This is one line in Textual
   (`ansi_color=True`); it's also one line in Ink. The framework
@@ -55,19 +65,19 @@ build hits a wall and we want to fall back.
 
 Picking concrete tools so we don't bikeshed mid-port.
 
-| Concern | Choice | Why |
-|---|---|---|
-| Runtime | **Node.js 20 LTS** | Stable, npm-publishable, matches what pi targets. (Bun would be faster but its npm-package compatibility on macOS is still rough at this scale.) |
-| Language | **TypeScript 5.x** | Strict mode, no `any` outside boundary types. |
-| TUI framework | **Ink 5** (React for CLIs) | Most mature TS TUI. JSX components, hooks for state, supports ANSI default-bg via `transparent` prop. |
-| Process info | **node:child_process + custom `ps` parser** for macOS, **`/proc` for Linux** | Avoids the `pidusage` dep tree. Same shape as our current Python psutil shim. |
-| JSON / fs | **Native `node:fs/promises` + `JSON.parse`** | No deps. |
-| Notifications | **`node-notifier`** | Cross-platform (notify-send on Linux, NotificationCenter on macOS) wrapped. Falls back to silent. |
-| State management | **React hooks** (useState/useReducer) | No Redux. The state is small. |
-| Build | **tsc + tsup** | Tsup bundles to a single .js so `npm install -g pi-monitor` is one file. |
-| Tests | **Vitest** | Faster than Jest, native ESM, JSX-aware. Snapshot tests for Ink components via `ink-testing-library`. |
-| Lint / format | **Biome** | Single tool for both, faster than ESLint + Prettier. |
-| Package manager | **pnpm** | Disk-efficient, deterministic lockfile, fast on CI. |
+| Concern          | Choice                                                                       | Why                                                                                                                                              |
+| ---------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Runtime          | **Node.js 20 LTS**                                                           | Stable, npm-publishable, matches what pi targets. (Bun would be faster but its npm-package compatibility on macOS is still rough at this scale.) |
+| Language         | **TypeScript 5.x**                                                           | Strict mode, no `any` outside boundary types.                                                                                                    |
+| TUI framework    | **Ink 5** (React for CLIs)                                                   | Most mature TS TUI. JSX components, hooks for state, supports ANSI default-bg via `transparent` prop.                                            |
+| Process info     | **node:child_process + custom `ps` parser** for macOS, **`/proc` for Linux** | Avoids the `pidusage` dep tree. Same shape as our current Python psutil shim.                                                                    |
+| JSON / fs        | **Native `node:fs/promises` + `JSON.parse`**                                 | No deps.                                                                                                                                         |
+| Notifications    | **`node-notifier`**                                                          | Cross-platform (notify-send on Linux, NotificationCenter on macOS) wrapped. Falls back to silent.                                                |
+| State management | **React hooks** (useState/useReducer)                                        | No Redux. The state is small.                                                                                                                    |
+| Build            | **tsc + tsup**                                                               | Tsup bundles to a single .js so `npm install -g pi-monitor` is one file.                                                                         |
+| Tests            | **Vitest**                                                                   | Faster than Jest, native ESM, JSX-aware. Snapshot tests for Ink components via `ink-testing-library`.                                            |
+| Lint / format    | **Biome**                                                                    | Single tool for both, faster than ESLint + Prettier.                                                                                             |
+| Package manager  | **pnpm**                                                                     | Disk-efficient, deterministic lockfile, fast on CI.                                                                                              |
 
 Editorially: **no monorepo, no workspaces, no PyO3 bridge.** This is
 a clean Node project that lives in its own directory and ships its
@@ -78,6 +88,7 @@ own npm package.
 ## Repo layout
 
 The rewrite goes in a new directory in the SAME repo so:
+
 - We keep the entire git history (commits, tags, CHANGELOG).
 - The Python build stays available at HEAD until the TS build hits
   feature parity, then we deprecate the Python entry point.
@@ -256,13 +267,13 @@ selection toggling, and the empty state.
 
 ## Risk register
 
-| Risk | Likelihood | Mitigation |
-|---|---|---|
-| Ink can't reproduce the cmux/Warp look | Medium | Phase 4 ends with a side-by-side screenshot check; if Ink falls short we either (a) accept a small visual gap or (b) fall back to the Python build and call the rewrite a learning exercise. |
-| macOS ps parsing has locale gotchas | Low | The Python equivalent (`psutil`) abstracts this; we'll stick to `LC_ALL=C ps -o pid=,ppid=,comm=,lstart=` to force a stable format. |
-| Sub-50ms cursor-nav budget hard to hit in JS | Low | Ink renders are fast at 100 widgets in our experience. We have the perf-test fixtures in Python; we port the budgets and assert in vitest. |
-| The whole port stalls midway | Medium | Each phase is a separate commit and CI-gated. We can pause at any phase and the Python build stays the canonical ship. |
-| Translucency doesn't work the same | Low | Ink supports `transparent` background which emits ANSI default-bg; same primitive Textual uses. The actual mechanism is identical. |
+| Risk                                         | Likelihood | Mitigation                                                                                                                                                                                   |
+| -------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ink can't reproduce the cmux/Warp look       | Medium     | Phase 4 ends with a side-by-side screenshot check; if Ink falls short we either (a) accept a small visual gap or (b) fall back to the Python build and call the rewrite a learning exercise. |
+| macOS ps parsing has locale gotchas          | Low        | The Python equivalent (`psutil`) abstracts this; we'll stick to `LC_ALL=C ps -o pid=,ppid=,comm=,lstart=` to force a stable format.                                                          |
+| Sub-50ms cursor-nav budget hard to hit in JS | Low        | Ink renders are fast at 100 widgets in our experience. We have the perf-test fixtures in Python; we port the budgets and assert in vitest.                                                   |
+| The whole port stalls midway                 | Medium     | Each phase is a separate commit and CI-gated. We can pause at any phase and the Python build stays the canonical ship.                                                                       |
+| Translucency doesn't work the same           | Low        | Ink supports `transparent` background which emits ANSI default-bg; same primitive Textual uses. The actual mechanism is identical.                                                           |
 
 ---
 

@@ -70,15 +70,15 @@ to guard against package-config breakage.
 
 The suite is split by surface:
 
-| File | What it covers |
-|------|----------------|
-| `tests/test_state.py` | JSONL parsing, snapshot diffing, state inference, the per-cwd claim resolver. |
-| `tests/test_heartbeat.py` | Heartbeat reader: freshness window, schema validation, the JSONL fast-path. |
-| `tests/test_notify.py` | Notifier transitions, debounce, retry-error suppression. |
-| `tests/test_tui_render.py` | Pure-function format helpers (`fmt_row_main`, `_activity_tag`, `_activity_description`, `_working_verb`, `branch_for_cwd` with mocked subprocess). |
-| `tests/test_tui_app.py` | App-level interactions via Textual's `run_test()` Pilot: cursor model, `.selected`/`.active-group` toggling, mount/unmount diff, keybindings (s/t/m/?/shift+h/o), spawn-modal flow. |
-| `tests/test_cross_platform.py` | Notification dispatch (notify-send / osascript / no-transport) and the psutil-backed process resolver against mocked exceptions. |
-| `tests/test_perf.py` | Performance regression guards: typical 24-pane load, 100-pane stress, cursor nav O(1) under load, animation tick budget. |
+| File                           | What it covers                                                                                                                                                                      |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/test_state.py`          | JSONL parsing, snapshot diffing, state inference, the per-cwd claim resolver.                                                                                                       |
+| `tests/test_heartbeat.py`      | Heartbeat reader: freshness window, schema validation, the JSONL fast-path.                                                                                                         |
+| `tests/test_notify.py`         | Notifier transitions, debounce, retry-error suppression.                                                                                                                            |
+| `tests/test_tui_render.py`     | Pure-function format helpers (`fmt_row_main`, `_activity_tag`, `_activity_description`, `_working_verb`, `branch_for_cwd` with mocked subprocess).                                  |
+| `tests/test_tui_app.py`        | App-level interactions via Textual's `run_test()` Pilot: cursor model, `.selected`/`.active-group` toggling, mount/unmount diff, keybindings (s/t/m/?/shift+h/o), spawn-modal flow. |
+| `tests/test_cross_platform.py` | Notification dispatch (notify-send / osascript / no-transport) and the psutil-backed process resolver against mocked exceptions.                                                    |
+| `tests/test_perf.py`           | Performance regression guards: typical 24-pane load, 100-pane stress, cursor nav O(1) under load, animation tick budget.                                                            |
 
 Async test bodies use plain `asyncio.run(go())` so we don't need
 `pytest-asyncio`. App-level tests stub every external call (tmux,
@@ -92,7 +92,7 @@ contextmanager in `test_tui_app.py`.
 - **Ruff is the formatter.** Run `uv run ruff format src/ tests/`
   before sending a patch (CI doesn't auto-format, but the editor
   hooks in this repo do, so most diffs are already clean).
-- **Comments explain *why*, not *what*.** The hot paths in `state.py`
+- **Comments explain _why_, not _what_.** The hot paths in `state.py`
   and `tui.py` are heavily commented; new contributions should match
   that bar. Look at `_claim_session_file` for the canonical example
   of inline reasoning about a tricky algorithm.
@@ -132,11 +132,11 @@ and `app.save_screenshot()` to dump an SVG. Several tests in
 ## Submitting a patch
 
 1. Branch off `main`. Keep the change focused; if you find yourself
-   touching `state.py` *and* `tui.py` *and* the heartbeat extension in
+   touching `state.py` _and_ `tui.py` _and_ the heartbeat extension in
    the same PR, that's usually a sign to split.
 2. Commits with imperative subject lines (`feat(tui): ...`,
    `fix(state): ...`, `test(render): ...`). Bodies should explain the
-   *why* and call out anything subtle a reviewer needs to know.
+   _why_ and call out anything subtle a reviewer needs to know.
 3. Update `CHANGELOG.md` under an `## [Unreleased]` section if your
    change is user-visible. (Maintainers will move it to a real version
    block at release time.)

@@ -1,7 +1,7 @@
 {
   "name": "pi-monitor",
-  "version": "0.4.0-alpha.0",
-  "description": "Live tmux-aware status monitor for pi coding agents (TypeScript rewrite of the Python pi-monitor; in-progress port, not yet feature-complete).",
+  "version": "0.4.0",
+  "description": "Live tmux-aware status monitor for pi coding agents.",
   "type": "module",
   "license": "MIT",
   "author": "hshayde",

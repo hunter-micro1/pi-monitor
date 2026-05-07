@@ -2,7 +2,7 @@
 
 Live, tmux-aware status monitor for [pi](https://github.com/badlogic/pi-mono) coding agents.
 
-> **Heads up:** a TypeScript rewrite is in progress in the [`ts/`](./ts) directory. The Python build (this README, `src/pi_monitor/`) stays the canonical install through 0.3.x; the TS build will graduate to canonical at 0.4.0 once it reaches feature parity. See [`docs/REWRITE_PLAN.md`](./docs/REWRITE_PLAN.md) for the phase-by-phase roadmap. CI runs both suites on every push.
+> **0.4.0 ships the TypeScript build as canonical** — install via `npm install -g pi-monitor` (or `pnpm add -g pi-monitor`). The Python build documented below continues at 0.3.x on PyPI in parallel and stays installable via `uv tool install --from git+https://github.com/hshayde/pi-monitor pi-monitor`. The TS sources live at [`ts/`](./ts) with their own [README](./ts/README.md) and [CHANGELOG](./ts/CHANGELOG.md). Both suites run on every push. See [`docs/REWRITE_PLAN.md`](./docs/REWRITE_PLAN.md) for the rewrite story.
 
 When you run several pi sessions across multiple tmux sessions and panes, it's hard to tell at a glance which agents are streaming, which are stalled, and which are idle waiting for your next prompt. `pi-monitor` gives you a single split view: a card-per-session list of every pi pane on the left with live state + activity, and a real, fully-interactive view of the agent you cursored on the right — without ever moving the source pane out of its origin tmux session.
 

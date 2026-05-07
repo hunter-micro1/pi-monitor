@@ -92,7 +92,7 @@ cached for 15 s per cwd. It'll be empty when:
 
 The verbose activity tag (`running bash`, `compacting`, `thinking`,
 `retrying #2`, `awaiting input`) is sourced from the
-`pi-monitor-heartbeat` extension that runs *inside* each pi process.
+`pi-monitor-heartbeat` extension that runs _inside_ each pi process.
 Without it, pi-monitor falls back to JSONL-only inference, which can
 only say `working` \u2014 the JSONL doesn't carry phase or current-tool
 information.

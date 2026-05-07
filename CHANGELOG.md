@@ -4,6 +4,24 @@ All notable changes to pi-monitor are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+This file tracks the **Python** build (PyPI). The TypeScript build
+(npm, canonical from 0.4.0) has its own changelog at
+[`ts/CHANGELOG.md`](./ts/CHANGELOG.md).
+
+## [0.4.0 (TypeScript)] — 2026-05-07
+
+The TypeScript build at [`ts/`](./ts) ships as `pi-monitor` 0.4.0 on npm.
+Functional parity with the Python 0.3.0 build; same product, same UX,
+different runtime. Both packages are supported in parallel:
+
+- `npm install -g pi-monitor` — TS build (canonical going forward).
+- `uv tool install --from git+https://github.com/hshayde/pi-monitor pi-monitor`
+  — Python build (continues at 0.3.x; receives bug fixes).
+
+Full TS changelog at [`ts/CHANGELOG.md`](./ts/CHANGELOG.md). The Python
+build's last released version remains 0.3.0; that version is what's
+described in the rest of this file.
+
 ## [0.3.0] — 2026-05-07
 
 Cross-platform release. The TUI now runs unchanged on macOS as well as
