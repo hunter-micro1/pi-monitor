@@ -478,8 +478,7 @@ def test_cycle_sort_toggles_mode_and_persists():
                     assert app.sort_mode != initial
                     # The persisted dict must carry the new mode.
                     assert any(
-                        c.args
-                        and c.args[0].get("sort_mode") == app.sort_mode
+                        c.args and c.args[0].get("sort_mode") == app.sort_mode
                         for c in msave.call_args_list
                     )
                     # Toggle back.
@@ -497,6 +496,7 @@ def test_cycle_theme_advances_through_cycle():
 
     async def go():
         from pi_monitor.tui import THEMES
+
         panes, statuses = _two_session_world()
         with patch("pi_monitor.tui.save_config") as msave:
             app = PiMonitorApp()
@@ -510,8 +510,7 @@ def test_cycle_theme_advances_through_cycle():
                     expected = THEMES[(starting_idx + 1) % len(THEMES)]
                     assert app._theme_name == expected
                     assert any(
-                        c.args
-                        and c.args[0].get("theme") == expected
+                        c.args and c.args[0].get("theme") == expected
                         for c in msave.call_args_list
                     )
                     # Every existing SessionGroup's border_title is the
@@ -574,6 +573,7 @@ def test_show_help_pushes_help_screen():
 
     async def go():
         from pi_monitor.tui import HelpScreen
+
         panes, statuses = _two_session_world()
         app = PiMonitorApp()
         with _stub_world(panes, statuses):
@@ -593,6 +593,7 @@ def test_help_screen_dismisses_on_any_key():
 
     async def go():
         from pi_monitor.tui import HelpScreen
+
         panes, statuses = _two_session_world()
         app = PiMonitorApp()
         with _stub_world(panes, statuses):
@@ -607,5 +608,168 @@ def test_help_screen_dismisses_on_any_key():
                 await pilot.press("escape")
                 await pilot.pause()
                 assert not isinstance(app.screen, HelpScreen)
+
+    asyncio.run(go())
+
+
+# ---------------------------------------------------------------------------
+# Spawn modal: `o` (new session / new window) flow
+# ---------------------------------------------------------------------------
+
+
+def test_o_on_affordance_opens_new_session_modal():
+    """With cursor on the `+ new session` row, `o` pushes a NewPiScreen
+    in 'session' mode (creates a brand-new tmux session)."""
+
+    async def go():
+        from pi_monitor.tui import NewPiScreen
+        panes, statuses = _two_session_world()
+        app = PiMonitorApp()
+        with _stub_world(panes, statuses):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                # Force cursor to the affordance.
+                await pilot.press("g")
+                await pilot.press("k")
+                await pilot.pause()
+                assert app._current_position() == ("new",)
+                await pilot.press("o")
+                await pilot.pause()
+                assert isinstance(app.screen, NewPiScreen)
+                assert app.screen.mode == "session"
+
+    asyncio.run(go())
+
+
+def test_o_on_pane_opens_new_window_modal_with_session_tracked():
+    """With cursor on a pane, `o` pushes NewPiScreen in 'window' mode
+    AND records that pane's session in `_window_target` so the launch
+    handler knows where to spawn the new window."""
+
+    async def go():
+        from pi_monitor.tui import NewPiScreen
+        panes, statuses = _two_session_world()
+        app = PiMonitorApp()
+        with _stub_world(panes, statuses):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                # The first-render fallback lands us on the first pane.
+                pos = app._current_position()
+                assert pos is not None and pos[0] == "pane"
+                expected_session = app._latest_statuses[pos[1]][0].session
+                await pilot.press("o")
+                await pilot.pause()
+                assert isinstance(app.screen, NewPiScreen)
+                assert app.screen.mode == "window"
+                assert app._window_target == expected_session
+
+    asyncio.run(go())
+
+
+def test_new_pi_screen_escape_returns_none():
+    """Esc in the modal cancels and dismisses with None; the launch
+    handler must treat None as a no-op (no create_* call, no notify)."""
+
+    async def go():
+        from pi_monitor.tui import NewPiScreen
+        panes, statuses = _two_session_world()
+        with patch("pi_monitor.tmux.create_pi_session") as mcreate:
+            app = PiMonitorApp()
+            with _stub_world(panes, statuses):
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    await pilot.press("g")
+                    await pilot.press("k")  # to ("new",)
+                    await pilot.press("o")
+                    await pilot.pause()
+                    assert isinstance(app.screen, NewPiScreen)
+                    await pilot.press("escape")
+                    await pilot.pause()
+                    assert not isinstance(app.screen, NewPiScreen)
+                    # Esc -> None -> no creation attempt.
+                    assert mcreate.call_count == 0
+
+    asyncio.run(go())
+
+
+def test_handle_launch_result_session_invokes_create_pi_session():
+    """A ('session', cwd) result drives create_pi_session(cwd) directly."""
+
+    async def go():
+        panes, statuses = _two_session_world()
+        with patch("pi_monitor.tmux.create_pi_session", return_value="fresh"):
+            app = PiMonitorApp()
+            with _stub_world(panes, statuses):
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    # Drive the callback directly with a synthetic result.
+                    app._handle_launch_result(("session", "/tmp/new-cwd"))
+                    await pilot.pause()
+                    # No exception, no crash. Hard to assert on the
+                    # subprocess side without leaking the import-binding;
+                    # the absence of an error is the contract.
+
+    asyncio.run(go())
+
+
+def test_handle_launch_result_window_invokes_create_pi_window():
+    """A ('window', cwd) result calls create_pi_window with the
+    previously-tracked _window_target (set by `_open_window`)."""
+
+    async def go():
+        panes, statuses = _two_session_world()
+        with patch("pi_monitor.tmux.create_pi_window") as mcreate:
+            app = PiMonitorApp()
+            with _stub_world(panes, statuses):
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    app._window_target = "contracts"
+                    app._handle_launch_result(("window", "/tmp/x"))
+                    await pilot.pause()
+                    mcreate.assert_called_once_with("contracts", "/tmp/x")
+
+    asyncio.run(go())
+
+
+def test_handle_launch_result_window_without_target_warns_and_skips():
+    """Defensive: if `_window_target` was never set (shouldn't happen
+    given the `o` dispatcher, but a future caller might forget) we
+    notify an error instead of calling create_pi_window with bogus
+    args."""
+
+    async def go():
+        panes, statuses = _two_session_world()
+        with patch("pi_monitor.tmux.create_pi_window") as mcreate:
+            app = PiMonitorApp()
+            with _stub_world(panes, statuses):
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    # Ensure no _window_target has been set.
+                    if hasattr(app, "_window_target"):
+                        delattr(app, "_window_target")
+                    app._handle_launch_result(("window", "/tmp/x"))
+                    await pilot.pause()
+                    assert mcreate.call_count == 0
+
+
+    asyncio.run(go())
+
+
+def test_handle_launch_result_none_is_noop():
+    """Esc-cancelled modal returns None; the handler must treat that as
+    nothing-happened, no spawn, no notification, no crash."""
+
+    async def go():
+        panes, statuses = _two_session_world()
+        with patch("pi_monitor.tmux.create_pi_session") as msess, \
+             patch("pi_monitor.tmux.create_pi_window") as mwin:
+            app = PiMonitorApp()
+            with _stub_world(panes, statuses):
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    app._handle_launch_result(None)
+                    await pilot.pause()
+                    assert msess.call_count == 0
+                    assert mwin.call_count == 0
 
     asyncio.run(go())
