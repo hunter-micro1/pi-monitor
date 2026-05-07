@@ -1,0 +1,43 @@
+{
+  "name": "pi-monitor",
+  "version": "0.4.0-alpha.0",
+  "description": "Live tmux-aware status monitor for pi coding agents (TypeScript rewrite of the Python pi-monitor; in-progress port, not yet feature-complete).",
+  "type": "module",
+  "license": "MIT",
+  "author": "hshayde",
+  "homepage": "https://github.com/hshayde/pi-monitor",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hshayde/pi-monitor.git",
+    "directory": "ts"
+  },
+  "bin": {
+    "pi-monitor": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "biome check src/ tests/",
+    "format": "biome format --write src/ tests/",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^20.11.0",
+    "tsup": "^8.5.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
