@@ -7,6 +7,33 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.10] — 2026-05-08
+
+Details-box content release. The bottom-of-sidebar box added in
+0.4.9 now shows the user's last prompt and cumulative token / cost
+usage alongside the agent's last reply, so you can answer "what
+has this session done and what has it cost" without leaving the
+TUI.
+
+- **Last user prompt** (`Prompt` line). The JSONL parser now
+  captures the first text chunk of the most recent `role: user`
+  message into `JsonlSnapshot.lastUserPrompt`. Renders in the
+  details box truncated to 200 chars (vs 80 inline).
+- **Cumulative tokens + cost** (`Tokens` line). The parser sums
+  `usage.totalTokens` and `usage.cost.total` across every
+  assistant turn into `JsonlSnapshot.cumulativeTokens` and
+  `cumulativeCostUsd`. Renders as `28.7K total · $0.06` when
+  there's anything to show; hidden when zero. Defensive against
+  assistant turns with missing or malformed usage metadata.
+- **`Last` line renamed to `Reply`.** Now that the box has both
+  the user's prompt and the agent's reply, the labels read as
+  the conversational pair (`Prompt` / `Reply`) instead of the
+  ambiguous `Last`.
+- New `fmtTokens` and `fmtCostUsd` helpers in `format/row.ts`
+  for the compact display (raw int < 1k, `<x.x>K` < 1M,
+  `<x.x>M` above; cost `<¢1` sub-cent, `$0.NN` mid, `$N.NN`
+  above $1).
+
 ## [0.4.9] — 2026-05-08
 
 Three small sidebar improvements: a duplicate-tab data-correctness
@@ -31,7 +58,7 @@ bottom-of-sidebar details box that expands the cursor row.
   user.
 - **Bottom-of-sidebar details box.** Cursor on a pane row now
   expands into a 2-5 line details box between the row list and
-  the footer. Layout: divider → title · branch  state → "Doing"
+  the footer. Layout: divider → title · branch state → "Doing"
   line (heartbeat phase + tool, when present) → "Last" line
   (assistant preview, capped at 200 chars vs 80 inline) → "Error"
   line (only on error rows). Hidden when the cursor isn't on a
