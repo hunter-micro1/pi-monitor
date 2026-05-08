@@ -1,26 +1,25 @@
 /**
  * Bottom-of-sidebar details box for the cursor row.
  *
- * Renders an expanded view of the currently-selected pane's status:
- * the title + branch + state tag (mirror of the PaneRow's top
- * line), plus up to 7 label-prefixed detail lines depending on
- * what data is available:
+ * Renders a tight, four-line summary of the currently-selected
+ * pane:
  *
- *   Doing      <phase + tool>          // working w/ heartbeat
- *   Worktree   <pi cwd, $HOME -> ~>    // when cwd is non-empty
- *   When       Started Xh Ym ago · idle Zs   // when sessionFile parses
- *   Prompt  <last user message>     // when snapshot has lastUserPrompt
- *   Reply   <last assistant text>   // when snapshot has lastAssistantPreview
- *   Tokens  <total> total · <cost>  // when cumulativeTokens > 0
- *   Error   <error message>         // when state === "error"
+ *   <name> · <branch>                <activity tag>     // title row
+ *   Worktree   <pi cwd, $HOME -> ~>                     // when cwd is non-empty
+ *   When       Started Xh Ym ago · idle Zs              // when sessionFile parses
+ *   Tokens     <total> total · <cost>                   // when cumulativeTokens > 0
+ *
+ * The title row mirrors PaneRow's first line so users read
+ * "expanded version of the cursor row" rather than "what's this
+ * new thing". Each label-prefixed line below is conditional and
+ * hides when its data isn't available; in particular the box
+ * intentionally OMITS Doing / Prompt / Reply / Error lines \u2014 the
+ * activity tag in the title row already conveys "is this agent
+ * busy / errored", and the user doesn't want the box growing.
  *
  * Hidden entirely when the cursor isn't on a pane row (the App
  * passes `null`); a section divider above keeps the box visually
  * grouped with the row list rather than the footer.
- *
- * Truncation cap is intentionally higher than the inline activity
- * line (200 chars vs ACTIVITY_MAX_CHARS=80) so users can see more
- * of the last user / assistant turn here without leaving the TUI.
  */
 
 import { Box, Text } from "ink";
@@ -28,7 +27,6 @@ import type { ReactElement } from "react";
 
 import {
   type ActivityTag,
-  STATE_COLORS,
   activityTag,
   fmtCostUsd,
   fmtCwdDisplay,
@@ -36,15 +34,11 @@ import {
   fmtRowMain,
   fmtTokens,
   parseSessionStartFromFile,
-  truncate,
 } from "../format/row.js";
 import type { PaneStatus } from "../state/types.js";
 import { FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
 
-/** Max chars for the assistant-preview / error lines in the box. */
-export const DETAILS_TEXT_MAX_CHARS = 200;
-
-/** Width reserved for the "Doing"/"Worktree"/"Error" label column. */
+/** Width reserved for the "Worktree"/"When"/"Tokens" label column. */
 const LABEL_COL = 10;
 
 export interface PaneDetailsProps {
@@ -56,14 +50,14 @@ export interface PaneDetailsProps {
   /** Pulse color threaded in by the App for working rows. */
   workingColor?: string | null;
   /**
-   * Pi descendant's actual cwd — typically the auto-worktree dir,
+   * Pi descendant's actual cwd \u2014 typically the auto-worktree dir,
    * which is more informative than the branch alone when several
    * panes share a branch name across worktrees. Empty / null hides
-   * the `Tree` line. The App threads `AppEntry.cwd` here.
+   * the `Worktree` line. The App threads `AppEntry.cwd` here.
    */
   cwd?: string | null;
   /**
-   * `$HOME` for the `Tree` line's path collapse. Defaults to
+   * `$HOME` for the `Worktree` line's path collapse. Defaults to
    * `process.env.HOME` so production callers don't have to pass
    * it; tests override it to keep snapshots stable across machines.
    */
@@ -90,34 +84,21 @@ export function PaneDetails({
   const main = fmtRowMain({ paneTitle, paneIndex, status, branch, workingColor });
   const tag: ActivityTag = activityTag(status, workingColor);
 
-  const doing = describeDoing(status);
   const tree = cwd && cwd.length > 0 ? fmtCwdDisplay(cwd, resolveHome(home)) : null;
   const when = describeWhen(status, nowSeconds);
-  const prompt = status.snapshot?.lastUserPrompt
-    ? truncate(status.snapshot.lastUserPrompt, DETAILS_TEXT_MAX_CHARS)
-    : null;
-  const reply = status.snapshot?.lastAssistantPreview
-    ? truncate(status.snapshot.lastAssistantPreview, DETAILS_TEXT_MAX_CHARS)
-    : null;
   const tokens =
     status.snapshot && status.snapshot.cumulativeTokens > 0
       ? `${fmtTokens(status.snapshot.cumulativeTokens)} total \u00b7 ${fmtCostUsd(
           status.snapshot.cumulativeCostUsd,
         )}`
       : null;
-  const errorMsg =
-    status.state === "error" && status.snapshot?.lastError
-      ? truncate(status.snapshot.lastError, DETAILS_TEXT_MAX_CHARS)
-      : null;
 
   return (
     <Box flexDirection="column" marginTop={1}>
       <Divider />
 
-      {/* Title line: matches PaneRow's first line layout (paneTitle
-          + branch left, state tag right) so the user reads "I am
-          looking at the same row, expanded" rather than "what is
-          this new thing". No selection bar \u2014 the details box is
+      {/* Title row: paneTitle + branch on the left, activity tag on
+          the right. No selection bar \u2014 the details box is
           implicitly about the selected row. */}
       <Box flexDirection="row" paddingX={2} marginTop={1}>
         <Box flexGrow={1} flexShrink={1}>
@@ -134,58 +115,33 @@ export function PaneDetails({
         <Text color={tag.color}>{tag.verb}</Text>
       </Box>
 
-      {/* Detail lines. Each label is dim, the value is full
-          foreground (or state-colored for the error line). Indent
-          matches the title row's paddingX={2} so labels align with
-          paneTitle's first letter. Order: what the agent is doing
-          right now (Doing), where it lives on disk (Tree), how
-          long it has been alive + how recently it spoke (When),
-          what the user asked (Prompt), what the agent replied
-          (Reply), how much it has spent (Tokens), and — only on
-          error rows — Error. */}
-      {doing !== null && <Detail label="Doing" value={doing} />}
+      {/* Detail lines. Each label is dim, value is full foreground.
+          Indent matches the title row's paddingX={2} so labels
+          align with paneTitle's first letter. */}
       {tree !== null && <Detail label="Worktree" value={tree} />}
       {when !== null && <Detail label="When" value={when} />}
-      {prompt !== null && <Detail label="Prompt" value={prompt} />}
-      {reply !== null && <Detail label="Reply" value={reply} />}
       {tokens !== null && <Detail label="Tokens" value={tokens} />}
-      {errorMsg !== null && (
-        <Detail label="Error" value={errorMsg} valueColor={STATE_COLORS.error} />
-      )}
     </Box>
   );
 }
 
 /** One label-value detail line. */
-function Detail({
-  label,
-  value,
-  valueColor,
-}: {
-  label: string;
-  value: string;
-  valueColor?: string;
-}): ReactElement {
+function Detail({ label, value }: { label: string; value: string }): ReactElement {
   return (
     <Box flexDirection="row" paddingX={2}>
       <Box width={LABEL_COL}>
         <Text color={FOREGROUND_MUTED}>{label}</Text>
       </Box>
       <Box flexGrow={1} flexShrink={1}>
-        <Text color={valueColor ?? FOREGROUND}>{value}</Text>
+        <Text color={FOREGROUND}>{value}</Text>
       </Box>
     </Box>
   );
 }
 
 /**
- * Compose the "Doing" line from phase + currentTool + retryAttempt.
- * Returns null when there's nothing more informative to say than
- * what the right-side state tag already shows.
- */
-/**
  * Resolve the `home` prop with a sensible default. Pulled out so
- * the default lookup happens lazily — React would otherwise
+ * the default lookup happens lazily \u2014 React would otherwise
  * re-evaluate `process.env.HOME` on every render via a default
  * parameter, which is fine but reads as accidental.
  */
@@ -218,25 +174,6 @@ function describeWhen(
   }
   if (parts.length === 0) return null;
   return parts.join(" \u00b7 ");
-}
-
-function describeDoing(status: PaneStatus): string | null {
-  const { phase, currentTool, retryAttempt, state } = status;
-
-  if (phase === "tool_running" && currentTool) {
-    return `running ${currentTool}`;
-  }
-  if (phase === "tool_running") return "running tool";
-  if (phase === "compacting") return "compacting context history";
-  if (phase === "agent_running") return "drafting response";
-  if (phase === "awaiting_permission") return "awaiting your permission";
-  if (phase === "retrying") {
-    return retryAttempt > 0
-      ? `retrying after transient error (attempt ${retryAttempt})`
-      : "retrying after transient error";
-  }
-  if (state === "waiting") return "awaiting your input";
-  return null;
 }
 
 function Divider(): ReactElement {

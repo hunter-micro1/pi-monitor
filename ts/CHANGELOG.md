@@ -7,6 +7,29 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.15] — 2026-05-08
+
+Bottom details box trimmed to a four-line minimal layout per
+user request: title row + `Worktree` + `When` + `Tokens`. Drops
+the `Doing`, `Prompt`, `Reply`, and `Error` lines.
+
+- Title row still shows `name · branch | activity tag`, so the
+  branch and current state are visible without a dedicated
+  label row.
+- Removed the `truncate` import and the `describeDoing` helper
+  from `PaneDetails.tsx`. Less code, narrower surface.
+- A regression-guard test in `tests/tui/PaneDetails.test.tsx`
+  feeds a worst-case status that previously populated every
+  detail line and asserts none of `Doing` / `Prompt` / `Reply` /
+  `Error` appear in the rendered frame.
+
+Note: `Tokens` is sourced from the JSONL snapshot, which the
+resolver intentionally skips while the `pi-monitor-heartbeat`
+extension is publishing fresh status (the heartbeat fast-path).
+That means the `Tokens` line briefly disappears during a
+tool-call and reappears once the agent goes idle. Pre-existing
+behaviour from 0.4.0; surfacing it here so it isn't surprising.
+
 ## [0.4.14] — 2026-05-08
 
 Details-box upgrades for the bottom-of-sidebar pane summary.
@@ -14,7 +37,7 @@ Details-box upgrades for the bottom-of-sidebar pane summary.
 - **App pinned to absolute pane height.** The outer Ink Box now
   sets `height={stdout.rows}` (default 24 in tests / non-TTY).
   Before, the flex spacer between the row list and the details
-  box only claimed leftover space inside the App's *natural*
+  box only claimed leftover space inside the App's _natural_
   height; on a tall monitor pane with a short pane list, the
   details box sat in the middle with empty rows below. Now it
   pins to the literal bottom of the pane.
