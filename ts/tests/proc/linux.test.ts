@@ -189,4 +189,36 @@ describe("linux.findPiPidForPane", () => {
     });
     expect(findPiPidForPane(100)).toBeNull();
   });
+
+  it("returns the DEEPEST pi in a chain (auto-worktree case)", () => {
+    // 1981 (pi at launch cwd) -> 8148 (pi at launch cwd) -> 8250 (pi
+    // re-exec'd inside agent/<base>-<ts> by auto-worktree). The
+    // resolver needs the leaf so procCwd lands on the worktree dir
+    // and the JSONL claim succeeds.
+    withProcLayout({
+      comms: { 1981: "pi", 8148: "pi", 8250: "pi" },
+      children: { 1981: [8148], 8148: [8250], 8250: [] },
+    });
+    expect(findPiPidForPane(1981)).toBe(8250);
+  });
+
+  it("returns the deepest pi even when non-pi siblings exist", () => {
+    // 100 (zsh) -> [101 (pi), 102 (vim)]
+    //                 \-> 103 (pi)
+    // Deepest pi is 103.
+    withProcLayout({
+      comms: { 100: "zsh", 101: "pi", 102: "vim", 103: "pi" },
+      children: { 100: [101, 102], 101: [103], 102: [], 103: [] },
+    });
+    expect(findPiPidForPane(100)).toBe(103);
+  });
+
+  it("returns the only pi when there is no chain (single pi)", () => {
+    // Single-pi tree: outer-only behaviour is unchanged.
+    withProcLayout({
+      comms: { 100: "zsh", 101: "pi" },
+      children: { 100: [101], 101: [] },
+    });
+    expect(findPiPidForPane(100)).toBe(101);
+  });
 });

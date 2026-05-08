@@ -46,23 +46,34 @@ export function procStartTime(pid: number): number | null {
 }
 
 /**
- * Walk the process tree from `panePid` and return the first
- * descendant whose `comm` is exactly `pi`. Includes `panePid` itself
- * so `exec pi` (which replaces the shell) still resolves.
+ * Walk the process tree from `panePid` and return the DEEPEST
+ * descendant whose `comm` is exactly `pi`. Includes `panePid`
+ * itself so `exec pi` still resolves.
+ *
+ * Why deepest, not first: extensions like `auto-worktree` re-exec
+ * pi inside an `agent/<base>-<ts>` worktree, producing a chain of
+ * pi processes (outer pi at the launch cwd → inner pi at the
+ * worktree cwd). The state resolver consumes `procCwd(piPid)` to
+ * claim the right JSONL session file, and the worktree cwd lives
+ * on the leaf pi. Returning the outer pi — the previous behaviour
+ * — left every auto-worktree pane stuck with no snapshot, which
+ * collapsed the bottom details box to its title row.
  *
  * BFS with a seen-set so a corrupt /proc snapshot can't loop us.
+ * Walks the whole reachable tree (cheap: tmux pane subtrees are
+ * small) and tracks the deepest pi seen so far.
  *
- * Mirrors `find_pi_pid_for_pane` in the Python build (which the
- * psutil-backed version implements as `Process.children(recursive=True)`).
+ * Mirrors `find_pi_pid_for_pane` in the Python build.
  */
 export function findPiPidForPane(panePid: number): number | null {
-  const queue: number[] = [panePid];
+  let best: { pid: number; depth: number } | null = null;
+  const queue: Array<{ pid: number; depth: number }> = [{ pid: panePid, depth: 0 }];
   const seen = new Set<number>();
 
   while (queue.length > 0) {
-    // shift() is O(n) on big queues but the descendant count under a
-    // tmux pane shell is tiny (1\u20133 typically), so this is fine.
-    const pid = queue.shift() as number;
+    // shift() is O(n) on big queues but the descendant count under
+    // a tmux pane shell is tiny (1\u20133 typically), so this is fine.
+    const { pid, depth } = queue.shift() as { pid: number; depth: number };
     if (seen.has(pid)) continue;
     seen.add(pid);
 
@@ -73,7 +84,9 @@ export function findPiPidForPane(panePid: number): number | null {
       // Process disappeared or not readable; skip and continue.
       continue;
     }
-    if (comm === "pi") return pid;
+    if (comm === "pi" && (best === null || depth > best.depth)) {
+      best = { pid, depth };
+    }
 
     let childrenRaw: string;
     try {
@@ -84,8 +97,10 @@ export function findPiPidForPane(panePid: number): number | null {
     for (const piece of childrenRaw.trim().split(/\s+/)) {
       if (piece === "") continue;
       const n = Number(piece);
-      if (Number.isInteger(n) && !seen.has(n)) queue.push(n);
+      if (Number.isInteger(n) && !seen.has(n)) {
+        queue.push({ pid: n, depth: depth + 1 });
+      }
     }
   }
-  return null;
+  return best?.pid ?? null;
 }

@@ -20,7 +20,7 @@
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 
-const VERSION = "0.4.12";
+const VERSION = "0.4.13";
 
 async function main(argv: readonly string[]): Promise<number> {
   if (argv.includes("--help") || argv.includes("-h")) {
@@ -102,7 +102,8 @@ async function runTui(): Promise<number> {
     { createElement },
     { App },
     { makeTmuxBridge },
-    { listPanes, listPiPanes, isViewerSession },
+    { listPanes, listPiPanes },
+    { selectAgentPanes },
     { StateResolver },
     { createPiSession, createPiWindow, setStatusWidget, clearStatusWidget },
   ] = await Promise.all([
@@ -111,6 +112,7 @@ async function runTui(): Promise<number> {
     import("./tui/App.js"),
     import("./tui/tmuxBridge.js"),
     import("./tmux/panes.js"),
+    import("./tmux/agentPanes.js"),
     import("./state/resolver.js"),
     import("./tmux/monitor.js"),
   ]);
@@ -122,16 +124,14 @@ async function runTui(): Promise<number> {
   const tmux = makeTmuxBridge();
 
   const getEntries = () => {
-    // Two filters:
-    //   - ownPaneIds: panes living in the `monitor` session itself.
-    //   - isViewerSession: tmux session-grouping makes the linked
-    //     viewers (`pi-monitor-view-*`) report the same pi panes a
-    //     second time under their viewer-session name. Suppress
-    //     that duplicate so each pi pane appears in exactly one
-    //     SessionGroup (its real session).
-    const panes = listPiPanes().filter(
-      (p) => !ownPaneIds.has(p.paneId) && !isViewerSession(p.session),
-    );
+    // selectAgentPanes drops monitor-own panes, viewer-prefixed
+    // sister sessions (`pi-monitor-view-*`), AND any remaining
+    // session-group sisters the viewer-prefix rule misses (e.g.
+    // a user-created `pi-9-13` linked to `pi-9` via `tmux
+    // new-session -t pi-9`). The third rule — dedupe by paneId
+    // — is what catches that case; without it `%11` would render
+    // once per sister session.
+    const panes = selectAgentPanes(listPiPanes(), ownPaneIds);
     const refs = panes.map((p) => ({
       paneId: p.paneId,
       cwd: p.cwd,

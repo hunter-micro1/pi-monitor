@@ -7,6 +7,37 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.13] — 2026-05-08
+
+Two bug fixes for symptoms that showed up together once the
+bottom-of-sidebar details box landed in 0.4.9: the same pi pane
+appearing twice in the list, and the box rendering only its
+title row with no detail lines.
+
+- **Dedupe panes by `paneId`.** Tmux's session-grouping
+  (`new-session -t <source>`) makes the kernel report the same
+  pane id under every sister session, so a user-created sister
+  like `pi-9-13` linked to `pi-9` would render pane `%11` twice.
+  The viewer-prefix filter introduced in 0.4.9 only catches
+  `pi-monitor-view-*` sisters; this release adds a paneId-based
+  dedupe (first occurrence wins) that catches every other
+  group-sister case. New `selectAgentPanes` helper in
+  `tmux/agentPanes.ts` lifts the three filter rules
+  (own-monitor / viewer-prefix / dedupe) out of `cli.ts` so
+  they're unit-testable.
+- **`findPiPidForPane` now returns the deepest pi descendant.**
+  Previously a BFS that returned the first pi it saw, which is
+  the outer pi at the tmux launch cwd. The `auto-worktree`
+  extension re-execs pi inside an `agent/<base>-<ts>` worktree,
+  producing a chain (outer pi → inner pi at the worktree). The
+  outer pi's cwd is wrong for the JSONL claim, so `procCwd`
+  landed on the launch dir, the snapshot came back null, and
+  the details box collapsed to its title row. Now walks the
+  whole reachable subtree and returns the deepest `comm == pi`
+  process, so `procCwd` resolves the worktree dir and the
+  details box shows the actual prompt / reply / tokens / error.
+  Mirrored in both `proc/linux.ts` and `proc/macos.ts`.
+
 ## [0.4.12] — 2026-05-08
 
 Visual cohesion + layout polish for the sidebar.

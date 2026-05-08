@@ -141,6 +141,37 @@ describe("macos.findPiPidForPane", () => {
     fakePsRows([[100, 100, "zsh", 30]]);
     expect(findPiPidForPane(100)).toBeNull();
   });
+
+  it("returns the DEEPEST pi in a chain (auto-worktree case)", () => {
+    // 1981 (pi) -> 8148 (pi) -> 8250 (pi, inside agent/<base>-<ts>).
+    // Leaf wins so procCwd lands on the worktree.
+    fakePsRows([
+      [1981, 1, "pi", 200],
+      [8148, 1981, "pi", 150],
+      [8250, 8148, "pi", 100],
+    ]);
+    expect(findPiPidForPane(1981)).toBe(8250);
+  });
+
+  it("returns the deepest pi even when non-pi siblings exist", () => {
+    // 100 (zsh) -> [101 (pi), 102 (vim)]
+    //                 \-> 103 (pi)
+    fakePsRows([
+      [100, 1, "zsh", 200],
+      [101, 100, "pi", 150],
+      [102, 100, "vim", 150],
+      [103, 101, "pi", 100],
+    ]);
+    expect(findPiPidForPane(100)).toBe(103);
+  });
+
+  it("returns the only pi when there is no chain (single pi)", () => {
+    fakePsRows([
+      [100, 1, "zsh", 200],
+      [101, 100, "pi", 100],
+    ]);
+    expect(findPiPidForPane(100)).toBe(101);
+  });
 });
 
 // ---------------------------------------------------------------------------
