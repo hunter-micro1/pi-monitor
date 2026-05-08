@@ -22,11 +22,14 @@ import {
   activityDescription,
   activityTag,
   fmtCostUsd,
+  fmtCwdDisplay,
+  fmtDuration,
   fmtIdle,
   fmtRowMain,
   fmtSessionHeader,
   fmtStatusWidget,
   fmtTokens,
+  parseSessionStartFromFile,
   truncate,
   workingVerb,
 } from "../../src/format/row.js";
@@ -478,5 +481,117 @@ describe("fmtStatusWidget", () => {
   it("suppresses unknown / no_pi when other states are present", () => {
     const out = fmtStatusWidget(["working", "unknown", "no_pi", "unknown"]);
     expect(out).toBe(`${STATE_GLYPHS.working}1`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fmtDuration
+// ---------------------------------------------------------------------------
+
+describe("fmtDuration", () => {
+  it("returns 0s for zero / negative / NaN / Infinity", () => {
+    expect(fmtDuration(0)).toBe("0s");
+    expect(fmtDuration(-5)).toBe("0s");
+    expect(fmtDuration(Number.NaN)).toBe("0s");
+    expect(fmtDuration(Number.POSITIVE_INFINITY)).toBe("0s");
+  });
+
+  it("renders sub-minute durations as Ns", () => {
+    expect(fmtDuration(1)).toBe("1s");
+    expect(fmtDuration(45)).toBe("45s");
+    expect(fmtDuration(59.9)).toBe("59s");
+  });
+
+  it("renders minute durations as Nm Ks, dropping zero seconds", () => {
+    expect(fmtDuration(60)).toBe("1m");
+    expect(fmtDuration(72)).toBe("1m 12s");
+    expect(fmtDuration(300)).toBe("5m");
+    expect(fmtDuration(3599)).toBe("59m 59s");
+  });
+
+  it("renders hour durations as Nh Mm, dropping zero minutes", () => {
+    expect(fmtDuration(3600)).toBe("1h");
+    expect(fmtDuration(3660)).toBe("1h 1m");
+    expect(fmtDuration(4320)).toBe("1h 12m");
+    expect(fmtDuration(86_399)).toBe("23h 59m");
+  });
+
+  it("renders day durations as Nd Hh, dropping zero hours", () => {
+    expect(fmtDuration(86_400)).toBe("1d");
+    expect(fmtDuration(86_400 + 3600)).toBe("1d 1h");
+    expect(fmtDuration(86_400 * 3 + 3600 * 7)).toBe("3d 7h");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fmtCwdDisplay
+// ---------------------------------------------------------------------------
+
+describe("fmtCwdDisplay", () => {
+  it("collapses a leading $HOME prefix to ~", () => {
+    expect(fmtCwdDisplay("/home/x/Projects/foo", "/home/x")).toBe("~/Projects/foo");
+  });
+
+  it("renders cwd === home as exactly ~", () => {
+    expect(fmtCwdDisplay("/home/x", "/home/x")).toBe("~");
+  });
+
+  it("does not collapse partial-prefix matches (substring, not path-segment)", () => {
+    // /home/xander has /home/x as a string prefix but not a path
+    // prefix \u2014 must NOT collapse to ~ander.
+    expect(fmtCwdDisplay("/home/xander/p", "/home/x")).toBe("/home/xander/p");
+  });
+
+  it("returns the cwd unchanged when home is null / empty", () => {
+    expect(fmtCwdDisplay("/srv/data", null)).toBe("/srv/data");
+    expect(fmtCwdDisplay("/srv/data", "")).toBe("/srv/data");
+  });
+
+  it("tolerates a trailing slash on home", () => {
+    expect(fmtCwdDisplay("/home/x/Projects", "/home/x/")).toBe("~/Projects");
+  });
+
+  it("returns empty string for empty cwd", () => {
+    expect(fmtCwdDisplay("", "/home/x")).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseSessionStartFromFile
+// ---------------------------------------------------------------------------
+
+describe("parseSessionStartFromFile", () => {
+  it("parses a real pi session-JSONL filename into unix seconds", () => {
+    const ts = parseSessionStartFromFile(
+      "2026-05-08T18-32-09-372Z_019e08dc-819c-73be-8b57-37b9416be06b.jsonl",
+    );
+    // Date.UTC takes month-1; 2026-05-08T18:32:09.372Z is the
+    // canonical ISO form.
+    const expected = Date.UTC(2026, 4, 8, 18, 32, 9, 372) / 1000;
+    expect(ts).toBe(expected);
+  });
+
+  it("parses the same filename when given a full absolute path", () => {
+    const ts = parseSessionStartFromFile(
+      "/home/x/.pi/agent/sessions/--home-x--/2026-05-08T18-32-09-372Z_xxx.jsonl",
+    );
+    expect(ts).toBe(Date.UTC(2026, 4, 8, 18, 32, 9, 372) / 1000);
+  });
+
+  it("returns null for null / empty input", () => {
+    expect(parseSessionStartFromFile(null)).toBeNull();
+    expect(parseSessionStartFromFile("")).toBeNull();
+  });
+
+  it("returns null when the basename doesn't match the pattern", () => {
+    expect(parseSessionStartFromFile("/x/y/just-a-file.jsonl")).toBeNull();
+    expect(parseSessionStartFromFile("2026-05-08_018.jsonl")).toBeNull();
+    // Time portion uses colons, not dashes \u2014 not a pi filename.
+    expect(parseSessionStartFromFile("2026-05-08T18:32:09.372Z_x.jsonl")).toBeNull();
+  });
+
+  it("returns null when the parsed ISO date is invalid", () => {
+    // Month 13 fails Date.parse.
+    expect(parseSessionStartFromFile("2026-13-08T18-32-09-372Z_x.jsonl")).toBeNull();
   });
 });

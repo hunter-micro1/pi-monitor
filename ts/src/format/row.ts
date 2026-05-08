@@ -120,6 +120,92 @@ export function fmtIdle(seconds: number): string {
 }
 
 /**
+ * Format `seconds` as a longer-form human duration with two units
+ * of precision, suitable for the bottom details box's "Started
+ * Xh Ym ago" / "idle Xs" lines:
+ *
+ *   < 1s          -> "0s"            // floor; never negative
+ *   < 60s         -> "Ns"            ("4s")
+ *   < 60m         -> "Nm Ks" / "Nm"  ("3m 12s", "5m" when seconds=0)
+ *   < 24h         -> "Nh Mm" / "Nh"
+ *   else          -> "Nd Hh" / "Nd"
+ *
+ * The trailing zero unit is dropped so we get the shorter "5m"
+ * instead of "5m 0s". `fmtIdle` stays as the one-unit form for the
+ * tight pane-row activity tag; this helper is for the wider
+ * details box where we have room for the second unit.
+ */
+export function fmtDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 1) return "0s";
+  const s = Math.floor(seconds);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) {
+    const m = Math.floor(s / 60);
+    const r = s - m * 60;
+    return r === 0 ? `${m}m` : `${m}m ${r}s`;
+  }
+  if (s < 86400) {
+    const h = Math.floor(s / 3600);
+    const r = Math.floor((s - h * 3600) / 60);
+    return r === 0 ? `${h}h` : `${h}h ${r}m`;
+  }
+  const d = Math.floor(s / 86400);
+  const r = Math.floor((s - d * 86400) / 3600);
+  return r === 0 ? `${d}d` : `${d}d ${r}h`;
+}
+
+/**
+ * Display form for an absolute filesystem path. Collapses a leading
+ * `home` prefix to `~` (so `/home/user/Projects/foo` renders as
+ * `~/Projects/foo`); leaves everything else as-is. Used by the
+ * bottom details box's `Worktree` line to keep cwds short on the
+ * sidebar.
+ *
+ * Returns the input unchanged when home is empty / null / not a
+ * prefix of cwd.
+ */
+export function fmtCwdDisplay(cwd: string, home: string | null): string {
+  if (cwd === "") return "";
+  if (home === null || home === "") return cwd;
+  // Strip any trailing slashes from home so `/home/user/` and
+  // `/home/user` both match. cwd never has a trailing slash from
+  // /proc, but /proc on different distros has surprised us before.
+  const h = home.replace(/\/+$/, "");
+  if (cwd === h) return "~";
+  if (cwd.startsWith(`${h}/`)) return `~${cwd.slice(h.length)}`;
+  return cwd;
+}
+
+/**
+ * Parse the launch timestamp out of a pi session-JSONL filename.
+ *
+ * pi names every session file `YYYY-MM-DDTHH-MM-SS-mmmZ_<uuid>.jsonl`
+ * (colons in the ISO timestamp swapped for dashes so the path is
+ * filesystem-safe). The state resolver doesn't otherwise carry a
+ * session-start timestamp, so we recover it from the filename here
+ * for the details box's `Started Xh Ym ago` line.
+ *
+ * Returns the timestamp in unix seconds, or `null` when the path
+ * is not a session JSONL we recognize. Tolerant of full paths,
+ * bare basenames, and filenames with extra suffixes after the
+ * uuid.
+ */
+export function parseSessionStartFromFile(file: string | null): number | null {
+  if (file === null || file === "") return null;
+  // Accept a full path or a basename. \\ in case Windows ever shows
+  // up; pi itself is POSIX-only today but cheap insurance.
+  const slash = Math.max(file.lastIndexOf("/"), file.lastIndexOf("\\"));
+  const base = slash >= 0 ? file.slice(slash + 1) : file;
+  // Match: 4-digit year - 2 - 2 T 2 - 2 - 2 - 3 Z, then `_<uuid>`.
+  const m = base.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z_/);
+  if (m === null) return null;
+  const iso = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}.${m[7]}Z`;
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  return ms / 1000;
+}
+
+/**
  * Compact activity verb for a WORKING row, derived from the heartbeat
  * extension's phase + currentTool when available.
  *
