@@ -159,11 +159,15 @@ export function procStartTime(pid: number): number | null {
 }
 
 /**
- * Walk the process tree from `panePid` and return the first
- * descendant (inclusive) whose `comm` is exactly `pi`.
+ * Walk the process tree from `panePid` and return the DEEPEST
+ * descendant (inclusive) whose `comm` is exactly `pi`. See the
+ * Linux sibling for the rationale: extensions like
+ * `auto-worktree` re-exec pi inside an `agent/<base>-<ts>`
+ * worktree, so the leaf pi carries the cwd the JSONL claim
+ * needs.
  *
  * Builds a parent-to-children index from the cached `ps` snapshot
- * and BFSes from `panePid`. Same shape as the Linux version.
+ * and BFSes from `panePid`, walking the whole reachable tree.
  */
 export function findPiPidForPane(panePid: number): number | null {
   const snap = readPsSnapshot();
@@ -180,23 +184,26 @@ export function findPiPidForPane(panePid: number): number | null {
     list.push(row.pid);
   }
 
-  const queue: number[] = [panePid];
+  let best: { pid: number; depth: number } | null = null;
+  const queue: Array<{ pid: number; depth: number }> = [{ pid: panePid, depth: 0 }];
   const seen = new Set<number>();
 
   while (queue.length > 0) {
-    const pid = queue.shift() as number;
+    const { pid, depth } = queue.shift() as { pid: number; depth: number };
     if (seen.has(pid)) continue;
     seen.add(pid);
 
     const row = snap.get(pid);
     if (row === undefined) continue;
-    if (row.comm === "pi") return pid;
+    if (row.comm === "pi" && (best === null || depth > best.depth)) {
+      best = { pid, depth };
+    }
 
     const kids = childrenByPpid.get(pid);
     if (kids === undefined) continue;
     for (const kpid of kids) {
-      if (!seen.has(kpid)) queue.push(kpid);
+      if (!seen.has(kpid)) queue.push({ pid: kpid, depth: depth + 1 });
     }
   }
-  return null;
+  return best?.pid ?? null;
 }
