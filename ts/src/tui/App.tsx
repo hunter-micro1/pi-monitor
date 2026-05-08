@@ -33,6 +33,7 @@ import { INITIAL_CURSOR, currentPos, cursorReducer } from "./cursor.js";
 import type { ListDir } from "./dirComplete.js";
 import { branchForCwd as defaultBranchForCwd } from "./git.js";
 import { lerpColor, pulseColor } from "./pulse.js";
+import { sessionHeaderColor } from "./sessionColors.js";
 import { BRAILLE_FRAMES } from "./spinner.js";
 import type { TmuxBridge } from "./tmuxBridge.js";
 
@@ -430,7 +431,12 @@ export function App(props: AppProps): ReactElement {
       <TitleBar counts={counts} />
       {banner !== null && <NotificationBanner notification={banner} />}
 
-      <Box flexDirection="column" paddingX={2} marginTop={1}>
+      {/* The middle region (row list + flex spacer + details box)
+          claims all height between the TitleBar/banner above and
+          the Footer below. The flex spacer inside it pushes
+          PaneDetails to the very bottom regardless of how many
+          pane rows are in the list. */}
+      <Box flexDirection="column" paddingX={2} marginTop={1} flexGrow={1}>
         {/* + new pi session affordance. Same selection-bar pattern
             as PaneRow so the cursor moves through a single visual
             grammar across every selectable row. */}
@@ -449,6 +455,10 @@ export function App(props: AppProps): ReactElement {
 
         {groups.map(({ session, items }, sectionIdx) => {
           const chip = pickSessionChip(items.map((e) => e.status));
+          // Hash-of-name color reused on every row in this section
+          // so each section reads as a colored block. PaneRow
+          // applies it to non-working titles only.
+          const sectionColor = sessionHeaderColor(session);
           return (
             <SessionGroup
               key={session}
@@ -467,11 +477,18 @@ export function App(props: AppProps): ReactElement {
                   workingColor={pulseHex}
                   cursorBarColor={cursorBarHex}
                   spinnerGlyph={BRAILLE_FRAMES[spinnerFrame]}
+                  sessionColor={sectionColor}
                 />
               ))}
             </SessionGroup>
           );
         })}
+
+        {/* Flex spacer pushes the details box to the very bottom
+            of the sidebar. With short pane lists this leaves an
+            empty band above the box; the box's vertical position
+            stays constant so users can train their eye on it. */}
+        <Box flexGrow={1} />
 
         {/* Bottom-of-sidebar details box for the cursor row. The
             component itself returns null when status is null, so
