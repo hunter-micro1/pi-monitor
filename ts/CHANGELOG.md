@@ -7,6 +7,24 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.18] — 2026-05-08
+
+Sidebar visual hierarchy: session header outdented + unified to
+the ACCENT blue.
+
+- **Section header outdented** to the App's `paddingX` edge
+  (col 2). Pane rows still sit at col 4 (App `paddingX` 2 +
+  PaneRow's selection-bar 2). Reads as 'session label, then
+  the rows that belong to it'. Dropped the leading
+  `<Box width={2} />` from `SessionGroup` to make this happen.
+- **Section header color unified to `ACCENT`** (#7AA2F7). The
+  per-session hash-of-name color from 0.4.9 still applies to
+  non-working pane TITLES (via the `sessionColor` prop on
+  `PaneRow`) so each section's rows still scan as a colored
+  block; the header itself reads as a clean section label in
+  the brand blue used by the title bar, hint keys, and the
+  `+ new pi session` affordance.
+
 ## [0.4.17] — 2026-05-08
 
 Details-box gets the `Prompt` line back, and stops flickering on
