@@ -64,6 +64,29 @@ describe("groupBySession", () => {
 });
 
 describe("App render", () => {
+  it("fills the pane height so the bottom details box pins to the literal bottom", async () => {
+    // ink-testing-library's Stdout reports columns=100 and no rows,
+    // so the App falls back to 24-row height. We assert the frame
+    // is exactly 24 lines tall — if the height prop ever stops
+    // being applied, the frame collapses to its natural content
+    // height (~10 rows in empty state) and this test catches it.
+    const { lastFrame } = render(
+      <App
+        getEntries={() => []}
+        branchForCwd={() => null}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    const out = lastFrame() ?? "";
+    // Trailing newline strip parity: split on \n, drop a final empty
+    // entry if the frame ended in a newline.
+    const lines = out.split("\n");
+    if (lines[lines.length - 1] === "") lines.pop();
+    expect(lines.length).toBe(24);
+  });
+
   it("renders the empty-state welcome when there are no entries", async () => {
     const { lastFrame } = render(
       <App

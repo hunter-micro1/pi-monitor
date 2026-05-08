@@ -132,6 +132,15 @@ export function App(props: AppProps): ReactElement {
   // terminal's wallpaper / translucency show on the right.
   const termCols = stdout?.columns ?? 80;
   const contentWidth = Math.min(termCols, 100);
+  // Pin the App to the literal pane height so the flex spacer
+  // between the row list and the bottom details box claims every
+  // leftover row in the pane (not just leftover rows inside the
+  // App's natural height). Without this, on a tall monitor pane
+  // a short pane list leaves blank rows BELOW the details box
+  // instead of pushing it to the very bottom-left of the pane.
+  // Falls back to 24 (xterm classic) when ink-testing-library or
+  // a non-TTY stdout report no row count.
+  const termRows = stdout?.rows ?? 24;
   const [entries, setEntries] = useState<readonly AppEntry[]>([]);
   const [cursor, dispatch] = useReducer(cursorReducer, INITIAL_CURSOR);
   const [mode, setMode] = useState<AppMode>("list");
@@ -427,7 +436,7 @@ export function App(props: AppProps): ReactElement {
   const empty = entries.length === 0;
 
   return (
-    <Box flexDirection="column" width={contentWidth}>
+    <Box flexDirection="column" width={contentWidth} height={termRows}>
       <TitleBar counts={counts} />
       {banner !== null && <NotificationBanner notification={banner} />}
 
