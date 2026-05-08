@@ -20,6 +20,18 @@
  *   - Dot is suppressed entirely when there's no activity description
  *     (e.g. no_pi rows) so we don't render an orphan dot on a blank
  *     line.
+ *
+ * Working-row spinner:
+ *   - When `state === "working"`, the right-side activity tag is
+ *     prefixed with a Braille-spinner glyph (the same 10-frame set
+ *     pi itself uses in its `Loader` component). The App threads
+ *     in the current frame via `spinnerGlyph`; non-working rows
+ *     ignore it.
+ *   - On the cursor row the spinner glyph renders in ACCENT instead
+ *     of the pulse color, so a working AND selected row gets a
+ *     visible "this one is the focus" cue without disturbing the
+ *     verb's color (the verb keeps its pulse so the row still
+ *     visibly breathes).
  */
 
 import { Box, Text } from "ink";
@@ -43,9 +55,14 @@ export interface PaneRowProps {
   paneIndex: number;
   branch: string | null;
   selected?: boolean;
-  inActiveCard?: boolean;
   workingColor?: string | null;
   cursorBarColor?: string;
+  /**
+   * Current Braille-spinner frame for working rows. Threaded in
+   * by the App on its 80ms tick. Ignored when state is not
+   * `working`. Optional so unit tests can omit it.
+   */
+  spinnerGlyph?: string;
 }
 
 export function PaneRow({
@@ -54,9 +71,9 @@ export function PaneRow({
   paneIndex,
   branch,
   selected = false,
-  inActiveCard = false,
   workingColor = null,
   cursorBarColor = ACCENT,
+  spinnerGlyph,
 }: PaneRowProps): ReactElement {
   const main = fmtRowMain({
     paneTitle,
@@ -68,15 +85,14 @@ export function PaneRow({
   const tag: ActivityTag = activityTag(status, workingColor);
   const description = activityDescription(status);
 
-  // Brightness hierarchy: muted by default, full when the row is
-  // selected OR sits inside the focused card. WORKING rows ignore
-  // this and use their pulse color directly.
+  // Brightness hierarchy: muted by default, full only on the
+  // selected row. We deliberately do NOT brighten every row in the
+  // active section — the cursor bar (▎) is the single "you are
+  // here" cue, matching cmux's single-tab highlight rather than a
+  // section-wide block highlight. WORKING rows ignore this and use
+  // their pulse color directly.
   const titleColor =
-    main.nameColor !== null
-      ? main.nameColor
-      : selected || inActiveCard
-        ? FOREGROUND
-        : FOREGROUND_MUTED;
+    main.nameColor !== null ? main.nameColor : selected ? FOREGROUND : FOREGROUND_MUTED;
 
   const stateDotColor =
     workingColor && status.state === "working"
@@ -104,6 +120,11 @@ export function PaneRow({
           )}
         </Box>
         <Box marginLeft={2}>
+          {status.state === "working" &&
+            spinnerGlyph !== undefined &&
+            spinnerGlyph !== "" && (
+              <Text color={selected ? ACCENT : tag.color}>{`${spinnerGlyph} `}</Text>
+            )}
           <Text color={tag.color}>{tag.verb}</Text>
         </Box>
       </Box>

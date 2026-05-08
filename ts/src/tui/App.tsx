@@ -32,6 +32,7 @@ import { INITIAL_CURSOR, currentPos, cursorReducer } from "./cursor.js";
 import type { ListDir } from "./dirComplete.js";
 import { branchForCwd as defaultBranchForCwd } from "./git.js";
 import { lerpColor, pulseColor } from "./pulse.js";
+import { BRAILLE_FRAMES } from "./spinner.js";
 import type { TmuxBridge } from "./tmuxBridge.js";
 
 /** One displayable agent. Pane metadata + resolved status. */
@@ -179,6 +180,12 @@ export function App(props: AppProps): ReactElement {
   const lastCursorIndex = useRef(cursor.index);
   const cursorMoveAtRef = useRef<number>(performance.now() / 1000);
   const [cursorBarHex, setCursorBarHex] = useState<string>(ACCENT);
+
+  // Spinner frame index for the working-row Braille animation.
+  // Bumped on the same 80ms cadence as the pulse below; one tick
+  // = one frame, mirroring pi-tui's Loader timing exactly.
+  const [spinnerFrame, setSpinnerFrame] = useState<number>(0);
+
   if (lastCursorIndex.current !== cursor.index) {
     cursorMoveAtRef.current = performance.now() / 1000;
     lastCursorIndex.current = cursor.index;
@@ -233,6 +240,10 @@ export function App(props: AppProps): ReactElement {
       // interval was already running for the working pulse.
       const flash = Math.max(0, 1 - (now - cursorMoveAtRef.current) / 0.25);
       setCursorBarHex(lerpColor(ACCENT, "#FFFFFF", flash * 0.6));
+      // Bump the Braille spinner frame on the same tick. pulse
+      // uses 80ms by default which is exactly pi-tui's Loader
+      // cadence, so the two animations stay phase-locked.
+      setSpinnerFrame((f) => (f + 1) % BRAILLE_FRAMES.length);
     }, pulseIntervalMs);
     return () => clearInterval(id);
   }, [pulseT0, pulseIntervalMs]);
@@ -436,14 +447,12 @@ export function App(props: AppProps): ReactElement {
         {empty && <EmptyState />}
 
         {groups.map(({ session, items }, sectionIdx) => {
-          const activeCard = items.some((e) => e.paneId === selectedPaneId);
           const chip = pickSessionChip(items.map((e) => e.status));
           return (
             <SessionGroup
               key={session}
               session={session}
               chip={chip}
-              active={activeCard}
               first={sectionIdx === 0}
             >
               {items.map((entry) => (
@@ -454,9 +463,9 @@ export function App(props: AppProps): ReactElement {
                   paneIndex={entry.paneIndex}
                   branch={branchForCwd(entry.cwd)}
                   selected={entry.paneId === selectedPaneId}
-                  inActiveCard={activeCard}
                   workingColor={pulseHex}
                   cursorBarColor={cursorBarHex}
+                  spinnerGlyph={BRAILLE_FRAMES[spinnerFrame]}
                 />
               ))}
             </SessionGroup>

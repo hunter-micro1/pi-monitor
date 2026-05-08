@@ -16,7 +16,7 @@ import type { ReactElement, ReactNode } from "react";
 
 import { STATE_COLORS, fmtSessionHeader } from "../format/row.js";
 import type { AgentState } from "../state/types.js";
-import { ACCENT, FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
+import { FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
 
 export interface SessionGroupProps {
   /** Session name (header). */
@@ -27,8 +27,6 @@ export interface SessionGroupProps {
    * Mirrors `_session_chip` in the Python build.
    */
   chip?: { count: number; state: AgentState } | null;
-  /** True iff the cursor is on a row inside this section. */
-  active?: boolean;
   /** True for the topmost section (skips the leading divider). */
   first?: boolean;
   /** PaneRow children. */
@@ -59,7 +57,6 @@ export function pickSessionChip(
 export function SessionGroup({
   session,
   chip = null,
-  active = false,
   first = false,
   children,
 }: SessionGroupProps): ReactElement {
@@ -73,7 +70,7 @@ export function SessionGroup({
       <Box flexDirection="row" marginTop={first ? 0 : 1} marginBottom={1}>
         <Box width={2} />
         <Box flexGrow={1}>
-          <Text bold color={active ? ACCENT : FOREGROUND}>
+          <Text bold color={FOREGROUND}>
             {fmtSessionHeader(session)}
           </Text>
           {chip !== null && (
