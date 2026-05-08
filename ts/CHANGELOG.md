@@ -7,6 +7,32 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.17] — 2026-05-08
+
+Details-box gets the `Prompt` line back, and stops flickering on
+slow tmux pipelines.
+
+- **`Prompt` line restored.** Sits between `When` and `Tokens`,
+  truncated to 200 chars with U+2026. Same data source as
+  before (snapshot.lastUserPrompt). Pre-existing caveat:
+  during a tool call the resolver takes the heartbeat
+  fast-path and skips JSONL inference, so `Prompt` (and
+  `Tokens`) briefly hide — reappear when the agent goes idle.
+- **Bottom box no longer pulses.** Removed the `workingColor`
+  prop from `PaneDetails`; the box now uses static
+  `STATE_COLORS.working` for working rows. Threading the
+  pulseHex into the box was making the title text + activity
+  tag breathe in lock-step with the row list every 80ms,
+  which on slow tmux pipelines (e.g. WSL2) reads as flicker
+  on a control that's supposed to be a stable readout. The
+  pane list above keeps the breathing pulse — only the box
+  is now stable.
+- New regression-guard tests in `tests/tui/PaneDetails.test.tsx`:
+  Prompt rendering / hiding / truncation, and a `@ts-expect-error`
+  on `workingColor=` to lock in 'this prop must not exist' at the
+  type level so future refactors can't accidentally re-introduce
+  the pulse on the box.
+
 ## [0.4.16] — 2026-05-08
 
 New-pi prompt now renders as a hover popup at the bottom of the
