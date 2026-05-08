@@ -16,8 +16,7 @@ import type { ReactElement, ReactNode } from "react";
 
 import { STATE_COLORS, fmtSessionHeader } from "../format/row.js";
 import type { AgentState } from "../state/types.js";
-import { FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
-import { sessionHeaderColor } from "./sessionColors.js";
+import { ACCENT, FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
 
 export interface SessionGroupProps {
   /** Session name (header). */
@@ -67,14 +66,21 @@ export function SessionGroup({
 
       {/* Section header: bold name + chip. Tight 0-margin on the
           divider above and the rows below \u2014 the section reads as a
-          single visual block. */}
+          single visual block.
+
+          Header is outdented: it sits at the App's paddingX edge
+          (col 2) while the pane rows below sit one selection-bar
+          column further in (col 4). Gives a clear visual
+          hierarchy \u2014 'session label' is left of 'rows in this
+          session'. */}
       <Box flexDirection="row" marginTop={first ? 0 : 1} marginBottom={1}>
-        <Box width={2} />
         <Box flexGrow={1}>
-          {/* Per-session color so users can scan-by-color when
-              several sessions are open. Hash-of-name based, stable
-              across launches. See sessionColors.ts. */}
-          <Text bold color={sessionHeaderColor(session)}>
+          {/* Header text uses the brand ACCENT blue. Per-session
+              hash colors still apply to non-working pane TITLES
+              via the sessionColor prop on PaneRow (see App.tsx);
+              the header itself is unified to ACCENT for a clean,
+              scannable section label. */}
+          <Text bold color={ACCENT}>
             {fmtSessionHeader(session)}
           </Text>
           {chip !== null && (
