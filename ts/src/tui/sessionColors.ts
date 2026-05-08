@@ -39,7 +39,8 @@ export const SESSION_HEADER_PALETTE: readonly string[] = [
 /**
  * Stable color for a session header, derived from `name` via a djb2
  * hash. Empty / very short names still get a deterministic color
- * (the empty-name case lands on PALETTE[0]).
+ * (the empty-name case lands on PALETTE[5], because the djb2 seed
+ * is 5381 and 5381 % 8 = 5).
  */
 export function sessionHeaderColor(name: string): string {
   let hash = 5381; // djb2 seed.

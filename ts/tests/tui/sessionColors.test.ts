@@ -45,8 +45,7 @@ describe("sessionHeaderColor", () => {
     expect(colors.size).toBeGreaterThanOrEqual(3);
   });
 
-  it("empty name lands on a deterministic color (palette[0] from the seed)", () => {
-    // djb2 seed 5381 % 8 = 5, so empty-name -> PALETTE[5].
+  it("empty name lands on PALETTE[5] (djb2 seed 5381 % 8 = 5)", () => {
     // Pinned so refactoring the hash doesn't silently shift it.
     expect(sessionHeaderColor("")).toBe(SESSION_HEADER_PALETTE[5]);
   });
