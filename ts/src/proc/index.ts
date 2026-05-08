@@ -18,3 +18,4 @@ const impl = process.platform === "darwin" ? macos : linux;
 
 export const procStartTime = impl.procStartTime;
 export const findPiPidForPane = impl.findPiPidForPane;
+export const procCwd = impl.procCwd;

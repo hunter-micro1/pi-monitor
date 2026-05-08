@@ -104,6 +104,48 @@ export function _resetPsCacheForTests(): void {
 }
 
 /**
+ * Current working directory for `pid`. Shells out to
+ * `lsof -a -p <pid> -d cwd -Fn` and parses the `n`-prefixed cwd
+ * line. Returns `null` when lsof is unavailable, the pid is
+ * gone, or no cwd line was emitted.
+ *
+ * Used by the state resolver to find a pi process's actual cwd
+ * when an extension (e.g. auto-worktree) has re-exec'd it into
+ * a different directory than the tmux pane's `pane_current_path`.
+ *
+ * Each call shells out (no caching). Callers in the hot resolver
+ * loop are expected to invoke this once per pi pane per tick;
+ * with single-digit pi panes per tmux server it stays well under
+ * the 500ms tick budget.
+ */
+export function procCwd(pid: number): string | null {
+  let raw = "";
+  try {
+    raw = execFileSync("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C" },
+      // lsof should be sub-second; cap so a hung subprocess can't
+      // block the App.
+      timeout: 2_000,
+    });
+  } catch {
+    return null;
+  }
+  // -Fn output is one or more lines per file descriptor; the cwd
+  // line is the one whose first character is `n` followed by the
+  // path. e.g.
+  //   p1234
+  //   fcwd
+  //   n/home/user/project
+  for (const line of raw.split("\n")) {
+    if (line.length > 1 && line.charCodeAt(0) === 110 /* 'n' */) {
+      return line.slice(1);
+    }
+  }
+  return null;
+}
+
+/**
  * Process start time in unix seconds. Computed as
  * `now - etimes` from the cached `ps` snapshot.
  *

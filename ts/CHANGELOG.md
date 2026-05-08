@@ -7,6 +7,31 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.11] — 2026-05-08
+
+Bug-fix release. The state resolver now follows the pi descendant's
+actual cwd when claiming JSONL session files, fixing a long-standing
+data-flow gap that left every pi pane stuck at `unknown` whenever
+the `auto-worktree` extension re-execs pi inside an `agent/<base>-<ts>`
+worktree distinct from the tmux pane's shell cwd. With this fix the
+details-box content (Doing / Prompt / Reply / Tokens / Error) lights
+up again because the snapshots populate.
+
+- **`procCwd(pid)` in the proc shim.** Linux reads the
+  `/proc/<pid>/cwd` symlink; macOS shells out to
+  `lsof -a -p <pid> -d cwd -Fn`. Both return null when the pid is
+  gone, the lookup is unreadable / EACCES, or the platform tool
+  isn't on PATH.
+- **Resolver uses `procCwd(piPid)` for grouping + claim.** After
+  the existing `findPiPidForPane` walk, the resolver also captures
+  the pi descendant's actual cwd. That cwd — not the tmux pane's
+  `pane_current_path` — is used both for grouping pi panes and
+  for `claimSessionFile`'s session-dir lookup. Falls back to the
+  ref's tmux cwd when `procCwd` returns null (no pi descendant or
+  /proc unreadable). Display-side branch resolution
+  (`branchForCwd`) still uses the tmux cwd, so the rendered branch
+  name is unchanged.
+
 ## [0.4.10] — 2026-05-08
 
 Details-box content release. The bottom-of-sidebar box added in

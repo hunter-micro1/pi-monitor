@@ -20,7 +20,7 @@
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 
-const VERSION = "0.4.10";
+const VERSION = "0.4.11";
 
 async function main(argv: readonly string[]): Promise<number> {
   if (argv.includes("--help") || argv.includes("-h")) {

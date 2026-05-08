@@ -13,7 +13,7 @@
  */
 
 import { readHeartbeat } from "../heartbeat/reader.js";
-import { findPiPidForPane, procStartTime } from "../proc/index.js";
+import { findPiPidForPane, procCwd, procStartTime } from "../proc/index.js";
 import { claimSessionFile } from "./files.js";
 import { STARTING_GRACE_S, inferState } from "./infer.js";
 import { JsonlReader } from "./reader.js";
@@ -84,26 +84,40 @@ export class StateResolver {
   resolve(refs: PaneRef[], nowSeconds?: number): Map<string, PaneStatus> {
     const now = nowSeconds ?? Date.now() / 1000;
 
-    // Walk process trees once; cache (refId -> { piPid, startTime }).
+    // Walk process trees once; cache (refId -> piPid / start /
+    // effectiveCwd).
+    //
+    // effectiveCwd is the pi DESCENDANT's actual cwd, not the
+    // tmux pane_current_path. The auto-worktree extension re-execs
+    // pi inside an `agent/<base>-<ts>` worktree distinct from the
+    // pane's shell cwd; pi writes its session JSONL keyed off ITS
+    // cwd, so JSONL discovery has to use the same. Falls back to
+    // ref.cwd when /proc is unreadable, the pi descendant has
+    // gone away, or the platform-specific procCwd lookup failed.
     const pids = new Map<string, number | null>();
     const starts = new Map<string, number | null>();
+    const effectiveCwds = new Map<string, string>();
     for (const ref of refs) {
       if (!ref.isPi) continue;
       const piPid = findPiPidForPane(ref.panePid);
       pids.set(ref.paneId, piPid);
       starts.set(ref.paneId, piPid !== null ? procStartTime(piPid) : null);
+      const piCwd = piPid !== null ? procCwd(piPid) : null;
+      effectiveCwds.set(ref.paneId, piCwd ?? ref.cwd);
     }
 
-    // Group pi panes by cwd. Within each group sort by start time
-    // ASC (null first; those panes have no lifetime info and use
-    // the plain mtime-DESC fallback, which is order-independent).
+    // Group pi panes by EFFECTIVE cwd (pi's actual cwd; see above).
+    // Within each group sort by start time ASC (null first; those
+    // panes have no lifetime info and use the plain mtime-DESC
+    // fallback, which is order-independent).
     const groups = new Map<string, PaneRef[]>();
     for (const ref of refs) {
       if (!ref.isPi) continue;
-      let list = groups.get(ref.cwd);
+      const key = effectiveCwds.get(ref.paneId) ?? ref.cwd;
+      let list = groups.get(key);
       if (list === undefined) {
         list = [];
-        groups.set(ref.cwd, list);
+        groups.set(key, list);
       }
       list.push(ref);
     }
@@ -154,7 +168,7 @@ export class StateResolver {
           next !== undefined ? (starts.get(next.paneId) ?? null) : null;
 
         const sessionFile = claimSessionFile({
-          cwd: ref.cwd,
+          cwd: effectiveCwds.get(ref.paneId) ?? ref.cwd,
           piStart,
           nextPiStart,
           claimed,

@@ -9,16 +9,18 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { findPiPidForPane, procStartTime } from "../../src/proc/linux.js";
+import { findPiPidForPane, procCwd, procStartTime } from "../../src/proc/linux.js";
 
 vi.mock("node:fs", () => ({
   readFileSync: vi.fn(),
+  readlinkSync: vi.fn(),
   statSync: vi.fn(),
 }));
 
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, readlinkSync, statSync } from "node:fs";
 
 const readFileSyncMock = vi.mocked(readFileSync);
+const readlinkSyncMock = vi.mocked(readlinkSync);
 const statSyncMock = vi.mocked(statSync);
 
 // Helper to set up a /proc fake. `comms` and `children` are keyed
@@ -90,6 +92,38 @@ describe("linux.procStartTime", () => {
   it("returns null when /proc/<pid> doesn't exist", () => {
     withProcLayout({ ctimes: {} });
     expect(procStartTime(1234)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// procCwd
+// ---------------------------------------------------------------------------
+
+describe("linux.procCwd", () => {
+  it("reads the /proc/<pid>/cwd symlink target", () => {
+    readlinkSyncMock.mockImplementation((p) => {
+      if (String(p) === "/proc/1234/cwd") return "/home/x/Projects/foo";
+      throw new Error("unexpected readlink");
+    });
+    expect(procCwd(1234)).toBe("/home/x/Projects/foo");
+  });
+
+  it("returns null when the pid is gone", () => {
+    readlinkSyncMock.mockImplementation(() => {
+      const err = new Error("ENOENT") as NodeJS.ErrnoException;
+      err.code = "ENOENT";
+      throw err;
+    });
+    expect(procCwd(1234)).toBeNull();
+  });
+
+  it("returns null when the symlink is unreadable (EACCES)", () => {
+    readlinkSyncMock.mockImplementation(() => {
+      const err = new Error("EACCES") as NodeJS.ErrnoException;
+      err.code = "EACCES";
+      throw err;
+    });
+    expect(procCwd(1234)).toBeNull();
   });
 });
 
