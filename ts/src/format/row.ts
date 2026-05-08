@@ -242,7 +242,7 @@ export interface RowMain {
  * pi hasn't named the pane yet. WORKING rows tint the name with the
  * pulse color so the title visibly breathes; other states leave
  * `nameColor` null and rely on CSS-level brightness (selected vs
- * inactive vs active-group) at render time.
+ * inactive) at render time.
  */
 export function fmtRowMain(args: {
   paneTitle: string | null;

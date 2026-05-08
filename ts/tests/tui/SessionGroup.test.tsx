@@ -67,16 +67,6 @@ describe("SessionGroup render", () => {
     const out = lastFrame() ?? "";
     expect(out).not.toMatch(/\d+\s+(idle|error|waiting|retrying|working)/);
   });
-
-  it("works in active mode without throwing", () => {
-    expect(() =>
-      render(
-        <SessionGroup session="x" active>
-          <Text>row</Text>
-        </SessionGroup>,
-      ),
-    ).not.toThrow();
-  });
 });
 
 describe("pickSessionChip", () => {

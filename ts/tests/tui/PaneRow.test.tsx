@@ -147,4 +147,61 @@ describe("PaneRow", () => {
     expect(out).not.toContain("running");
     expect(out).not.toContain("idle");
   });
+
+  it("prefixes the right-side tag with the spinner glyph on working rows", () => {
+    const { lastFrame } = render(
+      <PaneRow
+        status={status({ state: "working", phase: "agent_running" })}
+        paneTitle="agent"
+        paneIndex={0}
+        branch="main"
+        spinnerGlyph={"\u280b"}
+      />,
+    );
+    const out = lastFrame() ?? "";
+    expect(out).toContain("\u280b");
+    expect(out).toContain("thinking");
+  });
+
+  it("omits the spinner glyph on non-working rows even when one is supplied", () => {
+    const { lastFrame } = render(
+      <PaneRow
+        status={status({ state: "idle", idleSeconds: 30 })}
+        paneTitle="agent"
+        paneIndex={0}
+        branch="main"
+        spinnerGlyph={"\u280b"}
+      />,
+    );
+    expect(lastFrame() ?? "").not.toContain("\u280b");
+  });
+
+  it("omits the spinner when no glyph is threaded in (working row falls back to verb only)", () => {
+    const { lastFrame } = render(
+      <PaneRow
+        status={status({ state: "working", phase: "agent_running" })}
+        paneTitle="agent"
+        paneIndex={0}
+        branch="main"
+      />,
+    );
+    const out = lastFrame() ?? "";
+    expect(out).toContain("thinking");
+    // None of the 10 Braille frames should appear when the App
+    // hasn't threaded a glyph in (e.g. before the first tick).
+    for (const cp of [
+      "\u280b",
+      "\u2819",
+      "\u2839",
+      "\u2838",
+      "\u283c",
+      "\u2834",
+      "\u2826",
+      "\u2827",
+      "\u2807",
+      "\u280f",
+    ]) {
+      expect(out).not.toContain(cp);
+    }
+  });
 });
