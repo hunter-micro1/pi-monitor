@@ -83,6 +83,9 @@ export function scanLines(blob: string, mtime: number): JsonlSnapshot {
   let lastStopReason: string | null = null;
   let lastError: string | null = null;
   let lastAssistantPreview: string | null = null;
+  let lastUserPrompt: string | null = null;
+  let cumulativeTokens = 0;
+  let cumulativeCostUsd = 0;
   let openToolCallIds = new Set<string>();
 
   for (const line of blob.split("\n")) {
@@ -109,6 +112,24 @@ export function scanLines(blob: string, mtime: number): JsonlSnapshot {
       const preview = firstTextPreview(content);
       if (preview !== null) lastAssistantPreview = preview;
 
+      // Usage / cost roll-up. Defensive: pi sometimes emits
+      // assistant turns without a usage block (e.g. a reconstructed
+      // resume), so missing/malformed fields fall through as zero.
+      const usage = msg.usage as Record<string, unknown> | undefined;
+      if (usage && typeof usage === "object") {
+        const total = usage.totalTokens;
+        if (typeof total === "number" && Number.isFinite(total)) {
+          cumulativeTokens += total;
+        }
+        const cost = usage.cost as Record<string, unknown> | undefined;
+        if (cost && typeof cost === "object") {
+          const ct = cost.total;
+          if (typeof ct === "number" && Number.isFinite(ct)) {
+            cumulativeCostUsd += ct;
+          }
+        }
+      }
+
       const toolIds = new Set<string>();
       if (Array.isArray(content)) {
         for (const item of content as ContentItem[]) {
@@ -129,6 +150,8 @@ export function scanLines(blob: string, mtime: number): JsonlSnapshot {
       if (typeof tcid === "string") openToolCallIds.delete(tcid);
     } else if (role === "user") {
       lastRole = "user";
+      const prompt = firstTextPreview(msg.content ?? []);
+      if (prompt !== null) lastUserPrompt = prompt;
       openToolCallIds.clear();
     } else if (role === "bashExecution" || role === "custom") {
       // Activity events; track lastRole but don't change tool / stop
@@ -144,5 +167,8 @@ export function scanLines(blob: string, mtime: number): JsonlSnapshot {
     lastError,
     pendingToolCalls: openToolCallIds.size,
     lastAssistantPreview,
+    lastUserPrompt,
+    cumulativeTokens,
+    cumulativeCostUsd,
   };
 }

@@ -87,6 +87,9 @@ export class JsonlReader {
         lastError: null,
         pendingToolCalls: 0,
         lastAssistantPreview: null,
+        lastUserPrompt: null,
+        cumulativeTokens: 0,
+        cumulativeCostUsd: 0,
       };
     }
     closeSync(fd);
@@ -103,6 +106,9 @@ export class JsonlReader {
           lastError: null,
           pendingToolCalls: 0,
           lastAssistantPreview: null,
+          lastUserPrompt: null,
+          cumulativeTokens: 0,
+          cumulativeCostUsd: 0,
         };
       }
       blob = blob.slice(nl + 1);

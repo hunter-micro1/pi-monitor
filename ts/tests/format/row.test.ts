@@ -21,10 +21,12 @@ import {
   STATE_GLYPHS,
   activityDescription,
   activityTag,
+  fmtCostUsd,
   fmtIdle,
   fmtRowMain,
   fmtSessionHeader,
   fmtStatusWidget,
+  fmtTokens,
   truncate,
   workingVerb,
 } from "../../src/format/row.js";
@@ -42,6 +44,9 @@ function snapshot(fields: Partial<JsonlSnapshot> = {}): JsonlSnapshot {
     lastError: null,
     pendingToolCalls: 0,
     lastAssistantPreview: null,
+    lastUserPrompt: null,
+    cumulativeTokens: 0,
+    cumulativeCostUsd: 0,
     ...fields,
   };
 }
@@ -101,6 +106,61 @@ describe("fmtIdle", () => {
 
   it("formats hours", () => {
     expect(fmtIdle(3700)).toBe("1h");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fmtTokens / fmtCostUsd: cumulative-usage display helpers
+// ---------------------------------------------------------------------------
+
+describe("fmtTokens", () => {
+  it("returns 0 for non-positive / non-finite input", () => {
+    expect(fmtTokens(0)).toBe("0");
+    expect(fmtTokens(-5)).toBe("0");
+    expect(fmtTokens(Number.NaN)).toBe("0");
+    expect(fmtTokens(Number.POSITIVE_INFINITY)).toBe("0");
+  });
+
+  it("prints raw integer under 1k", () => {
+    expect(fmtTokens(1)).toBe("1");
+    expect(fmtTokens(137)).toBe("137");
+    expect(fmtTokens(999)).toBe("999");
+  });
+
+  it("prints `<x.x>K` between 1k and 1M", () => {
+    expect(fmtTokens(1000)).toBe("1.0K");
+    expect(fmtTokens(28741)).toBe("28.7K");
+    expect(fmtTokens(999_500)).toBe("999.5K");
+  });
+
+  it("prints `<x.x>M` at and above 1M", () => {
+    expect(fmtTokens(1_000_000)).toBe("1.0M");
+    expect(fmtTokens(1_300_000)).toBe("1.3M");
+  });
+});
+
+describe("fmtCostUsd", () => {
+  it("returns $0 for zero / negative / non-finite", () => {
+    expect(fmtCostUsd(0)).toBe("$0");
+    expect(fmtCostUsd(-1)).toBe("$0");
+    expect(fmtCostUsd(Number.NaN)).toBe("$0");
+  });
+
+  it("prints `<\u00a21` for sub-cent costs", () => {
+    expect(fmtCostUsd(0.0001)).toBe("<\u00a21");
+    expect(fmtCostUsd(0.009)).toBe("<\u00a21");
+  });
+
+  it("prints `$0.NN` between 1\u00a2 and $1", () => {
+    expect(fmtCostUsd(0.01)).toBe("$0.01");
+    expect(fmtCostUsd(0.06)).toBe("$0.06");
+    expect(fmtCostUsd(0.99)).toBe("$0.99");
+  });
+
+  it("prints `$N.NN` for $1 and above", () => {
+    expect(fmtCostUsd(1.0)).toBe("$1.00");
+    expect(fmtCostUsd(1.234)).toBe("$1.23");
+    expect(fmtCostUsd(12.5)).toBe("$12.50");
   });
 });
 

@@ -77,6 +77,25 @@ export interface JsonlSnapshot {
    * yet.
    */
   lastAssistantPreview: string | null;
+  /**
+   * First text chunk of the latest USER message, lstripped and
+   * capped at PREVIEW_MAX_CHARS at parse time. Same shape and
+   * truncation as `lastAssistantPreview`. `null` when the trailing
+   * user turn has no text content or no user has spoken yet.
+   */
+  lastUserPrompt: string | null;
+  /**
+   * Sum of `usage.totalTokens` across every assistant message in
+   * the JSONL scanned so far. 0 when no assistant has spoken yet
+   * or the assistant messages don't carry usage metadata.
+   */
+  cumulativeTokens: number;
+  /**
+   * Sum of `usage.cost.total` (USD) across every assistant
+   * message. 0 when no assistant has spoken yet or the messages
+   * don't carry cost metadata.
+   */
+  cumulativeCostUsd: number;
 }
 
 /**
