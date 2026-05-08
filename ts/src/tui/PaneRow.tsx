@@ -9,8 +9,20 @@
  *   - The leftmost column reserves 2 cells. When a row is selected
  *     the cursor bar `\u258e` (a thin half-block) renders there in the
  *     `cursorBarColor` (the App lerps it brightward on cursor moves).
- *   - The selected row's title also brightens to FOREGROUND so the
- *     row reads as the active one beyond just the bar marker.
+ *   - The bar marker is the SOLE cursor cue. Title color does not
+ *     change between selected and non-selected rows: every row in
+ *     a section already gets that section's `sessionColor` (see
+ *     below), and the bar gives an unambiguous "you are here".
+ *
+ * Per-session title color:
+ *   - All non-working rows in a section share that section's
+ *     hash-of-name color (`sessionColor` prop, fed by App from
+ *     `sessionHeaderColor(session)`). Lets users scan-by-color
+ *     across sections without competing with state semantics.
+ *   - Working rows ignore `sessionColor` and use their pulse color
+ *     instead, so the active row's title visibly breathes.
+ *   - Falls back to `FOREGROUND_MUTED` when no `sessionColor` is
+ *     threaded in (e.g. unit tests that don't supply one).
  *
  * Activity-line state dot:
  *   - cmux uses small icons before each activity verb. We use a
@@ -44,7 +56,7 @@ import {
   fmtRowMain,
 } from "../format/row.js";
 import type { PaneStatus } from "../state/types.js";
-import { ACCENT, FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
+import { ACCENT, FOREGROUND_MUTED } from "./colors.js";
 
 /** Column reserved for the selection bar (1 cell + 1 space). */
 const SELECTION_COL = 2;
@@ -63,6 +75,15 @@ export interface PaneRowProps {
    * `working`. Optional so unit tests can omit it.
    */
   spinnerGlyph?: string;
+  /**
+   * Color the App threads in for this section's hash-of-name
+   * accent. Applied to non-working pane titles so each section
+   * reads as a colored block. Working titles ignore it (they use
+   * the pulse color instead). Optional so unit tests that don't
+   * care about color cohesion can omit it; PaneRow then falls
+   * back to the default muted color.
+   */
+  sessionColor?: string;
 }
 
 export function PaneRow({
@@ -74,6 +95,7 @@ export function PaneRow({
   workingColor = null,
   cursorBarColor = ACCENT,
   spinnerGlyph,
+  sessionColor,
 }: PaneRowProps): ReactElement {
   const main = fmtRowMain({
     paneTitle,
@@ -85,14 +107,17 @@ export function PaneRow({
   const tag: ActivityTag = activityTag(status, workingColor);
   const description = activityDescription(status);
 
-  // Brightness hierarchy: muted by default, full only on the
-  // selected row. We deliberately do NOT brighten every row in the
-  // active section — the cursor bar (▎) is the single "you are
-  // here" cue, matching cmux's single-tab highlight rather than a
-  // section-wide block highlight. WORKING rows ignore this and use
-  // their pulse color directly.
+  // Title color rule:
+  //   - Working rows: pulse color (main.nameColor is set when
+  //     state is working; the title visibly breathes).
+  //   - Other rows: sessionColor when the App threaded it in, so
+  //     each section reads as a colored block. Falls back to
+  //     FOREGROUND_MUTED when no sessionColor is supplied.
+  // The cursor cue is the leftmost `▎` bar marker; the title
+  // color deliberately does NOT change between selected and non-
+  // selected rows so the section-color grouping stays clean.
   const titleColor =
-    main.nameColor !== null ? main.nameColor : selected ? FOREGROUND : FOREGROUND_MUTED;
+    main.nameColor !== null ? main.nameColor : (sessionColor ?? FOREGROUND_MUTED);
 
   const stateDotColor =
     workingColor && status.state === "working"

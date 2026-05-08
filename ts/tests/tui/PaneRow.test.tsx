@@ -207,4 +207,74 @@ describe("PaneRow", () => {
       expect(out).not.toContain(cp);
     }
   });
+
+  // ---------------------------------------------------------------
+  // sessionColor: per-section title color cohesion
+  //
+  // ink-testing-library strips ANSI color codes from its rendered
+  // frames, so we can't directly assert on the color escape in
+  // the output. These tests pin the smoke-level behavior:
+  // component accepts the prop, renders the title text without
+  // crashing on any combination of state + selected + colors.
+  // The actual color application is type-checked + verified
+  // visually after publish.
+  // ---------------------------------------------------------------
+
+  it("renders the title cleanly when sessionColor is supplied (idle row)", () => {
+    const { lastFrame } = render(
+      <PaneRow
+        status={status({ state: "idle" })}
+        paneTitle="POWERBI"
+        paneIndex={0}
+        branch="main"
+        sessionColor="#BB9AF7"
+      />,
+    );
+    const out = lastFrame() ?? "";
+    expect(out).toContain("POWERBI");
+    expect(out).toContain("main");
+  });
+
+  it("renders working rows cleanly when both sessionColor and workingColor are supplied", () => {
+    const { lastFrame } = render(
+      <PaneRow
+        status={status({ state: "working", phase: "agent_running" })}
+        paneTitle="agent"
+        paneIndex={0}
+        branch="main"
+        workingColor="#9ECE6A"
+        sessionColor="#BB9AF7"
+      />,
+    );
+    const out = lastFrame() ?? "";
+    expect(out).toContain("agent");
+    expect(out).toContain("thinking");
+  });
+
+  it("accepts sessionColor on both selected and non-selected rows without throwing", () => {
+    expect(() =>
+      render(
+        <PaneRow
+          status={status()}
+          paneTitle="a"
+          paneIndex={0}
+          branch={null}
+          selected={false}
+          sessionColor="#2AC3DE"
+        />,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      render(
+        <PaneRow
+          status={status()}
+          paneTitle="b"
+          paneIndex={0}
+          branch={null}
+          selected={true}
+          sessionColor="#2AC3DE"
+        />,
+      ),
+    ).not.toThrow();
+  });
 });
