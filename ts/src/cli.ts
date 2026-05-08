@@ -102,7 +102,8 @@ async function runTui(): Promise<number> {
     { createElement },
     { App },
     { makeTmuxBridge },
-    { listPanes, listPiPanes, isViewerSession },
+    { listPanes, listPiPanes },
+    { selectAgentPanes },
     { StateResolver },
     { createPiSession, createPiWindow, setStatusWidget, clearStatusWidget },
   ] = await Promise.all([
@@ -111,6 +112,7 @@ async function runTui(): Promise<number> {
     import("./tui/App.js"),
     import("./tui/tmuxBridge.js"),
     import("./tmux/panes.js"),
+    import("./tmux/agentPanes.js"),
     import("./state/resolver.js"),
     import("./tmux/monitor.js"),
   ]);
