@@ -227,4 +227,102 @@ describe("PaneDetails", () => {
     const firstTitleLine = out.split("\n").find((l) => l.includes("agent")) ?? "";
     expect(firstTitleLine).not.toContain("\u00b7");
   });
+
+  it("renders a Worktree line with $HOME collapsed to ~", () => {
+    const { lastFrame } = render(
+      <PaneDetails
+        status={status()}
+        paneTitle="agent"
+        paneIndex={0}
+        branch="main"
+        cwd="/home/x/Projects/foo"
+        home="/home/x"
+      />,
+    );
+    const out = lastFrame() ?? "";
+    expect(out).toContain("Worktree");
+    expect(out).toContain("~/Projects/foo");
+  });
+
+  it("hides the Worktree line when cwd is null or empty", () => {
+    const noCwd = render(
+      <PaneDetails
+        status={status()}
+        paneTitle="agent"
+        paneIndex={0}
+        branch="main"
+        cwd={null}
+        home="/home/x"
+      />,
+    );
+    expect(noCwd.lastFrame() ?? "").not.toContain("Worktree");
+
+    const emptyCwd = render(
+      <PaneDetails
+        status={status()}
+        paneTitle="agent"
+        paneIndex={0}
+        branch="main"
+        cwd=""
+        home="/home/x"
+      />,
+    );
+    expect(emptyCwd.lastFrame() ?? "").not.toContain("Worktree");
+  });
+
+  it("renders a When line with Started + idle when both are available", () => {
+    // Session start parsed from filename, fixed nowSeconds so the
+    // age is deterministic. 2026-05-08T18:32:09.372Z + 1h 12m =
+    // 2026-05-08T19:44:09.372Z.
+    const start = Date.UTC(2026, 4, 8, 18, 32, 9, 372) / 1000;
+    const now = start + 3600 + 12 * 60; // +1h 12m
+    const { lastFrame } = render(
+      <PaneDetails
+        status={status({
+          state: "idle",
+          idleSeconds: 4,
+          sessionFile:
+            "/x/2026-05-08T18-32-09-372Z_019e08dc-819c-73be-8b57-37b9416be06b.jsonl",
+        })}
+        paneTitle="agent"
+        paneIndex={0}
+        branch="main"
+        nowSeconds={now}
+      />,
+    );
+    const out = lastFrame() ?? "";
+    expect(out).toContain("When");
+    expect(out).toContain("Started 1h 12m ago");
+    expect(out).toContain("idle 4s");
+  });
+
+  it("shows only `idle ...` on the When line when sessionFile is null", () => {
+    const { lastFrame } = render(
+      <PaneDetails
+        status={status({ state: "idle", idleSeconds: 90, sessionFile: null })}
+        paneTitle="agent"
+        paneIndex={0}
+        branch="main"
+        nowSeconds={1_000_000}
+      />,
+    );
+    const out = lastFrame() ?? "";
+    expect(out).toContain("When");
+    expect(out).toContain("idle 1m 30s");
+    expect(out).not.toContain("Started");
+  });
+
+  it("hides the When line entirely when nothing is computable", () => {
+    // No sessionFile and idleSeconds < 1 — nothing to display.
+    const { lastFrame } = render(
+      <PaneDetails
+        status={status({ state: "idle", idleSeconds: 0, sessionFile: null })}
+        paneTitle="agent"
+        paneIndex={0}
+        branch="main"
+        nowSeconds={1_000_000}
+      />,
+    );
+    expect(lastFrame() ?? "").not.toContain("When");
+  });
 });
