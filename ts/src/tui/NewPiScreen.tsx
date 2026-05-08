@@ -2,10 +2,15 @@
  * Prompt for a directory to launch a new pi agent in. Returns
  * `{ mode, cwd }` on Enter via onSubmit; null via onCancel on Esc.
  *
- * Mirrors `NewPiScreen` in `tui.py`. Uses `ink-text-input` for
- * editable text (cursor positioning, backspace, etc.) and
- * `useInput` to intercept Tab + Enter + Esc before the input
- * sees them.
+ * Renders as a self-contained bordered box. The App composes it
+ * into the main layout as a bottom popup (replacing the details
+ * box while open) so the pane list stays visible behind it; the
+ * component itself does NOT center / fullscreen — size and
+ * placement are the caller's responsibility.
+ *
+ * Uses `ink-text-input` for editable text (cursor positioning,
+ * backspace, etc.) and `useInput` to intercept Tab + Enter + Esc
+ * before the input sees them.
  */
 
 import { Box, Text, useInput } from "ink";
@@ -39,10 +44,17 @@ export interface NewPiScreenProps {
   readonly onCancel: () => void;
   /** Optional listDir override (tests). */
   readonly listDir?: ListDir;
+  /**
+   * Outer width of the bordered popup. Defaults to undefined,
+   * which lets Yoga size it to the content. The App passes
+   * `contentWidth - 4` so the popup fits inside its paddingX=2
+   * sidebar without overflowing on narrow panes.
+   */
+  readonly width?: number;
 }
 
 export function NewPiScreen(props: NewPiScreenProps): ReactElement {
-  const { mode, defaultCwd, onSubmit, onCancel, listDir } = props;
+  const { mode, defaultCwd, onSubmit, onCancel, listDir, width } = props;
 
   const [value, setValue] = useState(defaultCwd);
   const [matches, setMatches] = useState<readonly string[]>([]);
@@ -86,43 +98,36 @@ export function NewPiScreen(props: NewPiScreenProps): ReactElement {
   return (
     <Box
       flexDirection="column"
-      alignItems="center"
-      justifyContent="center"
-      paddingY={2}
+      borderStyle="round"
+      borderColor={ACCENT}
+      paddingX={2}
+      paddingY={1}
+      width={width}
     >
-      <Box
-        flexDirection="column"
-        borderStyle="round"
-        borderColor={ACCENT}
-        paddingX={2}
-        paddingY={1}
-        width={72}
-      >
-        <Text bold color={ACCENT}>
-          {title}
-        </Text>
+      <Text bold color={ACCENT}>
+        {title}
+      </Text>
 
-        <Box marginTop={1}>
-          <Text color={FOREGROUND_MUTED}>{"\u203a "}</Text>
-          <TextInput
-            value={value}
-            onChange={setValue}
-            placeholder="directory to start pi in"
-            // showCursor is true by default; explicit for clarity.
-            showCursor
-          />
-        </Box>
+      <Box marginTop={1}>
+        <Text color={FOREGROUND_MUTED}>{"\u203a "}</Text>
+        <TextInput
+          value={value}
+          onChange={setValue}
+          placeholder="directory to start pi in"
+          // showCursor is true by default; explicit for clarity.
+          showCursor
+        />
+      </Box>
 
-        <MatchesLine matches={matches} />
+      <MatchesLine matches={matches} />
 
-        <Box marginTop={1}>
-          <Text color={ACCENT}>Tab</Text>
-          <Text color={FOREGROUND_MUTED}>{" complete  \u00b7  "}</Text>
-          <Text color={ACCENT}>Enter</Text>
-          <Text color={FOREGROUND_MUTED}>{" launch  \u00b7  "}</Text>
-          <Text color={ACCENT}>Esc</Text>
-          <Text color={FOREGROUND_MUTED}>{" cancel"}</Text>
-        </Box>
+      <Box marginTop={1}>
+        <Text color={ACCENT}>Tab</Text>
+        <Text color={FOREGROUND_MUTED}>{" complete  \u00b7  "}</Text>
+        <Text color={ACCENT}>Enter</Text>
+        <Text color={FOREGROUND_MUTED}>{" launch  \u00b7  "}</Text>
+        <Text color={ACCENT}>Esc</Text>
+        <Text color={FOREGROUND_MUTED}>{" cancel"}</Text>
       </Box>
     </Box>
   );

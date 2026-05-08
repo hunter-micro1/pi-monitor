@@ -401,31 +401,29 @@ export function App(props: AppProps): ReactElement {
   if (mode === "help") {
     return <HelpScreen onDismiss={() => setMode("list")} />;
   }
-  if (mode === "newSession" || mode === "newWindow") {
-    const newPiMode = mode === "newSession" ? "session" : "window";
-    const cwdHint =
-      mode === "newWindow" && windowTarget !== null ? windowTarget.cwd : defaultCwd;
-    return (
-      <NewPiScreen
-        mode={newPiMode}
-        defaultCwd={cwdHint}
-        onCancel={() => {
-          setMode("list");
-          setWindowTarget(null);
-        }}
-        onSubmit={(result) => {
-          setMode("list");
-          const enriched: NewPiResult =
-            mode === "newWindow" && windowTarget !== null
-              ? { ...result, targetSession: windowTarget.session }
-              : result;
-          setWindowTarget(null);
-          onLaunchPi?.(enriched);
-        }}
-        listDir={listDir}
-      />
-    );
-  }
+  // newSession / newWindow no longer return early. Instead the
+  // App tree stays mounted and renders the NewPiScreen as a
+  // bottom popup (in place of the details box) so the pane list
+  // and titlebar remain visible behind it. See the
+  // popupOpen-gated branch in the bottom slot below.
+  const popupOpen = mode === "newSession" || mode === "newWindow";
+  const popupNewPiMode: "session" | "window" =
+    mode === "newSession" ? "session" : "window";
+  const popupCwdHint =
+    mode === "newWindow" && windowTarget !== null ? windowTarget.cwd : defaultCwd;
+  const closePopup = (): void => {
+    setMode("list");
+    setWindowTarget(null);
+  };
+  const submitPopup = (result: NewPiResult): void => {
+    const enriched: NewPiResult =
+      mode === "newWindow" && windowTarget !== null
+        ? { ...result, targetSession: windowTarget.session }
+        : result;
+    setMode("list");
+    setWindowTarget(null);
+    onLaunchPi?.(enriched);
+  };
 
   const groups = groupBySession(entries);
   const cursorPos = currentPos(cursor);
@@ -499,26 +497,43 @@ export function App(props: AppProps): ReactElement {
             stays constant so users can train their eye on it. */}
         <Box flexGrow={1} />
 
-        {/* Bottom-of-sidebar details box for the cursor row. The
-            component itself returns null when status is null, so
-            non-pane cursor positions (the "+ new pi session" row,
-            empty list) collapse to nothing automatically. */}
-        {(() => {
-          const cursorEntry =
-            selectedPaneId !== null
-              ? (entries.find((e) => e.paneId === selectedPaneId) ?? null)
-              : null;
-          return (
-            <PaneDetails
-              status={cursorEntry?.status ?? null}
-              paneTitle={cursorEntry?.paneTitle ?? null}
-              paneIndex={cursorEntry?.paneIndex ?? 0}
-              branch={cursorEntry !== null ? branchForCwd(cursorEntry.cwd) : null}
-              cwd={cursorEntry?.cwd ?? null}
-              workingColor={pulseHex}
+        {/* Bottom slot. The popup takes over while open so the
+            user can type a path without losing the pane list
+            above; otherwise we render the details box for the
+            cursor row. PaneDetails returns null when status is
+            null, so non-pane cursor positions collapse cleanly. */}
+        {popupOpen ? (
+          <Box marginTop={1}>
+            <NewPiScreen
+              mode={popupNewPiMode}
+              defaultCwd={popupCwdHint}
+              onCancel={closePopup}
+              onSubmit={submitPopup}
+              listDir={listDir}
+              // Fit inside the row list's paddingX={2} on each
+              // side so the popup never exceeds the sidebar
+              // width on narrow panes.
+              width={Math.max(20, contentWidth - 4)}
             />
-          );
-        })()}
+          </Box>
+        ) : (
+          (() => {
+            const cursorEntry =
+              selectedPaneId !== null
+                ? (entries.find((e) => e.paneId === selectedPaneId) ?? null)
+                : null;
+            return (
+              <PaneDetails
+                status={cursorEntry?.status ?? null}
+                paneTitle={cursorEntry?.paneTitle ?? null}
+                paneIndex={cursorEntry?.paneIndex ?? 0}
+                branch={cursorEntry !== null ? branchForCwd(cursorEntry.cwd) : null}
+                cwd={cursorEntry?.cwd ?? null}
+                workingColor={pulseHex}
+              />
+            );
+          })()
+        )}
       </Box>
 
       <Footer />
