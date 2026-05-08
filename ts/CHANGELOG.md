@@ -7,6 +7,32 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.14] — 2026-05-08
+
+Details-box upgrades for the bottom-of-sidebar pane summary.
+
+- **App pinned to absolute pane height.** The outer Ink Box now
+  sets `height={stdout.rows}` (default 24 in tests / non-TTY).
+  Before, the flex spacer between the row list and the details
+  box only claimed leftover space inside the App's *natural*
+  height; on a tall monitor pane with a short pane list, the
+  details box sat in the middle with empty rows below. Now it
+  pins to the literal bottom of the pane.
+- **`Worktree` line.** Shows the pi descendant's actual cwd —
+  typically the auto-worktree dir like
+  `~/Projects/foo-hunter-poc-20260508-143208` — with the user's
+  `$HOME` collapsed to `~`. Disambiguates the case where two
+  panes share a branch name across different worktree dirs.
+- **`When` line.** Renders `Started Xh Ym ago · idle Zs` from the
+  session JSONL filename (pi names every file
+  `YYYY-MM-DDTHH-MM-SS-mmmZ_<uuid>.jsonl`) plus the resolver's
+  existing `idleSeconds`. Shows whichever halves are computable
+  — idle alone when the filename can't be parsed, Started alone
+  when idle is < 1s, hidden entirely when neither is available.
+- New `fmtDuration`, `fmtCwdDisplay`, `parseSessionStartFromFile`
+  helpers in `format/row.ts` cover the new formatting; details-box
+  label column widened from 8 to 10 chars to accommodate `Worktree`.
+
 ## [0.4.13] — 2026-05-08
 
 Two bug fixes for symptoms that showed up together once the
