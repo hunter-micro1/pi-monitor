@@ -7,6 +7,36 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.9] — 2026-05-08
+
+Three small sidebar improvements: a duplicate-tab data-correctness
+fix, per-session header colors so users can scan-by-color, and a
+bottom-of-sidebar details box that expands the cursor row.
+
+- **Drop the duplicate `pi-monitor-view-*` SessionGroup.** tmux's
+  session-grouping makes the linked viewer (`pi-monitor-view-apps`
+  etc.) report the same pi panes a second time under the
+  viewer-session name. The sidebar previously rendered each pi pane
+  in two SessionGroups: once under its real session, once under the
+  viewer (visually a duplicate "tab"). Filtered out at the pane
+  source so each pi pane shows up exactly once in its real session.
+- **Per-session header colors.** Each tmux session in the sidebar
+  now gets a stable color derived from its name (djb2 hash mod
+  8-color palette). Same session always lands on the same color
+  across launches. Palette is hand-picked to be tokyo-night-
+  compatible AND distinct from the state colors
+  (working/idle/error/...) so a session header never reads as a
+  state pill. Mirrors cmux's per-workspace color idiom (cmux
+  issue #1753) but auto-derives the color rather than asking the
+  user.
+- **Bottom-of-sidebar details box.** Cursor on a pane row now
+  expands into a 2-5 line details box between the row list and
+  the footer. Layout: divider → title · branch  state → "Doing"
+  line (heartbeat phase + tool, when present) → "Last" line
+  (assistant preview, capped at 200 chars vs 80 inline) → "Error"
+  line (only on error rows). Hidden when the cursor isn't on a
+  pane (the `+ new pi session` row, or empty list).
+
 ## [0.4.8] — 2026-05-08
 
 Visual-only release. Aligns the active-row cue with cmux's
