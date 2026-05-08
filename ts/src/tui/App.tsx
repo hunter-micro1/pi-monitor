@@ -346,10 +346,17 @@ export function App(props: AppProps): ReactElement {
         return;
       }
       if (key.return || key.tab) {
-        // Enter / Tab: hand keyboard focus to the right slot.
-        // Only meaningful when the cursor is on a pane row.
-        if (currentPos(cursor)?.kind === "pane") {
+        // Enter / Tab on a pane row: hand keyboard focus to the
+        // right slot.
+        // Enter / Tab on the `+ new pi session` affordance: open
+        // the new-session popup (same effect as pressing `o`
+        // there). Users expect Enter on a 'button-like' row to
+        // activate it.
+        const pos = currentPos(cursor);
+        if (pos?.kind === "pane") {
           tmux?.focusAgent();
+        } else if (pos?.kind === "new") {
+          setMode("newSession");
         }
         return;
       }

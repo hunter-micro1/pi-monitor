@@ -7,6 +7,37 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.19] — 2026-05-08
+
+New-pi popup gets a `Session name` field; Enter on the
+`+ new pi session` row now opens it.
+
+- **Enter on `+ new pi session`** opens the new-session popup
+  (was a no-op; only `o` worked there). Tab on that row also
+  opens it. `o` keeps working as before.
+- **`Session name` field** stacked under `Directory` in session
+  mode. Auto-prefilled with the cwd basename (e.g.
+  `~/Projects/foo` → `foo`); if the user edits the cwd, the
+  name keeps tracking the basename until the user manually
+  edits the name (then it stops auto-syncing).
+- **Tab cycles fields.** In the `Directory` field Tab still
+  does path completion; once nothing more can be completed,
+  Tab cycles focus to `Session name`. In `Session name`, Tab
+  cycles back to `Directory`. The hint line now reads
+  `Tab cycle/complete · Enter launch · Esc cancel`.
+- **Window mode hides the `Session name` field** — windows
+  live inside an existing session, so a session name is
+  irrelevant there.
+- New `deriveSessionName(cwd)` helper exported from
+  `NewPiScreen.tsx` (mirrors
+  `tmux/monitor.ts:suggestSessionName` minus the collision
+  suffix; covered by 3 unit tests).
+- The user-supplied name is plumbed through `NewPiResult.name`,
+  consumed by `cli.ts`, and passed to
+  `createPiSession(cwd, name)`. Empty name falls back to the
+  existing `suggestSessionName` heuristic so collision-suffix
+  behaviour is preserved when the user doesn't customize.
+
 ## [0.4.18] — 2026-05-08
 
 Sidebar visual hierarchy: session header outdented + unified to

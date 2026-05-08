@@ -342,6 +342,26 @@ describe("App modal mode", () => {
     expect(lastFrame() ?? "").toContain("Launch pi in a new tmux session");
   });
 
+  it("opens NewPiScreen when Enter is pressed on the `+ new pi session` row", async () => {
+    // 0.4.19: Enter on the new-pi affordance should activate it,
+    // matching button-row UX expectations. Empty list means the
+    // cursor lands on the new-pi row by default.
+    const { stdin, lastFrame } = render(
+      <App
+        getEntries={() => []}
+        branchForCwd={() => null}
+        defaultCwd="/home/u"
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    // \r is Enter.
+    stdin.write("\r");
+    await wait();
+    expect(lastFrame() ?? "").toContain("Launch pi in a new tmux session");
+  });
+
   it("opens NewPiScreen in 'window' mode when 'o' is pressed on a pane row", async () => {
     const { stdin, lastFrame } = render(
       <App
@@ -379,6 +399,8 @@ describe("App modal mode", () => {
     expect(onLaunchPi).toHaveBeenCalledWith({
       mode: "session",
       cwd: "/home/u",
+      // 0.4.19: name field auto-derived from cwd basename.
+      name: "u",
     });
     // Back on the list.
     expect(lastFrame() ?? "").not.toContain("Launch pi in a new");
@@ -596,6 +618,8 @@ describe("App new-pi targetSession", () => {
     expect(onLaunchPi).toHaveBeenCalledWith({
       mode: "session",
       cwd: "/home/u",
+      // 0.4.19: name field auto-derived from cwd basename.
+      name: "u",
     });
     // targetSession field is absent on session-mode submissions.
     expect(onLaunchPi.mock.calls[0]?.[0]).not.toHaveProperty("targetSession");
@@ -630,6 +654,9 @@ describe("App new-pi targetSession", () => {
       mode: "window",
       cwd: "/home/u/proj",
       targetSession: "alpha",
+      // 0.4.19: window mode always sends an empty name (the
+      // popup hides the Session-name field for window mode).
+      name: "",
     });
   });
 

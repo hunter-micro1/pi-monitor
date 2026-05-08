@@ -100,6 +100,10 @@ describe("NewPiScreen behavior", () => {
     expect(onSubmit).toHaveBeenCalledWith({
       mode: "session",
       cwd: "/home/u",
+      // 0.4.19: Session-name field auto-pre-filled from cwd
+      // basename. Default render still submits 'u' as the name
+      // when the user doesn't touch the name field.
+      name: "u",
     });
   });
 
@@ -162,5 +166,129 @@ describe("NewPiScreen behavior", () => {
     stdin.write("\t");
     await wait();
     expect(lastFrame() ?? "").toContain("/x/only-one/");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 0.4.19: Session-name field + Tab cycling.
+// ---------------------------------------------------------------------------
+
+describe("NewPiScreen session-name field", () => {
+  it("renders a Session-name field in session mode pre-filled with the cwd basename", () => {
+    const { lastFrame } = render(
+      <NewPiScreen
+        mode="session"
+        defaultCwd="/home/u/Projects/foo"
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    const out = lastFrame() ?? "";
+    expect(out).toContain("Session name");
+    expect(out).toContain("foo");
+  });
+
+  it("hides the Session-name field in window mode", () => {
+    const { lastFrame } = render(
+      <NewPiScreen
+        mode="window"
+        defaultCwd="/home/u/Projects/foo"
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(lastFrame() ?? "").not.toContain("Session name");
+  });
+
+  it("submits the auto-derived name when the user doesn't touch the name field", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(
+      <NewPiScreen
+        mode="session"
+        defaultCwd="/home/u/Projects/contracts"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+      />,
+    );
+    await wait();
+    stdin.write("\r");
+    await wait();
+    expect(onSubmit).toHaveBeenCalledWith({
+      mode: "session",
+      cwd: "/home/u/Projects/contracts",
+      name: "contracts",
+    });
+  });
+
+  it("Tab from the cwd field cycles to the name field when no completion is possible", async () => {
+    const listDir: ListDir = () => [];
+    const onSubmit = vi.fn();
+    const { stdin } = render(
+      <NewPiScreen
+        mode="session"
+        defaultCwd="/home/u/Projects/foo"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+        listDir={listDir}
+      />,
+    );
+    await wait();
+    // First Tab: completion is empty (listDir returns []), so
+    // focus cycles to the name field.
+    stdin.write("\t");
+    await wait();
+    // Type a custom name; with focus now on the name field, the
+    // bytes flow into it instead of the cwd field.
+    stdin.write("custom-name");
+    await wait();
+    stdin.write("\r");
+    await wait();
+    expect(onSubmit).toHaveBeenCalledWith({
+      mode: "session",
+      cwd: "/home/u/Projects/foo",
+      // Original auto-derived name is "foo"; user appended
+      // "custom-name", giving "foocustom-name".
+      name: "foocustom-name",
+    });
+  });
+
+  it("window mode submits with empty name field (no Session-name UI)", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(
+      <NewPiScreen
+        mode="window"
+        defaultCwd="/home/u/Projects/foo"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+      />,
+    );
+    await wait();
+    stdin.write("\r");
+    await wait();
+    expect(onSubmit).toHaveBeenCalledWith({
+      mode: "window",
+      cwd: "/home/u/Projects/foo",
+      name: "",
+    });
+  });
+});
+
+describe("deriveSessionName", () => {
+  // Re-import is cleaner than poking the rendered DOM.
+  it("returns the basename of the path", async () => {
+    const { deriveSessionName } = await import("../../src/tui/NewPiScreen.js");
+    expect(deriveSessionName("/home/u/Projects/foo")).toBe("foo");
+  });
+
+  it("strips trailing slashes", async () => {
+    const { deriveSessionName } = await import("../../src/tui/NewPiScreen.js");
+    expect(deriveSessionName("/home/u/Projects/foo/")).toBe("foo");
+    expect(deriveSessionName("/home/u/Projects/foo///")).toBe("foo");
+  });
+
+  it("falls back to 'pi' for empty / root cwds", async () => {
+    const { deriveSessionName } = await import("../../src/tui/NewPiScreen.js");
+    expect(deriveSessionName("")).toBe("pi");
+    expect(deriveSessionName("/")).toBe("pi");
   });
 });
