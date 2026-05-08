@@ -7,6 +7,33 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.8] — 2026-05-08
+
+Visual-only release. Aligns the active-row cue with cmux's
+single-tab idiom and pulls in pi's own Loader spinner for working
+rows so the sidebar speaks the same visual language as the agent
+terminal.
+
+- **Drop the section block highlight.** Previously every row in
+  the section containing the cursor brightened en-masse, and the
+  section header switched to the accent color. Both effects are
+  removed: only the cursor row brightens (via the existing `▎`
+  bar marker + a foreground title), all other rows stay muted.
+  Mirrors cmux's single-tab highlight (one row at a time) rather
+  than a multi-row block highlight.
+- **Pi-style 9-dot Braille spinner on working rows.** The
+  right-side activity tag for any row in the `working` state is
+  now prefixed with the same 10-frame Braille animation
+  (`⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏` at 80ms) that pi itself
+  uses in its Loader component (`@mariozechner/pi-tui`). The
+  spinner shares the existing pulse `setInterval` so it adds no
+  new timer; the two animations are phase-locked at 80ms.
+- **Cursor-row brightening on the spinner.** When a row is both
+  selected (cursor is on it) AND working, the spinner glyph
+  renders in the accent color instead of the pulse green, giving
+  the focused-and-working row a visible cue without disturbing
+  the verb's pulse breathing.
+
 ## [0.4.7] — 2026-05-07
 
 - **`--reset` flag** to nuke the existing `monitor` tmux session
