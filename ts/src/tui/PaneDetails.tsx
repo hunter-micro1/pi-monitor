@@ -1,21 +1,30 @@
 /**
  * Bottom-of-sidebar details box for the cursor row.
  *
- * Renders a tight, four-line summary of the currently-selected
+ * Renders a tight, five-line summary of the currently-selected
  * pane:
  *
  *   <name> · <branch>                <activity tag>     // title row
  *   Worktree   <pi cwd, $HOME -> ~>                     // when cwd is non-empty
  *   When       Started Xh Ym ago · idle Zs              // when sessionFile parses
+ *   Prompt     <last user message, truncated 200 chars> // when snapshot has lastUserPrompt
  *   Tokens     <total> total · <cost>                   // when cumulativeTokens > 0
  *
  * The title row mirrors PaneRow's first line so users read
  * "expanded version of the cursor row" rather than "what's this
  * new thing". Each label-prefixed line below is conditional and
- * hides when its data isn't available; in particular the box
- * intentionally OMITS Doing / Prompt / Reply / Error lines \u2014 the
- * activity tag in the title row already conveys "is this agent
- * busy / errored", and the user doesn't want the box growing.
+ * hides when its data isn't available; the box intentionally
+ * OMITS Doing / Reply / Error lines — the activity tag in the
+ * title row already conveys "is this agent busy / errored", and
+ * the user doesn't want the box growing.
+ *
+ * IMPORTANT: the box does NOT pulse. Threading the App's pulseHex
+ * here would make the title text + activity tag breathe in
+ * lock-step with the row list every 80ms, which on slow tmux
+ * pipelines (WSL2 → tmux) reads as flicker on a control that's
+ * supposed to be a stable readout. The box uses static
+ * `STATE_COLORS.working` for working rows; only the row list
+ * above carries the breathing animation.
  *
  * Hidden entirely when the cursor isn't on a pane row (the App
  * passes `null`); a section divider above keeps the box visually
@@ -34,12 +43,16 @@ import {
   fmtRowMain,
   fmtTokens,
   parseSessionStartFromFile,
+  truncate,
 } from "../format/row.js";
 import type { PaneStatus } from "../state/types.js";
 import { FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
 
-/** Width reserved for the "Worktree"/"When"/"Tokens" label column. */
+/** Width reserved for the "Worktree"/"When"/"Prompt"/"Tokens" label column. */
 const LABEL_COL = 10;
+
+/** Max chars for the Prompt line value before ellipsis. */
+const PROMPT_MAX_CHARS = 200;
 
 export interface PaneDetailsProps {
   /** Status of the cursor row, or null when cursor isn't on a pane. */
@@ -47,10 +60,8 @@ export interface PaneDetailsProps {
   paneTitle: string | null;
   paneIndex: number;
   branch: string | null;
-  /** Pulse color threaded in by the App for working rows. */
-  workingColor?: string | null;
   /**
-   * Pi descendant's actual cwd \u2014 typically the auto-worktree dir,
+   * Pi descendant's actual cwd — typically the auto-worktree dir,
    * which is more informative than the branch alone when several
    * panes share a branch name across worktrees. Empty / null hides
    * the `Worktree` line. The App threads `AppEntry.cwd` here.
@@ -74,18 +85,24 @@ export function PaneDetails({
   paneTitle,
   paneIndex,
   branch,
-  workingColor = null,
   cwd = null,
   home,
   nowSeconds,
 }: PaneDetailsProps): ReactElement | null {
   if (status === null) return null;
 
-  const main = fmtRowMain({ paneTitle, paneIndex, status, branch, workingColor });
-  const tag: ActivityTag = activityTag(status, workingColor);
+  // workingColor is intentionally NOT threaded here — the box
+  // stays static so it doesn't flicker on slow tmux pipelines.
+  // See the file-level comment.
+  const main = fmtRowMain({ paneTitle, paneIndex, status, branch });
+  const tag: ActivityTag = activityTag(status);
 
   const tree = cwd && cwd.length > 0 ? fmtCwdDisplay(cwd, resolveHome(home)) : null;
   const when = describeWhen(status, nowSeconds);
+  const prompt =
+    status.snapshot?.lastUserPrompt && status.snapshot.lastUserPrompt.length > 0
+      ? truncate(status.snapshot.lastUserPrompt, PROMPT_MAX_CHARS)
+      : null;
   const tokens =
     status.snapshot && status.snapshot.cumulativeTokens > 0
       ? `${fmtTokens(status.snapshot.cumulativeTokens)} total \u00b7 ${fmtCostUsd(
@@ -98,7 +115,7 @@ export function PaneDetails({
       <Divider />
 
       {/* Title row: paneTitle + branch on the left, activity tag on
-          the right. No selection bar \u2014 the details box is
+          the right. No selection bar — the details box is
           implicitly about the selected row. */}
       <Box flexDirection="row" paddingX={2} marginTop={1}>
         <Box flexGrow={1} flexShrink={1}>
@@ -120,6 +137,7 @@ export function PaneDetails({
           align with paneTitle's first letter. */}
       {tree !== null && <Detail label="Worktree" value={tree} />}
       {when !== null && <Detail label="When" value={when} />}
+      {prompt !== null && <Detail label="Prompt" value={prompt} />}
       {tokens !== null && <Detail label="Tokens" value={tokens} />}
     </Box>
   );
@@ -141,7 +159,7 @@ function Detail({ label, value }: { label: string; value: string }): ReactElemen
 
 /**
  * Resolve the `home` prop with a sensible default. Pulled out so
- * the default lookup happens lazily \u2014 React would otherwise
+ * the default lookup happens lazily — React would otherwise
  * re-evaluate `process.env.HOME` on every render via a default
  * parameter, which is fine but reads as accidental.
  */

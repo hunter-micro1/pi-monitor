@@ -235,11 +235,59 @@ describe("PaneDetails", () => {
   // Removed lines stay removed
   // ---------------------------------------------------------------------
 
-  it("never renders Doing / Prompt / Reply / Error labels even with rich snapshot data", () => {
+  it("renders the Prompt line from snapshot.lastUserPrompt", () => {
+    const { lastFrame } = render(
+      <PaneDetails
+        status={status({
+          state: "working",
+          phase: "agent_running",
+          snapshot: snapshot({ lastUserPrompt: "publish our new version of pi" }),
+        })}
+        paneTitle="agent"
+        paneIndex={0}
+        branch="main"
+      />,
+    );
+    const out = lastFrame() ?? "";
+    expect(out).toContain("Prompt");
+    expect(out).toContain("publish our new version of pi");
+  });
+
+  it("hides the Prompt line when snapshot.lastUserPrompt is missing", () => {
+    const { lastFrame } = render(
+      <PaneDetails
+        status={status({ snapshot: snapshot({ lastUserPrompt: null }) })}
+        paneTitle="agent"
+        paneIndex={0}
+        branch="main"
+      />,
+    );
+    expect(lastFrame() ?? "").not.toContain("Prompt");
+  });
+
+  it("truncates a long Prompt to ~200 chars with an ellipsis", () => {
+    const longPrompt = "a".repeat(500);
+    const { lastFrame } = render(
+      <PaneDetails
+        status={status({ snapshot: snapshot({ lastUserPrompt: longPrompt }) })}
+        paneTitle="agent"
+        paneIndex={0}
+        branch="main"
+      />,
+    );
+    const out = lastFrame() ?? "";
+    expect(out).toContain("Prompt");
+    // Ellipsis present, full 500 chars are not.
+    expect(out).toContain("\u2026");
+    expect(out).not.toContain("a".repeat(300));
+  });
+
+  it("never renders Doing / Reply / Error labels even with rich snapshot data", () => {
     // Worst-case input that USED to populate every line of the
-    // pre-0.4.15 box: working+tool_running for Doing, error state
-    // + lastError for Error, full snapshot prose for Prompt /
-    // Reply. None of those labels should appear.
+    // pre-0.4.17 box: working+tool_running for Doing, error state
+    // + lastError for Error, lastAssistantPreview for Reply.
+    // None of those labels should appear (Prompt CAN appear; that
+    // line was added back in 0.4.17).
     const { lastFrame } = render(
       <PaneDetails
         status={status({
@@ -248,7 +296,6 @@ describe("PaneDetails", () => {
           currentTool: "bash",
           idleSeconds: 12,
           snapshot: snapshot({
-            lastUserPrompt: "publish 0.4.15",
             lastAssistantPreview: "draft response goes here",
             lastError: "ECONNRESET reading model stream",
           }),
@@ -260,10 +307,42 @@ describe("PaneDetails", () => {
     );
     const out = lastFrame() ?? "";
     expect(out).not.toContain("Doing");
-    expect(out).not.toContain("Prompt");
     expect(out).not.toContain("Reply");
     expect(out).not.toContain("Error");
     // The activity tag still surfaces error state on the title row.
     expect(out).toContain("errored 12s");
+  });
+
+  // ---------------------------------------------------------------------
+  // Static (no-pulse) box — regression-guard for the 0.4.17
+  // anti-flicker fix. The box must NEVER pulse, even when the
+  // cursor row is in the working state.
+  // ---------------------------------------------------------------------
+
+  it("colors the working title with a static color (not the workingColor pulse)", () => {
+    // workingColor used to be a prop; passing it would tint the
+    // title with a pulsed hex on every render. The prop was
+    // removed in 0.4.17 — confirm the prop type doesn't accept
+    // it (compile-time) and that the rendered output uses
+    // STATE_COLORS.working (static green) for working rows.
+    const { lastFrame } = render(
+      <PaneDetails
+        // @ts-expect-error — workingColor was removed in 0.4.17.
+        // Passing it must be a TS error so callers don't accidentally
+        // re-introduce the per-tick pulse on the bottom box.
+        workingColor="#FF0000"
+        status={status({ state: "working", phase: "agent_running" })}
+        paneTitle="agent"
+        paneIndex={0}
+        branch="main"
+      />,
+    );
+    const out = lastFrame() ?? "";
+    expect(out).toContain("agent");
+    // Don't assert specific ANSI bytes (Ink + ink-testing-library
+    // strip color codes from lastFrame() in the strip mode used by
+    // this suite). The @ts-expect-error above is what enforces the
+    // contract; the assertion here just confirms the component
+    // still rendered successfully when an unknown prop is passed.
   });
 });
