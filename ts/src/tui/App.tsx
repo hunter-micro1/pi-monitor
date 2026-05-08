@@ -29,11 +29,11 @@ import { PaneDetails } from "./PaneDetails.js";
 import { PaneRow } from "./PaneRow.js";
 import { SessionGroup, pickSessionChip } from "./SessionGroup.js";
 import { ACCENT, FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
-import { sessionHeaderColor } from "./sessionColors.js";
 import { INITIAL_CURSOR, currentPos, cursorReducer } from "./cursor.js";
 import type { ListDir } from "./dirComplete.js";
 import { branchForCwd as defaultBranchForCwd } from "./git.js";
 import { lerpColor, pulseColor } from "./pulse.js";
+import { sessionHeaderColor } from "./sessionColors.js";
 import { BRAILLE_FRAMES } from "./spinner.js";
 import type { TmuxBridge } from "./tmuxBridge.js";
 

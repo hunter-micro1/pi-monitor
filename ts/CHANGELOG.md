@@ -7,6 +7,25 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.12] — 2026-05-08
+
+Visual cohesion + layout polish for the sidebar.
+
+- **Per-session pane title color.** Each section's hash-of-name
+  color (introduced in 0.4.9 for the section header) now also
+  applies to every non-working pane title in that section, so
+  each section reads as a colored block. Working titles still
+  use the pulse color so the row visibly breathes. The cursor
+  cue stays the leftmost `▎` bar marker; title color does NOT
+  change between selected and non-selected rows, keeping the
+  section grouping clean.
+- **Details box pinned to the very bottom of the sidebar.** A
+  flex spacer between the row list and the details box claims
+  all leftover vertical space, so the box always sits just above
+  the footer hints regardless of how many panes are in the list.
+  Trains your eye on a constant location for the
+  branch / Doing / Prompt / Reply / Tokens / Error info.
+
 ## [0.4.11] — 2026-05-08
 
 Bug-fix release. The state resolver now follows the pi descendant's
