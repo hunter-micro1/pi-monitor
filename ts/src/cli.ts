@@ -20,7 +20,7 @@
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 
-const VERSION = "0.4.18";
+const VERSION = "0.4.19";
 
 async function main(argv: readonly string[]): Promise<number> {
   if (argv.includes("--help") || argv.includes("-h")) {
@@ -163,10 +163,17 @@ async function runTui(): Promise<number> {
     mode: "session" | "window";
     cwd: string;
     targetSession?: string;
+    name?: string;
   }): void => {
     try {
       if (result.mode === "session") {
-        createPiSession(result.cwd);
+        // Empty `name` from the popup means 'use the
+        // basename + collision-suffix heuristic'. Pass undefined
+        // through to createPiSession so its existing
+        // suggestSessionName path runs.
+        const sessionName =
+          result.name !== undefined && result.name !== "" ? result.name : undefined;
+        createPiSession(result.cwd, sessionName);
       } else if (result.targetSession !== undefined) {
         createPiWindow(result.targetSession, result.cwd);
       } else {
