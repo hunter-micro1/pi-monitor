@@ -25,6 +25,7 @@ import { EmptyState } from "./EmptyState.js";
 import { HelpScreen } from "./HelpScreen.js";
 import { type NewPiResult, NewPiScreen } from "./NewPiScreen.js";
 import { type BannerNotification, NotificationBanner } from "./NotificationBanner.js";
+import { PaneDetails } from "./PaneDetails.js";
 import { PaneRow } from "./PaneRow.js";
 import { SessionGroup, pickSessionChip } from "./SessionGroup.js";
 import { ACCENT, FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
@@ -471,6 +472,26 @@ export function App(props: AppProps): ReactElement {
             </SessionGroup>
           );
         })}
+
+        {/* Bottom-of-sidebar details box for the cursor row. The
+            component itself returns null when status is null, so
+            non-pane cursor positions (the "+ new pi session" row,
+            empty list) collapse to nothing automatically. */}
+        {(() => {
+          const cursorEntry =
+            selectedPaneId !== null
+              ? (entries.find((e) => e.paneId === selectedPaneId) ?? null)
+              : null;
+          return (
+            <PaneDetails
+              status={cursorEntry?.status ?? null}
+              paneTitle={cursorEntry?.paneTitle ?? null}
+              paneIndex={cursorEntry?.paneIndex ?? 0}
+              branch={cursorEntry !== null ? branchForCwd(cursorEntry.cwd) : null}
+              workingColor={pulseHex}
+            />
+          );
+        })()}
       </Box>
 
       <Footer />
