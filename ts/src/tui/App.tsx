@@ -529,7 +529,6 @@ export function App(props: AppProps): ReactElement {
                 paneIndex={cursorEntry?.paneIndex ?? 0}
                 branch={cursorEntry !== null ? branchForCwd(cursorEntry.cwd) : null}
                 cwd={cursorEntry?.cwd ?? null}
-                workingColor={pulseHex}
               />
             );
           })()
