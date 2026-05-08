@@ -7,6 +7,28 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.16] — 2026-05-08
+
+New-pi prompt now renders as a hover popup at the bottom of the
+pane instead of replacing the App. The pane list and titlebar
+stay visible behind it.
+
+- **App keeps the regular tree mounted on `o`.** Previously the
+  newSession / newWindow modes returned a full-screen
+  `<NewPiScreen>` early, which on narrow panes (60 cols, e.g. a
+  60% split) clipped the hardcoded 72-wide bordered box and
+  rendered as wrapped garbage. Now the popup is composed into
+  the bottom slot of the App, taking the place of the details
+  box while open.
+- **NewPiScreen drops its outer centering wrapper** and accepts
+  a `width` prop. The App passes `Math.max(20, contentWidth - 4)`
+  so the popup fits inside the row list's `paddingX={2}` gutters
+  on every pane width.
+- New regression-guard test in `tests/tui/App.test.tsx` asserts
+  the popup coexists with the pane list (titlebar, section
+  header, pane row, footer all still in the rendered frame
+  while the popup is up).
+
 ## [0.4.15] — 2026-05-08
 
 Bottom details box trimmed to a four-line minimal layout per

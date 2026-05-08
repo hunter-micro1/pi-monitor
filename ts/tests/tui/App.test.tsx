@@ -291,6 +291,41 @@ describe("App modal mode", () => {
     expect(lastFrame() ?? "").not.toContain("press any key to dismiss");
   });
 
+  it("keeps the pane list visible behind the new-pi popup (popup, not full-screen modal)", async () => {
+    // Regression-guard for the 'inline vs hover menu' user
+    // report: pressing 'o' must NOT replace the App tree. The
+    // titlebar + section header + pane row stay rendered while
+    // the popup is up.
+    const { stdin, lastFrame } = render(
+      <App
+        getEntries={() => [
+          entry({
+            paneId: "%1",
+            session: "alpha",
+            paneTitle: "agent-a",
+          }),
+        ]}
+        branchForCwd={() => null}
+        defaultCwd="/home/u"
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    stdin.write("o");
+    await wait();
+    const out = lastFrame() ?? "";
+    // Popup is open.
+    expect(out).toContain("Launch pi in a new");
+    // Pane list is still rendered above it.
+    expect(out).toContain("alpha");
+    expect(out).toContain("agent-a");
+    // TitleBar + footer are still rendered.
+    expect(out).toContain("pi-monitor");
+    expect(out).toContain("q");
+    expect(out).toContain("quit");
+  });
+
   it("opens NewPiScreen in 'session' mode when 'o' is pressed and no panes exist", async () => {
     const { stdin, lastFrame } = render(
       <App
