@@ -31,6 +31,9 @@ function snapshot(fields: Partial<JsonlSnapshot> = {}): JsonlSnapshot {
     lastError: null,
     pendingToolCalls: 0,
     lastAssistantPreview: null,
+    lastUserPrompt: null,
+    cumulativeTokens: 0,
+    cumulativeCostUsd: 0,
     ...fields,
   };
 }

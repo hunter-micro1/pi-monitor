@@ -77,6 +77,35 @@ export function truncate(text: string, width: number): string {
 }
 
 /**
+ * Compact human-friendly token count.
+ *   < 1k     -> "<int>"          ("137")
+ *   < 1M     -> "<x.x>K"          ("28.7K")
+ *   else     -> "<x.x>M"          ("1.3M")
+ *
+ * Returns "0" for 0 / negative / non-finite input.
+ */
+export function fmtTokens(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  if (n < 1000) return String(Math.floor(n));
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}K`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+/**
+ * Compact USD cost display:
+ *   < $0.01   -> "<¢N>¢"           (sub-cent rounded up to 1¢)
+ *   < $1      -> "$0.<NN>"          ("$0.06")
+ *   else      -> "$N.NN"            ("$1.23")
+ *
+ * Returns "$0" for 0 / negative / non-finite input.
+ */
+export function fmtCostUsd(usd: number): string {
+  if (!Number.isFinite(usd) || usd <= 0) return "$0";
+  if (usd < 0.01) return "<¢1";
+  return `$${usd.toFixed(2)}`;
+}
+
+/**
  * Format `seconds` as a compact human-friendly idle duration:
  *   < 1s   -> ""
  *   < 60s  -> "Ns"

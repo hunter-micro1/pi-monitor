@@ -20,6 +20,9 @@ function snapshot(fields: Partial<JsonlSnapshot> = {}): JsonlSnapshot {
     lastError: null,
     pendingToolCalls: 0,
     lastAssistantPreview: null,
+    lastUserPrompt: null,
+    cumulativeTokens: 0,
+    cumulativeCostUsd: 0,
     ...fields,
   };
 }
@@ -65,10 +68,68 @@ describe("PaneDetails", () => {
     expect(out).toContain("POWERBI");
     expect(out).toContain("feature/billing");
     expect(out).toContain("idle 4m");
-    expect(out).toContain("Last");
+    expect(out).toContain("Reply");
     expect(out).toContain("All four browser themes are aligned.");
     // Idle with no phase has nothing for the "Doing" line.
     expect(out).not.toContain("Doing");
+    // No tokens accumulated -> no Tokens line.
+    expect(out).not.toContain("Tokens");
+  });
+
+  it("renders the Prompt line from snapshot.lastUserPrompt", () => {
+    const { lastFrame } = render(
+      <PaneDetails
+        status={status({
+          state: "working",
+          phase: "agent_running",
+          snapshot: snapshot({
+            lastUserPrompt: "publish our new version of pi",
+          }),
+        })}
+        paneTitle="agent"
+        paneIndex={0}
+        branch="main"
+      />,
+    );
+    const out = lastFrame() ?? "";
+    expect(out).toContain("Prompt");
+    expect(out).toContain("publish our new version of pi");
+  });
+
+  it("renders the Tokens line when cumulativeTokens > 0", () => {
+    const { lastFrame } = render(
+      <PaneDetails
+        status={status({
+          state: "idle",
+          snapshot: snapshot({
+            cumulativeTokens: 28741,
+            cumulativeCostUsd: 0.06,
+          }),
+        })}
+        paneTitle="agent"
+        paneIndex={0}
+        branch="main"
+      />,
+    );
+    const out = lastFrame() ?? "";
+    expect(out).toContain("Tokens");
+    expect(out).toContain("28.7K total");
+    expect(out).toContain("$0.06");
+  });
+
+  it("hides the Tokens line when cumulativeTokens is 0", () => {
+    const { lastFrame } = render(
+      <PaneDetails
+        status={status({
+          state: "idle",
+          snapshot: snapshot({ cumulativeTokens: 0, cumulativeCostUsd: 0 }),
+        })}
+        paneTitle="agent"
+        paneIndex={0}
+        branch={null}
+      />,
+    );
+    expect(lastFrame() ?? "").not.toContain("Tokens");
   });
 
   it("renders a Doing line for a working row whose heartbeat reports a tool", () => {

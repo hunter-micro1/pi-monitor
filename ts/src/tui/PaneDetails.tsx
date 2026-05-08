@@ -3,12 +3,14 @@
  *
  * Renders an expanded view of the currently-selected pane's status:
  * the title + branch + state tag (mirror of the PaneRow's top
- * line), plus 1-3 label-prefixed detail lines depending on what
- * data is available:
+ * line), plus up to 5 label-prefixed detail lines depending on
+ * what data is available:
  *
- *   Doing   <phase + tool>     // only for working rows w/ heartbeat
- *   Last    <assistant preview> // when snapshot has lastAssistantPreview
- *   Error   <error message>     // when state === "error"
+ *   Doing   <phase + tool>          // working w/ heartbeat
+ *   Prompt  <last user message>     // when snapshot has lastUserPrompt
+ *   Reply   <last assistant text>   // when snapshot has lastAssistantPreview
+ *   Tokens  <total> total · <cost>  // when cumulativeTokens > 0
+ *   Error   <error message>         // when state === "error"
  *
  * Hidden entirely when the cursor isn't on a pane row (the App
  * passes `null`); a section divider above keeps the box visually
@@ -16,7 +18,7 @@
  *
  * Truncation cap is intentionally higher than the inline activity
  * line (200 chars vs ACTIVITY_MAX_CHARS=80) so users can see more
- * of the last assistant turn here without leaving the TUI.
+ * of the last user / assistant turn here without leaving the TUI.
  */
 
 import { Box, Text } from "ink";
@@ -26,7 +28,9 @@ import {
   type ActivityTag,
   STATE_COLORS,
   activityTag,
+  fmtCostUsd,
   fmtRowMain,
+  fmtTokens,
   truncate,
 } from "../format/row.js";
 import type { PaneStatus } from "../state/types.js";
@@ -61,9 +65,18 @@ export function PaneDetails({
   const tag: ActivityTag = activityTag(status, workingColor);
 
   const doing = describeDoing(status);
-  const last = status.snapshot?.lastAssistantPreview
+  const prompt = status.snapshot?.lastUserPrompt
+    ? truncate(status.snapshot.lastUserPrompt, DETAILS_TEXT_MAX_CHARS)
+    : null;
+  const reply = status.snapshot?.lastAssistantPreview
     ? truncate(status.snapshot.lastAssistantPreview, DETAILS_TEXT_MAX_CHARS)
     : null;
+  const tokens =
+    status.snapshot && status.snapshot.cumulativeTokens > 0
+      ? `${fmtTokens(status.snapshot.cumulativeTokens)} total \u00b7 ${fmtCostUsd(
+          status.snapshot.cumulativeCostUsd,
+        )}`
+      : null;
   const errorMsg =
     status.state === "error" && status.snapshot?.lastError
       ? truncate(status.snapshot.lastError, DETAILS_TEXT_MAX_CHARS)
@@ -96,9 +109,14 @@ export function PaneDetails({
       {/* Detail lines. Each label is dim, the value is full
           foreground (or state-colored for the error line). Indent
           matches the title row's paddingX={2} so labels align with
-          paneTitle's first letter. */}
+          paneTitle's first letter. Order: what's the agent doing
+          right now (Doing), what did the user just ask (Prompt),
+          what did the agent say back (Reply), how much have we
+          spent (Tokens), and — only when broken — Error. */}
       {doing !== null && <Detail label="Doing" value={doing} />}
-      {last !== null && <Detail label="Last" value={last} />}
+      {prompt !== null && <Detail label="Prompt" value={prompt} />}
+      {reply !== null && <Detail label="Reply" value={reply} />}
+      {tokens !== null && <Detail label="Tokens" value={tokens} />}
       {errorMsg !== null && (
         <Detail label="Error" value={errorMsg} valueColor={STATE_COLORS.error} />
       )}

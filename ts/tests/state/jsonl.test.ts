@@ -263,4 +263,81 @@ describe("scanLines", () => {
     const snap = scanLines("", 1729000000);
     expect(snap.mtime).toBe(1729000000);
   });
+
+  it("captures the most recent user prompt", () => {
+    const data = blob(
+      msg("user", { content: [{ type: "text", text: "first ask" }] }),
+      msg("assistant", {
+        content: [{ type: "text", text: "reply" }],
+        stopReason: "stop",
+      }),
+      msg("user", { content: [{ type: "text", text: "second ask" }] }),
+    );
+    const snap = scanLines(data, 0);
+    expect(snap.lastUserPrompt).toBe("second ask");
+  });
+
+  it("falls back to null when no user has spoken", () => {
+    const data = blob(
+      msg("assistant", {
+        content: [{ type: "text", text: "reply" }],
+        stopReason: "stop",
+      }),
+    );
+    expect(scanLines(data, 0).lastUserPrompt).toBeNull();
+  });
+
+  it("sums usage.totalTokens across every assistant turn", () => {
+    const data = blob(
+      msg("assistant", {
+        content: [{ type: "text", text: "a" }],
+        stopReason: "stop",
+        usage: { totalTokens: 100, cost: { total: 0.01 } },
+      }),
+      msg("assistant", {
+        content: [{ type: "text", text: "b" }],
+        stopReason: "stop",
+        usage: { totalTokens: 250, cost: { total: 0.025 } },
+      }),
+      msg("assistant", {
+        content: [{ type: "text", text: "c" }],
+        stopReason: "stop",
+        usage: { totalTokens: 50, cost: { total: 0.005 } },
+      }),
+    );
+    const snap = scanLines(data, 0);
+    expect(snap.cumulativeTokens).toBe(400);
+    expect(snap.cumulativeCostUsd).toBeCloseTo(0.04, 5);
+  });
+
+  it("defaults to zero when assistant turns lack usage metadata", () => {
+    const data = blob(
+      msg("assistant", {
+        content: [{ type: "text", text: "hi" }],
+        stopReason: "stop",
+      }),
+    );
+    const snap = scanLines(data, 0);
+    expect(snap.cumulativeTokens).toBe(0);
+    expect(snap.cumulativeCostUsd).toBe(0);
+  });
+
+  it("ignores malformed usage fields without throwing", () => {
+    const data = blob(
+      msg("assistant", {
+        content: [{ type: "text", text: "hi" }],
+        stopReason: "stop",
+        usage: { totalTokens: "twelve", cost: { total: Number.NaN } },
+      }),
+      msg("assistant", {
+        content: [{ type: "text", text: "ok" }],
+        stopReason: "stop",
+        usage: { totalTokens: 42, cost: { total: 0.002 } },
+      }),
+    );
+    const snap = scanLines(data, 0);
+    // Only the well-formed second turn contributes.
+    expect(snap.cumulativeTokens).toBe(42);
+    expect(snap.cumulativeCostUsd).toBeCloseTo(0.002, 5);
+  });
 });
