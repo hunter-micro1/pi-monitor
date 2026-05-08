@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../src/proc/index.js", () => ({
   findPiPidForPane: vi.fn(),
   procStartTime: vi.fn(),
+  procCwd: vi.fn(),
 }));
 
 vi.mock("../../src/heartbeat/reader.js", () => ({
@@ -26,12 +27,13 @@ vi.mock("../../src/heartbeat/reader.js", () => ({
 }));
 
 import { readHeartbeat } from "../../src/heartbeat/reader.js";
-import { findPiPidForPane, procStartTime } from "../../src/proc/index.js";
+import { findPiPidForPane, procCwd, procStartTime } from "../../src/proc/index.js";
 import { cwdToSessionDir } from "../../src/state/files.js";
 import { type PaneRef, StateResolver } from "../../src/state/resolver.js";
 
 const findPiPidForPaneMock = vi.mocked(findPiPidForPane);
 const procStartTimeMock = vi.mocked(procStartTime);
+const procCwdMock = vi.mocked(procCwd);
 const readHeartbeatMock = vi.mocked(readHeartbeat);
 
 let sessionsRoot: string;
@@ -40,9 +42,14 @@ beforeEach(() => {
   sessionsRoot = mkdtempSync(join(tmpdir(), "pi-mon-resolver-"));
   findPiPidForPaneMock.mockReset();
   procStartTimeMock.mockReset();
+  procCwdMock.mockReset();
   readHeartbeatMock.mockReset();
   // Default: no heartbeat (forces JSONL path).
   readHeartbeatMock.mockReturnValue(null);
+  // Default: no procCwd lookup -> resolver falls back to ref.cwd.
+  // Tests that exercise the auto-worktree path override this per
+  // ref via mockImplementation.
+  procCwdMock.mockReturnValue(null);
 });
 
 afterEach(() => {
@@ -309,5 +316,53 @@ describe("StateResolver \u2014 JSONL path", () => {
 
     expect(out.get("p1")?.state).not.toBe("no_pi");
     expect(out.get("shell")?.state).toBe("no_pi");
+  });
+
+  it("uses the pi descendant's actual cwd for JSONL claim (auto-worktree)", () => {
+    // The auto-worktree extension re-execs pi inside an
+    // `agent/<base>-<ts>` worktree. The tmux pane still reports
+    // its shell's cwd; pi writes JSONL keyed off ITS cwd. The
+    // resolver has to follow the pi process's actual cwd.
+    findPiPidForPaneMock.mockReturnValue(9999);
+    procStartTimeMock.mockReturnValue(1000.0);
+    procCwdMock.mockReturnValue("/x-agent-worktree");
+    // JSONL file lives in the agent-worktree's session dir, NOT
+    // the tmux-pane-cwd's dir. Resolver must look in the right
+    // place.
+    writeJsonl({
+      cwd: "/x-agent-worktree",
+      filename: "2026-05-03T20-37-30-000Z_a.jsonl",
+      mtime: 1500.0,
+    });
+
+    const resolver = newResolver();
+    const out = resolver.resolve([ref({ paneId: "p1", cwd: "/x" })], 1502.0);
+
+    const status = out.get("p1");
+    expect(status).toBeDefined();
+    // The contract this test pins: the JSONL was claimed from the
+    // agent-worktree's session dir, NOT from the tmux-pane-cwd's
+    // dir. Empty file body means inferState returns `unknown`
+    // either way, so we assert on `sessionFile` (the actual
+    // location the resolver looked at).
+    expect(status?.sessionFile).toContain("--x-agent-worktree--");
+    expect(procCwdMock).toHaveBeenCalledWith(9999);
+  });
+
+  it("falls back to ref.cwd when the procCwd lookup returns null", () => {
+    findPiPidForPaneMock.mockReturnValue(9999);
+    procStartTimeMock.mockReturnValue(1000.0);
+    procCwdMock.mockReturnValue(null);
+    writeJsonl({
+      cwd: "/x",
+      filename: "2026-05-03T20-37-30-000Z_a.jsonl",
+      mtime: 1500.0,
+    });
+
+    const resolver = newResolver();
+    const out = resolver.resolve([ref({ paneId: "p1", cwd: "/x" })], 1502.0);
+
+    const status = out.get("p1");
+    expect(status?.sessionFile).toContain("--x--");
   });
 });

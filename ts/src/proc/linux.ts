@@ -10,7 +10,25 @@
  * on `process.platform`.
  */
 
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, readlinkSync, statSync } from "node:fs";
+
+/**
+ * Current working directory for `pid`. Reads the
+ * `/proc/<pid>/cwd` symlink and returns its absolute target, or
+ * `null` if the pid is gone, the symlink is unreadable, or the
+ * caller lacks permission to traverse it.
+ *
+ * Used by the state resolver to find a pi process's actual cwd
+ * when an extension (e.g. auto-worktree) has re-exec'd it into a
+ * different directory than the tmux pane's `pane_current_path`.
+ */
+export function procCwd(pid: number): string | null {
+  try {
+    return readlinkSync(`/proc/${pid}/cwd`);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Process start time in unix seconds, or null if the pid is gone or

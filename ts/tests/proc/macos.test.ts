@@ -19,6 +19,7 @@ import { execFileSync } from "node:child_process";
 import {
   _resetPsCacheForTests,
   findPiPidForPane,
+  procCwd,
   procStartTime,
 } from "../../src/proc/macos.js";
 
@@ -156,5 +157,35 @@ describe("macos snapshot cache", () => {
     findPiPidForPane(100);
     procStartTime(101);
     expect(execFileSyncMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// procCwd
+// ---------------------------------------------------------------------------
+
+describe("macos.procCwd", () => {
+  it("parses the cwd from `lsof -p <pid> -d cwd -Fn` output", () => {
+    // Real lsof -Fn output has the pid on a `p` line, fd marker
+    // on `f`, and the path on `n`. We pick the first `n` line.
+    execFileSyncMock.mockReturnValue("p1234\nfcwd\nn/home/user/project\n");
+    expect(procCwd(1234)).toBe("/home/user/project");
+  });
+
+  it("returns null when lsof exits non-zero (process gone)", () => {
+    execFileSyncMock.mockImplementation(() => {
+      throw new Error("lsof: process not found");
+    });
+    expect(procCwd(1234)).toBeNull();
+  });
+
+  it("returns null when lsof emits no n-line", () => {
+    execFileSyncMock.mockReturnValue("p1234\nfcwd\n");
+    expect(procCwd(1234)).toBeNull();
+  });
+
+  it("handles paths containing spaces", () => {
+    execFileSyncMock.mockReturnValue("p1234\nfcwd\nn/Users/Hayden/Library/My Things\n");
+    expect(procCwd(1234)).toBe("/Users/Hayden/Library/My Things");
   });
 });
