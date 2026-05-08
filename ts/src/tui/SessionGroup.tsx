@@ -17,6 +17,7 @@ import type { ReactElement, ReactNode } from "react";
 import { STATE_COLORS, fmtSessionHeader } from "../format/row.js";
 import type { AgentState } from "../state/types.js";
 import { FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
+import { sessionHeaderColor } from "./sessionColors.js";
 
 export interface SessionGroupProps {
   /** Session name (header). */
@@ -70,7 +71,10 @@ export function SessionGroup({
       <Box flexDirection="row" marginTop={first ? 0 : 1} marginBottom={1}>
         <Box width={2} />
         <Box flexGrow={1}>
-          <Text bold color={FOREGROUND}>
+          {/* Per-session color so users can scan-by-color when
+              several sessions are open. Hash-of-name based, stable
+              across launches. See sessionColors.ts. */}
+          <Text bold color={sessionHeaderColor(session)}>
             {fmtSessionHeader(session)}
           </Text>
           {chip !== null && (

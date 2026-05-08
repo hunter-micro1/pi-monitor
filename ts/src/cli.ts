@@ -102,7 +102,7 @@ async function runTui(): Promise<number> {
     { createElement },
     { App },
     { makeTmuxBridge },
-    { listPanes, listPiPanes },
+    { listPanes, listPiPanes, isViewerSession },
     { StateResolver },
     { createPiSession, createPiWindow, setStatusWidget, clearStatusWidget },
   ] = await Promise.all([
@@ -122,7 +122,16 @@ async function runTui(): Promise<number> {
   const tmux = makeTmuxBridge();
 
   const getEntries = () => {
-    const panes = listPiPanes().filter((p) => !ownPaneIds.has(p.paneId));
+    // Two filters:
+    //   - ownPaneIds: panes living in the `monitor` session itself.
+    //   - isViewerSession: tmux session-grouping makes the linked
+    //     viewers (`pi-monitor-view-*`) report the same pi panes a
+    //     second time under their viewer-session name. Suppress
+    //     that duplicate so each pi pane appears in exactly one
+    //     SessionGroup (its real session).
+    const panes = listPiPanes().filter(
+      (p) => !ownPaneIds.has(p.paneId) && !isViewerSession(p.session),
+    );
     const refs = panes.map((p) => ({
       paneId: p.paneId,
       cwd: p.cwd,
