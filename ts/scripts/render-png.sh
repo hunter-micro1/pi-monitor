@@ -15,7 +15,7 @@ ISO=$(mktemp -d)
 trap "env -u TMUX TMUX_TMPDIR=$ISO tmux kill-server 2>/dev/null; rm -rf $ISO" EXIT
 
 run_iso() {
-  env -u TMUX TMUX_TMPDIR="$ISO" tmux "$@"
+	env -u TMUX TMUX_TMPDIR="$ISO" tmux "$@"
 }
 
 # Keep the server alive after the snapshot pane exits.
@@ -24,14 +24,14 @@ run_iso new-session -d -s ka "sleep 3600"
 # Run snapshot.tsx (which renders the App fixture and exits) inside a
 # pane. When it exits we'll capture-pane the static frame.
 run_iso new-session -d -s host -x 120 -y 30 \
-  "env -u TMUX -u CI TMUX_TMPDIR='$ISO' pnpm tsx scripts/snapshot.tsx; sleep 2"
+	"env -u TMUX -u CI TMUX_TMPDIR='$ISO' pnpm tsx scripts/snapshot.tsx; sleep 2"
 
 # Wait for the render to complete (snapshot.tsx prints its frame and
 # the trailing 'sleep 2' keeps the pane alive long enough to capture).
 sleep 2
 
 # Capture with -e to preserve ANSI escape codes.
-run_iso capture-pane -e -p -t host:0.0 > /tmp/pi-monitor-render.ansi
+run_iso capture-pane -e -p -t host:0.0 >/tmp/pi-monitor-render.ansi
 
 # Convert ANSI to HTML via a tiny node script.
 "$NODE" -e '
@@ -139,10 +139,10 @@ console.log("html written");
 # Screenshot via headless Chrome. --window-size + --hide-scrollbars +
 # --force-device-scale-factor=2 for crispness.
 google-chrome --headless --disable-gpu \
-  --hide-scrollbars \
-  --force-device-scale-factor=2 \
-  --window-size=1100,520 \
-  --screenshot="$OUT" \
-  "file://$HTML" 2>/dev/null
+	--hide-scrollbars \
+	--force-device-scale-factor=2 \
+	--window-size=1100,520 \
+	--screenshot="$OUT" \
+	"file://$HTML" 2>/dev/null
 
 echo "rendered: $OUT"
