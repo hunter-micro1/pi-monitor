@@ -25,19 +25,61 @@ interface PsRow {
   pid: number;
   ppid: number;
   comm: string;
-  /** Elapsed seconds since process start (from `ps -o etimes=`). */
+  /** Elapsed seconds since process start (parsed from `ps -o etime=`). */
   etimes: number;
 }
 
 let cached: { atMs: number; rows: Map<number, PsRow> } | null = null;
 
 /**
- * Run `ps -A -o pid=,ppid=,comm=,etimes=` and parse the output into
+ * Parse a BSD `ps -o etime=` value (`[[dd-]hh:]mm:ss`) into seconds.
+ *
+ * Examples:
+ *   "00:42"          ->     42
+ *   "01:23"          ->     83
+ *   "23:01:23"       ->  82883
+ *   "3-04:05:06"     -> 273906
+ *
+ * Returns `null` for unrecognized input.
+ *
+ * Why not the `etimes` keyword (raw seconds)? It's a Linux-only
+ * procps-ng extension. macOS BSD `ps` rejects it with
+ * `ps: etimes: keyword not found` and exits non-zero, which used
+ * to silently empty the snapshot and leave pi-monitor unable to
+ * find any pi panes on macOS. `etime` is the BSD-supported
+ * alternative.
+ *
+ * Exposed for tests.
+ */
+export function parseEtime(value: string): number | null {
+  // Optional `dd-` day prefix, then 2 or 3 colon-separated time fields.
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(value.trim());
+  if (m === null) return null;
+  const days = m[1] === undefined ? 0 : Number(m[1]);
+  const hours = m[2] === undefined ? 0 : Number(m[2]);
+  const minutes = Number(m[3]);
+  const seconds = Number(m[4]);
+  if (
+    !Number.isFinite(days) ||
+    !Number.isFinite(hours) ||
+    !Number.isFinite(minutes) ||
+    !Number.isFinite(seconds)
+  ) {
+    return null;
+  }
+  return days * 86_400 + hours * 3_600 + minutes * 60 + seconds;
+}
+
+/**
+ * Run `ps -A -o pid=,ppid=,comm=,etime=` and parse the output into
  * a pid -> row map. Caches for `CACHE_TTL_MS` ms.
  *
  * `LC_ALL=C` is forced so the output is ASCII-stable across locales;
  * without it some macOS configurations localize the column headers
  * (which we suppress with `=`) and number formatting.
+ *
+ * NOTE: We use BSD `etime` (`[[dd-]hh:]mm:ss`), not procps `etimes`
+ * (raw seconds) — see `parseEtime` for the regression context.
  *
  * Exposed for tests; production callers go through `procStartTime`
  * and `findPiPidForPane`.
@@ -51,7 +93,7 @@ export function readPsSnapshot(
   }
   let raw = "";
   try {
-    raw = execFileSync("ps", ["-A", "-o", "pid=,ppid=,comm=,etimes="], {
+    raw = execFileSync("ps", ["-A", "-o", "pid=,ppid=,comm=,etime="], {
       encoding: "utf8",
       env: { ...process.env, LC_ALL: "C" },
       // ps shouldn't take more than a second under any reasonable
@@ -60,31 +102,31 @@ export function readPsSnapshot(
     });
   } catch {
     // ps not on PATH, killed, or non-zero exit. Treat as empty
-    // snapshot \u2014 callers will return null for everything.
+    // snapshot — callers will return null for everything.
     cached = { atMs: now, rows: new Map() };
     return cached.rows;
   }
 
   const rows = new Map<number, PsRow>();
   for (const line of raw.split("\n")) {
-    // Output looks like: "  1234   5678 zsh        12345"
-    // Three numeric columns + a comm column that may itself have
-    // spaces. Pull pid, ppid, etimes from the ends and keep
-    // everything in between as comm. (`-o pid=` suppresses the
-    // header so we don't have to skip a row.)
+    // Output looks like: "  1234   5678 zsh        01:23"
+    // Three columns + a comm column that may itself have spaces.
+    // Pull pid, ppid, etime from the ends and keep everything in
+    // between as comm. (`-o pid=` suppresses the header so we
+    // don't have to skip a row.)
     const trimmed = line.trim();
     if (trimmed === "") continue;
     const tokens = trimmed.split(/\s+/);
     if (tokens.length < 4) continue;
     const pidS = tokens[0] as string;
     const ppidS = tokens[1] as string;
-    const etimesS = tokens[tokens.length - 1] as string;
+    const etimeS = tokens[tokens.length - 1] as string;
     const comm = tokens.slice(2, -1).join(" ");
 
     const pid = Number(pidS);
     const ppid = Number(ppidS);
-    const etimes = Number(etimesS);
-    if (!Number.isInteger(pid) || !Number.isInteger(ppid) || !Number.isFinite(etimes)) {
+    const etimes = parseEtime(etimeS);
+    if (!Number.isInteger(pid) || !Number.isInteger(ppid) || etimes === null) {
       continue;
     }
     rows.set(pid, { pid, ppid, comm, etimes });
