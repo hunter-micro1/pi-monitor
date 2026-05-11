@@ -61,6 +61,54 @@ describe("groupBySession", () => {
   it("returns [] for empty input", () => {
     expect(groupBySession([])).toEqual([]);
   });
+
+  it("floats attention-worthy panes to the top of each session", () => {
+    // Mixed states inside a single session. Expected display order
+    // within the bucket: error → waiting → idle → retrying → working.
+    const result = groupBySession([
+      entry({ paneId: "%w", session: "main", status: status({ state: "working" }) }),
+      entry({ paneId: "%r", session: "main", status: status({ state: "retrying" }) }),
+      entry({ paneId: "%i", session: "main", status: status({ state: "idle" }) }),
+      entry({ paneId: "%a", session: "main", status: status({ state: "waiting" }) }),
+      entry({ paneId: "%e", session: "main", status: status({ state: "error" }) }),
+    ]);
+    expect(result[0]?.items.map((e) => e.paneId)).toEqual([
+      "%e",
+      "%a",
+      "%i",
+      "%r",
+      "%w",
+    ]);
+  });
+
+  it("is a stable sort: equal-priority items keep resolver order", () => {
+    // Three idle panes — the resolver gave us a..b..c, sort must
+    // not scramble them.
+    const result = groupBySession([
+      entry({ paneId: "%a", session: "main", status: status({ state: "idle" }) }),
+      entry({ paneId: "%b", session: "main", status: status({ state: "idle" }) }),
+      entry({ paneId: "%c", session: "main", status: status({ state: "idle" }) }),
+    ]);
+    expect(result[0]?.items.map((e) => e.paneId)).toEqual(["%a", "%b", "%c"]);
+  });
+
+  it("sorts independently inside each session", () => {
+    // Each session bucket is sorted on its own; the two sessions
+    // do NOT interleave.
+    const result = groupBySession([
+      entry({ paneId: "%1", session: "main", status: status({ state: "working" }) }),
+      entry({ paneId: "%2", session: "contracts", status: status({ state: "idle" }) }),
+      entry({ paneId: "%3", session: "main", status: status({ state: "idle" }) }),
+      entry({
+        paneId: "%4",
+        session: "contracts",
+        status: status({ state: "working" }),
+      }),
+    ]);
+    expect(result.map((g) => g.session)).toEqual(["main", "contracts"]);
+    expect(result[0]?.items.map((e) => e.paneId)).toEqual(["%3", "%1"]);
+    expect(result[1]?.items.map((e) => e.paneId)).toEqual(["%2", "%4"]);
+  });
 });
 
 describe("App render", () => {

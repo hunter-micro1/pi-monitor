@@ -16,7 +16,14 @@
  */
 
 import { Box, Text, useApp, useInput, useStdout } from "ink";
-import { type ReactElement, useEffect, useReducer, useRef, useState } from "react";
+import {
+  type ReactElement,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 
 import { STATE_COLORS, fmtStatusWidget } from "../format/row.js";
 import { Notifier } from "../notify/notifier.js";
@@ -226,16 +233,30 @@ export function App(props: AppProps): ReactElement {
   }, [getEntries, pollIntervalMs]);
 
   // ---------------------------------------------------------------------
-  // Cursor sync. When entries change, recompute selectable positions
-  // and try to keep the user's selection alive.
+  // Display order. groupBySession buckets entries by session AND lifts
+  // attention-worthy rows (error/waiting/idle) above retrying/working
+  // within each bucket — see its JSDoc. We memoize because the result
+  // feeds both the render below AND the cursor-sync effect; the cursor
+  // must walk panes in the same order the user sees them, otherwise
+  // j/k would skip around the visible list.
+  // ---------------------------------------------------------------------
+  const groups = useMemo(() => groupBySession(entries), [entries]);
+  const orderedPaneIds = useMemo(
+    () => groups.flatMap((g) => g.items.map((i) => i.paneId)),
+    [groups],
+  );
+
+  // ---------------------------------------------------------------------
+  // Cursor sync. When the visible order changes, recompute selectable
+  // positions and try to keep the user's selection alive.
   // ---------------------------------------------------------------------
   // biome-ignore lint/correctness/useExhaustiveDependencies: cursor.* identity is intentionally not a dep.
   useEffect(() => {
     dispatch({
       type: "sync",
-      paneIds: entries.map((e) => e.paneId),
+      paneIds: orderedPaneIds,
     });
-  }, [entries]);
+  }, [orderedPaneIds]);
 
   // ---------------------------------------------------------------------
   // Pulse + cursor-flash animation. One interval drives both: the
@@ -432,7 +453,6 @@ export function App(props: AppProps): ReactElement {
     onLaunchPi?.(enriched);
   };
 
-  const groups = groupBySession(entries);
   const cursorPos = currentPos(cursor);
   const selectedPaneId =
     cursorPos !== null && cursorPos.kind === "pane" ? cursorPos.paneId : null;
@@ -619,8 +639,33 @@ function Footer(): ReactElement {
 // ---------------------------------------------------------------------------
 
 /**
- * Group entries by tmux session in display order. Within each
- * session, entries keep the order the resolver gave us.
+ * Priority rank used to lift attention-worthy panes to the top of
+ * their session group. Lower = more attention-worthy. Mirrors the
+ * lattice that `pickSessionChip` (SessionGroup.tsx), `TitleBar`, and
+ * `fmtStatusWidget` already encode: error → waiting → idle →
+ * retrying → working → unknown/no_pi.
+ *
+ * Kept inline here rather than exported because every other call
+ * site iterates a literal in priority order; only `groupBySession`
+ * needs an `O(1)` rank lookup.
+ */
+const PRIORITY_RANK: Record<AgentState, number> = {
+  error: 0,
+  waiting: 1,
+  idle: 2,
+  retrying: 3,
+  working: 4,
+  unknown: 5,
+  no_pi: 6,
+};
+
+/**
+ * Group entries by tmux session in display order. Sessions keep
+ * the first-seen order from the resolver. Within each session,
+ * items are stable-sorted by attention priority so panes that need
+ * the user — `error`, `waiting`, then `idle` — float to the top,
+ * with `retrying`/`working` below. Items in the same state preserve
+ * the resolver's relative order.
  */
 export function groupBySession(
   entries: readonly AppEntry[],
@@ -634,10 +679,13 @@ export function groupBySession(
     }
     (buckets.get(e.session) as AppEntry[]).push(e);
   }
-  return order.map((s) => ({
-    session: s,
-    items: buckets.get(s) as AppEntry[],
-  }));
+  return order.map((s) => {
+    const items = buckets.get(s) as AppEntry[];
+    // Stable sort: Array.prototype.sort is spec-stable on V8 (Node
+    // 12+), so equal-priority items keep resolver order.
+    items.sort((a, b) => PRIORITY_RANK[a.status.state] - PRIORITY_RANK[b.status.state]);
+    return { session: s, items };
+  });
 }
 
 function countByState(states: readonly AgentState[]): Record<AgentState, number> {
