@@ -45,6 +45,23 @@ const PHASE_TO_STATE: Record<string, AgentState> = {
   awaiting_permission: "waiting",
 };
 
+/**
+ * Tools whose execution actively blocks on the user (the agent is
+ * stalled until the user clicks/types something). The heartbeat
+ * extension reports these as `phase: tool_running` because, strictly
+ * speaking, the tool IS running — but from the human-attention point
+ * of view they are indistinguishable from `awaiting_permission`:
+ * the agent has stopped making progress until you act.
+ *
+ * When `tool_running` is paired with one of these names, the resolver
+ * overrides the default `working` mapping to `waiting`, surfacing the
+ * pane as needs-attention in the UI and notifications.
+ *
+ * Keep this list small and obvious. Adding speculative entries here
+ * causes false-positive notifications.
+ */
+export const BLOCKING_USER_TOOLS: ReadonlySet<string> = new Set(["ask_user_question"]);
+
 interface ResolverOptions {
   /**
    * Override the heartbeat directory (default `~/.pi/agent/.heartbeats`).
@@ -233,8 +250,19 @@ export class StateResolver {
       baseDir: this.heartbeatBaseDir,
     });
     if (hb === null) return null;
-    const state = PHASE_TO_STATE[hb.phase];
+    let state = PHASE_TO_STATE[hb.phase];
     if (state === undefined) return null;
+    // Tool-running phases default to `working`, but a handful of
+    // tools (ask_user_question, ...) block on user input. Treat
+    // those as `waiting` so the UI flags them as needs-attention.
+    if (
+      state === "working" &&
+      hb.phase === "tool_running" &&
+      hb.currentTool !== null &&
+      BLOCKING_USER_TOOLS.has(hb.currentTool)
+    ) {
+      state = "waiting";
+    }
     return { state, heartbeat: hb };
   }
 
