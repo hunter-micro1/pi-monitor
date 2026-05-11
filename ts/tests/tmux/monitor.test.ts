@@ -104,6 +104,67 @@ describe("ensureMonitorSession", () => {
     expect(cmds).toContain("split-window");
   });
 
+  it("disables pane-border-status on the monitor window in every setup path", () => {
+    // Three branches set up the monitor session (fresh, 1-pane,
+    // 2+ pane); all three must apply the window override so a
+    // user's `set -g pane-border-status top` doesn't leak through
+    // and draw a redundant top-border above the right pane.
+
+    // Branch 1: session doesn't exist (fresh create).
+    sessionExistsMock.mockReturnValue(false);
+    ensureMonitorSession();
+    const freshCmds = tmuxRunMock.mock.calls.map((c) => (c[0] as string[]).slice(0, 5));
+    expect(freshCmds).toContainEqual([
+      "set-window-option",
+      "-t",
+      "monitor:0",
+      "pane-border-status",
+      "off",
+    ]);
+
+    // Branch 2: session exists with 1 pane (legacy layout).
+    tmuxRunMock.mockClear();
+    sessionExistsMock.mockReturnValue(true);
+    listPanesMock.mockReturnValue([
+      // biome-ignore lint/suspicious/noExplicitAny: minimal pane shape for the test
+      { session: "monitor", windowIndex: 0, paneIndex: 0, paneId: "%1" } as any,
+    ]);
+    ensureMonitorSession();
+    const onePaneCmds = tmuxRunMock.mock.calls.map((c) =>
+      (c[0] as string[]).slice(0, 5),
+    );
+    expect(onePaneCmds).toContainEqual([
+      "set-window-option",
+      "-t",
+      "monitor:0",
+      "pane-border-status",
+      "off",
+    ]);
+
+    // Branch 3: session exists with 3 panes (extras to clean up).
+    tmuxRunMock.mockClear();
+    sessionExistsMock.mockReturnValue(true);
+    listPanesMock.mockReturnValue([
+      // biome-ignore lint/suspicious/noExplicitAny: minimal pane shape
+      { session: "monitor", windowIndex: 0, paneIndex: 0, paneId: "%1" } as any,
+      // biome-ignore lint/suspicious/noExplicitAny: minimal pane shape
+      { session: "monitor", windowIndex: 0, paneIndex: 1, paneId: "%2" } as any,
+      // biome-ignore lint/suspicious/noExplicitAny: minimal pane shape
+      { session: "monitor", windowIndex: 0, paneIndex: 2, paneId: "%3" } as any,
+    ]);
+    ensureMonitorSession();
+    const manyPaneCmds = tmuxRunMock.mock.calls.map((c) =>
+      (c[0] as string[]).slice(0, 5),
+    );
+    expect(manyPaneCmds).toContainEqual([
+      "set-window-option",
+      "-t",
+      "monitor:0",
+      "pane-border-status",
+      "off",
+    ]);
+  });
+
   it("kills extras and resets the right slot when there are >2 panes", () => {
     sessionExistsMock.mockReturnValue(true);
     listPanesMock.mockReturnValue([
