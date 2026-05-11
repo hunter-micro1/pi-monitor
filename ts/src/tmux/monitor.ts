@@ -48,7 +48,9 @@ function placeholderCmd(): string {
  * - If the session exists with 2 panes already: leave it alone.
  *
  * Always calls `cleanupOrphanViewers` first so a previous crash
- * can't leave stray clients alive.
+ * can't leave stray clients alive. Always calls
+ * `applyMonitorWindowOptions` last so the monitor window's tmux
+ * options are normalized regardless of which branch ran.
  *
  * Mirrors `ensure_monitor_session`.
  */
@@ -69,6 +71,7 @@ export function ensureMonitorSession(leftCommand?: string): void {
       placeholderCmd(),
     ]);
     tmuxRun(["select-pane", "-t", TUI_PANE]);
+    applyMonitorWindowOptions();
     return;
   }
 
@@ -78,6 +81,8 @@ export function ensureMonitorSession(leftCommand?: string): void {
 
   if (monitorPanes.length === 0) {
     // Existing-but-empty shouldn't really happen, but be defensive.
+    // The recursive call hits the create branch above, which
+    // applies the window options itself, so we don't duplicate here.
     tmuxRun(["kill-session", "-t", MONITOR_SESSION]);
     ensureMonitorSession(leftCommand);
     return;
@@ -95,6 +100,7 @@ export function ensureMonitorSession(leftCommand?: string): void {
       placeholderCmd(),
     ]);
     tmuxRun(["select-pane", "-t", TUI_PANE]);
+    applyMonitorWindowOptions();
     return;
   }
 
@@ -116,6 +122,36 @@ export function ensureMonitorSession(leftCommand?: string): void {
   }
   try {
     tmuxRun(["select-pane", "-t", TUI_PANE]);
+  } catch (err) {
+    if (!(err instanceof TmuxError)) throw err;
+  }
+  applyMonitorWindowOptions();
+}
+
+/**
+ * Apply tmux window options to the monitor's window itself (NOT
+ * its viewer sessions). Currently disables `pane-border-status` so
+ * the OUTER monitor window doesn't draw a redundant top-border
+ * above the right pane \u2014 the INNER viewer client already draws
+ * its own pane-border-status (showing the focused agent's pane
+ * title), and a second stacked bar above it from the outer tmux
+ * is just chrome. Users can keep `set -g pane-border-status top`
+ * in their tmux.conf and pi-monitor will still render cleanly.
+ *
+ * Idempotent: tmux silently no-ops when the option is already the
+ * target value. Wrapped in TmuxError catch so an older tmux that
+ * doesn't recognize the option fails soft (worst case: the user
+ * sees the duplicate bar, same as before this fix).
+ */
+function applyMonitorWindowOptions(): void {
+  try {
+    tmuxRun([
+      "set-window-option",
+      "-t",
+      `${MONITOR_SESSION}:0`,
+      "pane-border-status",
+      "off",
+    ]);
   } catch (err) {
     if (!(err instanceof TmuxError)) throw err;
   }
