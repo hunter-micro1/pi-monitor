@@ -123,6 +123,49 @@ describe("StateResolver \u2014 heartbeat fast-path", () => {
     expect(status?.snapshot).toBeNull();
   });
 
+  it("maps tool_running + ask_user_question to waiting (blocks on user)", () => {
+    findPiPidForPaneMock.mockReturnValue(9999);
+    procStartTimeMock.mockReturnValue(1000.0);
+    readHeartbeatMock.mockReturnValue({
+      pid: 9999,
+      sessionFile: "/some/abs/path.jsonl",
+      ts: 1500.0,
+      phase: "tool_running",
+      currentTool: "ask_user_question",
+      retryAttempt: 0,
+    });
+
+    const resolver = newResolver();
+    const refs = [ref({ paneId: "p1", cwd: "/x" })];
+    const out = resolver.resolve(refs, 1500.5);
+
+    const status = out.get("p1");
+    expect(status?.state).toBe("waiting");
+    // Heartbeat fields still surface through to the UI so the row
+    // can show "ask_user_question" as the current tool label.
+    expect(status?.phase).toBe("tool_running");
+    expect(status?.currentTool).toBe("ask_user_question");
+  });
+
+  it("keeps tool_running + null currentTool as working (regression)", () => {
+    findPiPidForPaneMock.mockReturnValue(9999);
+    procStartTimeMock.mockReturnValue(1000.0);
+    readHeartbeatMock.mockReturnValue({
+      pid: 9999,
+      sessionFile: "/some/abs/path.jsonl",
+      ts: 1500.0,
+      phase: "tool_running",
+      currentTool: null,
+      retryAttempt: 0,
+    });
+
+    const resolver = newResolver();
+    const refs = [ref({ paneId: "p1", cwd: "/x" })];
+    const out = resolver.resolve(refs, 1500.5);
+
+    expect(out.get("p1")?.state).toBe("working");
+  });
+
   it("falls back to JSONL when the heartbeat is unrecognized", () => {
     findPiPidForPaneMock.mockReturnValue(9999);
     procStartTimeMock.mockReturnValue(1000.0);
