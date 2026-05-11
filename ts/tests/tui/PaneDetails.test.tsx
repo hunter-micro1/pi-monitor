@@ -87,6 +87,33 @@ describe("PaneDetails", () => {
   });
 
   // ---------------------------------------------------------------------
+  // Branch
+  // ---------------------------------------------------------------------
+
+  it("renders a Branch line with the branch name", () => {
+    const { lastFrame } = render(
+      <PaneDetails
+        status={status()}
+        paneTitle="agent"
+        paneIndex={0}
+        branch="agent/main-181523"
+      />,
+    );
+    const out = lastFrame() ?? "";
+    expect(out).toContain("Branch");
+    expect(out).toContain("agent/main-181523");
+  });
+
+  it("renders the Branch line with a (detached) fallback when branch is null", () => {
+    const { lastFrame } = render(
+      <PaneDetails status={status()} paneTitle="agent" paneIndex={0} branch={null} />,
+    );
+    const out = lastFrame() ?? "";
+    expect(out).toContain("Branch");
+    expect(out).toContain("(detached)");
+  });
+
+  // ---------------------------------------------------------------------
   // Worktree
   // ---------------------------------------------------------------------
 

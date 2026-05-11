@@ -154,21 +154,31 @@ export class StateResolver {
         const ref = list[i] as PaneRef;
         const piPid = pids.get(ref.paneId);
 
-        // Heartbeat fast path: trust the extension when it's writing
-        // fresh status, skip JSONL inference entirely.
+        // Heartbeat fast path: trust the extension's state, but
+        // still read the JSONL when the heartbeat advertises a
+        // session_file so PaneDetails can show Prompt + Tokens
+        // (those come from the snapshot, not the heartbeat). The
+        // JsonlReader is incrementally cached and the typical
+        // delta is tiny, so the cost is bounded.
         if (piPid !== undefined && piPid !== null) {
           const hbState = this.stateFromHeartbeat(piPid, now);
           if (hbState !== null) {
             const { state, heartbeat } = hbState;
+            let snapshot = null;
+            let idleSeconds = 0.0;
             if (heartbeat.sessionFile !== null) {
               claimed.add(heartbeat.sessionFile);
+              snapshot = this.reader.read(heartbeat.sessionFile);
+              if (snapshot !== null) {
+                idleSeconds = Math.max(0.0, now - snapshot.mtime);
+              }
             }
             results.set(ref.paneId, {
               paneId: ref.paneId,
               state,
               sessionFile: heartbeat.sessionFile,
-              snapshot: null,
-              idleSeconds: 0.0,
+              snapshot,
+              idleSeconds,
               phase: heartbeat.phase,
               currentTool: heartbeat.currentTool,
               retryAttempt: heartbeat.retryAttempt,

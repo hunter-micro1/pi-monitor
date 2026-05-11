@@ -4,11 +4,12 @@
  * Renders a tight, five-line summary of the currently-selected
  * pane:
  *
- *   <name> · <branch>                <activity tag>     // title row
- *   Worktree   <pi cwd, $HOME -> ~>                     // when cwd is non-empty
- *   When       Started Xh Ym ago · idle Zs              // when sessionFile parses
- *   Prompt     <last user message, truncated 200 chars> // when snapshot has lastUserPrompt
- *   Tokens     <total> total · <cost>                   // when cumulativeTokens > 0
+ *   <name>                              <activity tag>     // title row
+ *   Branch     <branch name | "(detached)">              // always when status present
+ *   Worktree   <pi cwd, $HOME -> ~>                      // when cwd is non-empty
+ *   When       Started Xh Ym ago · idle Zs               // when sessionFile parses
+ *   Prompt     <last user message, truncated 200 chars>  // when snapshot has lastUserPrompt
+ *   Tokens     <total> total · <cost>                    // when cumulativeTokens > 0
  *
  * The title row mirrors PaneRow's first line so users read
  * "expanded version of the cursor row" rather than "what's this
@@ -48,8 +49,17 @@ import {
 import type { PaneStatus } from "../state/types.js";
 import { FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
 
-/** Width reserved for the "Worktree"/"When"/"Prompt"/"Tokens" label column. */
+/** Width reserved for the "Branch"/"Worktree"/"When"/"Prompt"/"Tokens" label column. */
 const LABEL_COL = 10;
+
+/**
+ * Fallback shown on the Branch line when branchForCwd() returns
+ * null. Covers detached HEAD, non-git checkouts, and git failures
+ * — we deliberately don't distinguish them here to keep the line
+ * single-shape. The label is always rendered so users learn to
+ * look at the same place for the agent's branch context.
+ */
+const BRANCH_FALLBACK = "(detached)";
 
 /** Max chars for the Prompt line value before ellipsis. */
 const PROMPT_MAX_CHARS = 200;
@@ -114,27 +124,27 @@ export function PaneDetails({
     <Box flexDirection="column" marginTop={1}>
       <Divider />
 
-      {/* Title row: paneTitle + branch on the left, activity tag on
-          the right. No selection bar — the details box is
-          implicitly about the selected row. */}
+      {/* Title row: paneTitle on the left, activity tag on the
+          right. No selection bar — the details box is implicitly
+          about the selected row. The branch fragment used to live
+          here but moved to its own labeled `Branch` line below,
+          so users always read it in the same spot. */}
       <Box flexDirection="row" paddingX={2} marginTop={1}>
         <Box flexGrow={1} flexShrink={1}>
           <Text bold color={main.nameColor ?? FOREGROUND}>
             {main.name}
           </Text>
-          {main.branch !== null && (
-            <Text color={FOREGROUND_MUTED}>
-              {" \u00b7 "}
-              {main.branch}
-            </Text>
-          )}
         </Box>
         <Text color={tag.color}>{tag.verb}</Text>
       </Box>
 
       {/* Detail lines. Each label is dim, value is full foreground.
           Indent matches the title row's paddingX={2} so labels
-          align with paneTitle's first letter. */}
+          align with paneTitle's first letter. Branch always
+          renders so the box has a consistent shape across panes;
+          Worktree / When / Prompt / Tokens are conditional on
+          having data. */}
+      <Detail label="Branch" value={branch ?? BRANCH_FALLBACK} />
       {tree !== null && <Detail label="Worktree" value={tree} />}
       {when !== null && <Detail label="When" value={when} />}
       {prompt !== null && <Detail label="Prompt" value={prompt} />}

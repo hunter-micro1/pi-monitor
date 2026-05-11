@@ -166,6 +166,48 @@ describe("StateResolver \u2014 heartbeat fast-path", () => {
     expect(out.get("p1")?.state).toBe("working");
   });
 
+  it("populates snapshot from JSONL even on heartbeat fast-path", () => {
+    findPiPidForPaneMock.mockReturnValue(9999);
+    procStartTimeMock.mockReturnValue(1000.0);
+    // Resolver used to set snapshot:null on the heartbeat path,
+    // which hid the Prompt + Tokens lines in PaneDetails because
+    // their data lives on the snapshot. With heartbeat.sessionFile
+    // present, we still read the JSONL so those lines work even
+    // while the heartbeat extension is publishing.
+    const sessionFile = writeJsonl({
+      cwd: "/x",
+      filename: "2026-05-11T10-00-00-000Z_a.jsonl",
+      mtime: 1499.5,
+      body: `${JSON.stringify({
+        type: "message",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "please ship the new release" }],
+        },
+      })}\n`,
+    });
+    readHeartbeatMock.mockReturnValue({
+      pid: 9999,
+      sessionFile,
+      ts: 1500.0,
+      phase: "tool_running",
+      currentTool: "bash",
+      retryAttempt: 0,
+    });
+
+    const resolver = newResolver();
+    const refs = [ref({ paneId: "p1", cwd: "/x" })];
+    const out = resolver.resolve(refs, 1500.5);
+
+    const status = out.get("p1");
+    expect(status?.state).toBe("working"); // from heartbeat
+    expect(status?.snapshot).not.toBeNull(); // from JSONL
+    expect(status?.snapshot?.lastUserPrompt).toBe("please ship the new release");
+    // idleSeconds now derives from snapshot.mtime when available,
+    // not the hard-coded 0.0 it used to be on the heartbeat path.
+    expect(status?.idleSeconds).toBeCloseTo(1.0, 1);
+  });
+
   it("falls back to JSONL when the heartbeat is unrecognized", () => {
     findPiPidForPaneMock.mockReturnValue(9999);
     procStartTimeMock.mockReturnValue(1000.0);
