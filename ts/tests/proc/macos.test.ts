@@ -3,9 +3,14 @@
  *
  * Mocks `node:child_process` so we don't shell out to a real `ps`.
  * The shape of the fake output matches what `ps -A -o
- * pid=,ppid=,comm=,etimes=` actually prints on a darwin box: one
+ * pid=,ppid=,comm=,etime=` actually prints on a darwin box: one
  * line per process, columns separated by runs of spaces, comm
  * column may itself contain spaces (e.g. macOS-bundled apps).
+ *
+ * Note: BSD `etime` formats elapsed time as `[[dd-]hh:]mm:ss`,
+ * NOT raw seconds (the procps `etimes` keyword is Linux-only).
+ * `fakePsRows` accepts seconds for ergonomics and formats them
+ * for the fake output via `formatEtime`.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +24,7 @@ import { execFileSync } from "node:child_process";
 import {
   _resetPsCacheForTests,
   findPiPidForPane,
+  parseEtime,
   procCwd,
   procStartTime,
 } from "../../src/proc/macos.js";
@@ -34,15 +40,71 @@ afterEach(() => {
 });
 
 /**
+ * Format `seconds` as a BSD `etime` string (`[[dd-]hh:]mm:ss`).
+ * Mirrors what real macOS `ps -o etime=` emits.
+ */
+function formatEtime(totalSeconds: number): string {
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  if (days > 0) return `${days}-${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+  if (hours > 0) return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+  return `${pad(minutes)}:${pad(seconds)}`;
+}
+
+/**
  * Helper to install a fake `ps -A` output. Each row is
- * (pid, ppid, comm, etimes).
+ * (pid, ppid, comm, etimeSeconds).
  */
 function fakePsRows(rows: Array<[number, number, string, number]>): void {
   const text = rows
-    .map(([pid, ppid, comm, etimes]) => `${pid} ${ppid} ${comm} ${etimes}`)
+    .map(
+      ([pid, ppid, comm, etimeSeconds]) =>
+        `${pid} ${ppid} ${comm} ${formatEtime(etimeSeconds)}`,
+    )
     .join("\n");
   execFileSyncMock.mockReturnValue(text);
 }
+
+// ---------------------------------------------------------------------------
+// parseEtime
+// ---------------------------------------------------------------------------
+
+describe("macos.parseEtime", () => {
+  it("parses mm:ss", () => {
+    expect(parseEtime("00:42")).toBe(42);
+    expect(parseEtime("01:23")).toBe(83);
+  });
+
+  it("parses hh:mm:ss", () => {
+    expect(parseEtime("23:01:23")).toBe(23 * 3600 + 60 + 23);
+  });
+
+  it("parses dd-hh:mm:ss", () => {
+    expect(parseEtime("3-04:05:06")).toBe(3 * 86_400 + 4 * 3600 + 5 * 60 + 6);
+  });
+
+  it("trims surrounding whitespace", () => {
+    expect(parseEtime("   01:23   ")).toBe(83);
+  });
+
+  it("returns null for raw seconds (procps etimes format)", () => {
+    // The whole point of this rewrite: BSD etime is `[[dd-]hh:]mm:ss`,
+    // never bare seconds. If a caller accidentally feeds us the procps
+    // format we should reject it rather than silently misinterpret.
+    expect(parseEtime("60")).toBeNull();
+    expect(parseEtime("123456")).toBeNull();
+  });
+
+  it("returns null for malformed input", () => {
+    expect(parseEtime("")).toBeNull();
+    expect(parseEtime("abc")).toBeNull();
+    expect(parseEtime("1:2:3:4")).toBeNull();
+    expect(parseEtime("1::23")).toBeNull();
+  });
+});
 
 // ---------------------------------------------------------------------------
 // procStartTime

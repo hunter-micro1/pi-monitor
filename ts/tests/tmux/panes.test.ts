@@ -1,9 +1,9 @@
 /**
  * Pane discovery tests.
  *
- * Mocks `tmux/client.ts` so we don't shell out to a real tmux.
- * The mocked `tmuxRun` returns canned `list-panes -F` output that
- * matches the byte-for-byte format string `panes.ts` uses.
+ * Mocks `tmux/client.ts` so we don't shell out to a real tmux,
+ * and `proc/index.ts` so the proc-tree-walk fallback used by
+ * `isPi` is deterministic.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,23 +15,36 @@ vi.mock("../../src/tmux/client.js", () => ({
   sessionExists: vi.fn(),
 }));
 
+vi.mock("../../src/proc/index.js", () => ({
+  findPiPidForPane: vi.fn(() => null),
+  procStartTime: vi.fn(() => null),
+  procCwd: vi.fn(() => null),
+}));
+
+import { findPiPidForPane } from "../../src/proc/index.js";
 import { TmuxError, tmuxRun } from "../../src/tmux/client.js";
 import { isViewerSession, listPanes, listPiPanes } from "../../src/tmux/panes.js";
 
 const tmuxRunMock = vi.mocked(tmuxRun);
+const findPiPidForPaneMock = vi.mocked(findPiPidForPane);
 
 beforeEach(() => {
   tmuxRunMock.mockReset();
+  // Default: no pi descendants. Individual tests override with
+  // mockImplementation when they need the macOS fallback path.
+  findPiPidForPaneMock.mockReset();
+  findPiPidForPaneMock.mockReturnValue(null);
 });
 
 afterEach(() => {
   tmuxRunMock.mockReset();
+  findPiPidForPaneMock.mockReset();
 });
 
 /**
  * Build a fake `tmux list-panes -F` line with the field order our
- * format string expects: pane_id \\t session \\t window \\t pane_idx
- *  \\t pid \\t cwd \\t title \\t command.
+ * format string expects: pane_id \t session \t window \t pane_idx
+ *  \t pid \t cwd \t title \t command.
  */
 function fakeLine(args: {
   paneId?: string;
@@ -140,6 +153,42 @@ describe("listPanes", () => {
     expect(pane?.cwd).toBe("/home/u/My Stuff/project");
     expect(pane?.title).toBe("long agent name here");
   });
+
+  it("flags pane as isPi via process-tree walk when tmux reports 'node' (macOS regression)", () => {
+    // macOS bug: tmux's pane_current_command uses libproc and
+    // returns the executable basename for Node-based binaries
+    // (i.e. `node`, never `pi`). Without the tree-walk fallback,
+    // every real pi pane on macOS is filtered out as not-pi and
+    // the user sees an empty agent list.
+    tmuxRunMock.mockReturnValue(
+      `${[
+        // shell-launched pi: pane PID is zsh, pi is a child.
+        fakeLine({ paneId: "%1", pid: 86074, command: "node" }),
+        // genuine no-pi shell pane.
+        fakeLine({ paneId: "%2", pid: 87262, command: "zsh" }),
+        // pane PID itself is pi.
+        fakeLine({ paneId: "%3", pid: 86575, command: "node" }),
+      ].join("\n")}\n`,
+    );
+    findPiPidForPaneMock.mockImplementation((pid: number) => {
+      if (pid === 86074) return 86193; // descendant pi
+      if (pid === 86575) return 86575; // pid itself is pi
+      return null;
+    });
+    const panes = listPanes();
+    expect(panes).toHaveLength(3);
+    expect(panes[0]?.isPi).toBe(true);
+    expect(panes[1]?.isPi).toBe(false);
+    expect(panes[2]?.isPi).toBe(true);
+  });
+
+  it("skips the tree walk when tmux already reports command='pi' (Linux fast path)", () => {
+    tmuxRunMock.mockReturnValue(`${fakeLine({ paneId: "%1", command: "pi" })}\n`);
+    const panes = listPanes();
+    expect(panes[0]?.isPi).toBe(true);
+    // Fast path: don't even ask the proc resolver.
+    expect(findPiPidForPaneMock).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -147,16 +196,18 @@ describe("listPanes", () => {
 // ---------------------------------------------------------------------------
 
 describe("listPiPanes", () => {
-  it("filters to command='pi'", () => {
+  it("filters to panes whose tree contains pi (incl. the macOS 'node' case)", () => {
     tmuxRunMock.mockReturnValue(
       `${[
-        fakeLine({ paneId: "%1", command: "pi" }),
-        fakeLine({ paneId: "%2", command: "zsh" }),
-        fakeLine({ paneId: "%3", command: "pi" }),
+        fakeLine({ paneId: "%1", pid: 100, command: "pi" }),
+        fakeLine({ paneId: "%2", pid: 200, command: "zsh" }),
+        fakeLine({ paneId: "%3", pid: 300, command: "node" }), // macOS pi
       ].join("\n")}\n`,
     );
+    findPiPidForPaneMock.mockImplementation((pid: number) =>
+      pid === 300 ? 301 : null,
+    );
     const piOnly = listPiPanes();
-    expect(piOnly).toHaveLength(2);
     expect(piOnly.map((p) => p.paneId)).toEqual(["%1", "%3"]);
   });
 });
