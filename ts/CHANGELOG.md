@@ -7,6 +7,37 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.21] — 2026-05-22
+
+macOS bug-fix release — `pi-monitor` now actually finds pi panes on
+Mac. Two darwin-only bugs that shipped in 0.4.x left the agent list
+empty on every Mac; both are addressed in #34. Linux/Windows behaviour
+is unchanged.
+
+- **macOS: stop asking `ps` for a procps-only column.**
+  `src/proc/macos.ts` previously requested `-o etimes` (raw seconds),
+  which is a procps-ng extension. macOS BSD `ps` rejects it with
+  `ps: etimes: keyword not found` and exits non-zero, which the catch
+  turned into an empty process snapshot — `findPiPidForPane` and
+  `procStartTime` then returned `null` for every pid. Switched to the
+  BSD-supported `etime` (`[[dd-]hh:]mm:ss`) column and added a
+  `parseEtime` helper that handles `mm:ss` / `hh:mm:ss` /
+  `dd-hh:mm:ss`.
+- **macOS: fall back to a process-tree walk for pi detection.**
+  `src/tmux/panes.ts` decided `isPi` via
+  `pane_current_command === "pi"`. On macOS, tmux's
+  `pane_current_command` uses libproc, which returns the executable
+  basename — so a Node CLI like `pi` is reported as `node` and every
+  real pi pane was filtered out before the resolver saw it. The fast
+  path still wins on Linux (where `pane_current_command` honors
+  `comm`); the slow path walks the cached `ps` snapshot to find pi
+  via its kernel-tracked `comm`.
+- **Tests.** Added `parseEtime` unit tests; macOS unit tests now feed
+  the BSD `etime` format; new darwin-only `tests/proc/macos.real.test.ts`
+  shells out to a real `ps` so a future column-name regression cannot
+  slip through silently; `panes.ts` tests add a regression case for the
+  macOS `node` pane with a pi descendant.
+
 ## [0.4.19] — 2026-05-08
 
 New-pi popup gets a `Session name` field; Enter on the
