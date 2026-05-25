@@ -14,12 +14,16 @@ import { execFileSync } from "node:child_process";
 
 /**
  * How long a `ps -A` snapshot is reused across `procStartTime` /
- * `findPiPidForPane` calls. The resolver runs every ~500 ms; 200 ms
- * is enough to amortize all the per-pane lookups in a single tick
- * while still being responsive to processes that come/go between
- * ticks.
+ * `findPiPidForPane` calls. The resolver runs every ~500 ms and
+ * makes 2–3 calls per pi pane in one tick (findPiPid + procStartTime
+ * × N), so the TTL must comfortably exceed a single tick or every
+ * tick will re-spawn `ps -A` mid-loop.
+ *
+ * 450 ms gives one `ps -A` spawn per resolver tick at the default
+ * 500 ms cadence, with 50 ms slack so a slow `ps` doesn't push the
+ * next tick's first call past the TTL and double-spawn.
  */
-const CACHE_TTL_MS = 200;
+const CACHE_TTL_MS = 450;
 
 interface PsRow {
   pid: number;
@@ -146,45 +150,82 @@ export function _resetPsCacheForTests(): void {
 }
 
 /**
- * Current working directory for `pid`. Shells out to
- * `lsof -a -p <pid> -d cwd -Fn` and parses the `n`-prefixed cwd
- * line. Returns `null` when lsof is unavailable, the pid is
- * gone, or no cwd line was emitted.
+ * Current working directory for every pid in `pids`. Issues ONE
+ * `lsof -p p1,p2,...` subprocess and parses the per-pid cwd lines
+ * out of the combined output. Missing/unreadable pids are absent
+ * from the returned map.
+ *
+ * This is the bulk equivalent of {@link procCwd}; the state
+ * resolver calls it once per tick with every live pi pid so 10
+ * panes cost 1 lsof spawn instead of 10. Per-spawn cost on macOS
+ * is ~10–30 ms, so this is the single biggest tick-budget win
+ * once you cross ~5 panes.
+ *
+ * Empty `pids` short-circuits to an empty map with no subprocess.
+ *
+ * Output parsing: lsof emits a `p<pid>` marker line at the start
+ * of each process record, then one `f<fd>` line + one `n<path>`
+ * line per matching descriptor. With `-d cwd` we get at most one
+ * `n` line per pid. We track the most-recent `p` and attribute
+ * the next `n` line to it.
+ */
+export function procCwds(pids: readonly number[]): Map<number, string | null> {
+  const out = new Map<number, string | null>();
+  if (pids.length === 0) return out;
+
+  // Dedupe + filter to integers. lsof would tolerate dupes but it
+  // costs nothing here and makes the test mock easier to reason
+  // about.
+  const unique = Array.from(new Set(pids)).filter((p) => Number.isInteger(p) && p > 0);
+  if (unique.length === 0) return out;
+
+  let raw = "";
+  try {
+    raw = execFileSync("lsof", ["-a", "-p", unique.join(","), "-d", "cwd", "-Fn"], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C" },
+      // lsof should be sub-second; cap so a hung subprocess can't
+      // block the App. Scaled lightly with pid count so very
+      // large batches don't trip the cap before lsof finishes,
+      // but stays bounded.
+      timeout: 2_000 + Math.min(unique.length * 100, 3_000),
+    });
+  } catch {
+    // lsof exits non-zero when *any* of the requested pids is gone,
+    // even if the rest produced output. The output is still on
+    // stdout, but execFileSync throws and discards it. Caller gets
+    // an empty map; the resolver falls back to ref.cwd per pane.
+    return out;
+  }
+
+  let currentPid: number | null = null;
+  for (const line of raw.split("\n")) {
+    if (line.length < 2) continue;
+    const tag = line.charCodeAt(0);
+    if (tag === 112 /* 'p' */) {
+      const n = Number(line.slice(1));
+      currentPid = Number.isInteger(n) ? n : null;
+    } else if (tag === 110 /* 'n' */ && currentPid !== null) {
+      // First `n` line per pid wins; -d cwd only emits one anyway,
+      // so this is just defensive.
+      if (!out.has(currentPid)) {
+        out.set(currentPid, line.slice(1));
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Current working directory for a single `pid`. Thin wrapper over
+ * {@link procCwds}; prefer the bulk API in hot paths.
  *
  * Used by the state resolver to find a pi process's actual cwd
  * when an extension (e.g. auto-worktree) has re-exec'd it into
  * a different directory than the tmux pane's `pane_current_path`.
- *
- * Each call shells out (no caching). Callers in the hot resolver
- * loop are expected to invoke this once per pi pane per tick;
- * with single-digit pi panes per tmux server it stays well under
- * the 500ms tick budget.
  */
 export function procCwd(pid: number): string | null {
-  let raw = "";
-  try {
-    raw = execFileSync("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], {
-      encoding: "utf8",
-      env: { ...process.env, LC_ALL: "C" },
-      // lsof should be sub-second; cap so a hung subprocess can't
-      // block the App.
-      timeout: 2_000,
-    });
-  } catch {
-    return null;
-  }
-  // -Fn output is one or more lines per file descriptor; the cwd
-  // line is the one whose first character is `n` followed by the
-  // path. e.g.
-  //   p1234
-  //   fcwd
-  //   n/home/user/project
-  for (const line of raw.split("\n")) {
-    if (line.length > 1 && line.charCodeAt(0) === 110 /* 'n' */) {
-      return line.slice(1);
-    }
-  }
-  return null;
+  return procCwds([pid]).get(pid) ?? null;
 }
 
 /**

@@ -47,7 +47,7 @@
  */
 
 import { Box, Text } from "ink";
-import type { ReactElement } from "react";
+import { type ReactElement, memo } from "react";
 import {
   type ActivityTag,
   STATE_COLORS,
@@ -86,7 +86,15 @@ export interface PaneRowProps {
   sessionColor?: string;
 }
 
-export function PaneRow({
+/**
+ * Internal implementation. Wrapped in {@link memo} below so the
+ * 80 ms pulse tick in App doesn't force a full re-render of every
+ * row on every frame. Animated props (`workingColor`,
+ * `spinnerGlyph`, `cursorBarColor`) are only passed in by App
+ * when this row actually consumes them — idle/error/waiting rows
+ * see stable `undefined` and skip the re-render entirely.
+ */
+function PaneRowImpl({
   status,
   paneTitle,
   paneIndex,
@@ -169,3 +177,14 @@ export function PaneRow({
     </Box>
   );
 }
+
+/**
+ * Memoized PaneRow. Default shallow prop equality is enough: the
+ * App threads animated props (workingColor, spinnerGlyph,
+ * cursorBarColor) only into rows that consume them, so non-working
+ * non-selected rows see stable `undefined` between pulse ticks.
+ * Status references stay stable between resolver ticks (the
+ * entries array is the same array reference between pulses), so
+ * a row with no state change skips the pulse re-render entirely.
+ */
+export const PaneRow = memo(PaneRowImpl);

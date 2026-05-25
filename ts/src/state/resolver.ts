@@ -13,7 +13,7 @@
  */
 
 import { readHeartbeat } from "../heartbeat/reader.js";
-import { findPiPidForPane, procCwd, procStartTime } from "../proc/index.js";
+import { findPiPidForPane, procCwds, procStartTime } from "../proc/index.js";
 import { claimSessionFile } from "./files.js";
 import { STARTING_GRACE_S, inferState } from "./infer.js";
 import { JsonlReader } from "./reader.js";
@@ -111,15 +111,30 @@ export class StateResolver {
     // cwd, so JSONL discovery has to use the same. Falls back to
     // ref.cwd when /proc is unreadable, the pi descendant has
     // gone away, or the platform-specific procCwd lookup failed.
+    //
+    // Pass 1: resolve the deepest pi pid per pane. Cheap — backed
+    // by the cached `ps -A` / /proc snapshot.
     const pids = new Map<string, number | null>();
-    const starts = new Map<string, number | null>();
-    const effectiveCwds = new Map<string, string>();
+    const piPidList: number[] = [];
     for (const ref of refs) {
       if (!ref.isPi) continue;
       const piPid = findPiPidForPane(ref.panePid);
       pids.set(ref.paneId, piPid);
+      if (piPid !== null) piPidList.push(piPid);
+    }
+    // Pass 2: bulk-fetch cwds for every live pi pid in ONE
+    // subprocess. On macOS this is `lsof -p p1,p2,...` instead of
+    // N separate lsof spawns — the dominant tick-time win once
+    // you have ~5+ panes. On Linux it's a loop of cheap readlinks.
+    const cwdByPid = procCwds(piPidList);
+    // Pass 3: per-ref start time + effectiveCwd.
+    const starts = new Map<string, number | null>();
+    const effectiveCwds = new Map<string, string>();
+    for (const ref of refs) {
+      if (!ref.isPi) continue;
+      const piPid = pids.get(ref.paneId) ?? null;
       starts.set(ref.paneId, piPid !== null ? procStartTime(piPid) : null);
-      const piCwd = piPid !== null ? procCwd(piPid) : null;
+      const piCwd = piPid !== null ? (cwdByPid.get(piPid) ?? null) : null;
       effectiveCwds.set(ref.paneId, piCwd ?? ref.cwd);
     }
 

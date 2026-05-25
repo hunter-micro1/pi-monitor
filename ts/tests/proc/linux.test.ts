@@ -9,7 +9,12 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { findPiPidForPane, procCwd, procStartTime } from "../../src/proc/linux.js";
+import {
+  findPiPidForPane,
+  procCwd,
+  procCwds,
+  procStartTime,
+} from "../../src/proc/linux.js";
 
 vi.mock("node:fs", () => ({
   readFileSync: vi.fn(),
@@ -124,6 +129,44 @@ describe("linux.procCwd", () => {
       throw err;
     });
     expect(procCwd(1234)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// procCwds (bulk)
+// ---------------------------------------------------------------------------
+
+describe("linux.procCwds", () => {
+  it("returns a map of pid -> readlinked cwd, skipping missing pids", () => {
+    const links: Record<number, string> = {
+      1234: "/home/x/a",
+      5678: "/home/x/b",
+    };
+    readlinkSyncMock.mockImplementation((p) => {
+      const m = String(p).match(/^\/proc\/(\d+)\/cwd$/);
+      if (m === null) throw new Error("unexpected readlink");
+      const pid = Number(m[1]);
+      const cwd = links[pid];
+      if (cwd === undefined) {
+        const err = new Error("ENOENT") as NodeJS.ErrnoException;
+        err.code = "ENOENT";
+        throw err;
+      }
+      return cwd;
+    });
+    const out = procCwds([1234, 5678, 9012]);
+    expect(out.get(1234)).toBe("/home/x/a");
+    expect(out.get(5678)).toBe("/home/x/b");
+    expect(out.has(9012)).toBe(false);
+  });
+
+  it("returns an empty map for empty input", () => {
+    // No spy-count assertion: this test file has no shared
+    // beforeEach that resets mocks, so earlier cases will have
+    // called readlinkSync. Behaviorally, an empty input shouldn't
+    // populate the result map regardless.
+    const out = procCwds([]);
+    expect(out.size).toBe(0);
   });
 });
 
