@@ -7,6 +7,39 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.22] — 2026-05-25
+
+Sidebar perf fixes for 5+-pane sessions on macOS. No behavior
+changes — the agent list, branches, working pulse, and cursor
+flash all look identical; the resolver tick and pulse re-render
+just stop blocking on subprocesses.
+
+- **Batch `lsof` on macOS.** The resolver used to shell out
+  `lsof -p <pid> -d cwd -Fn` per pi pane per 500 ms tick to
+  find each agent's effective cwd. With 10 panes that was
+  10 lsof spawns per tick (~150–300 ms of blocked event loop).
+  We now issue ONE `lsof -p p1,p2,... -d cwd -Fn` per tick and
+  parse the per-pid records out of the combined output. Linux
+  is unaffected (readlink on `/proc/<pid>/cwd` is microseconds).
+- **Raise the `ps -A` snapshot cache TTL** from 200 ms to 450 ms.
+  The resolver makes 2–3 `findPiPidForPane`/`procStartTime`
+  lookups per pane per tick; the old TTL forced a re-spawn
+  mid-tick. New TTL gives one `ps -A` per tick at the default
+  500 ms cadence, with 50 ms slack.
+- **Memoize `PaneRow`.** The 80 ms pulse interval used to force
+  a full re-render of every pane row, every frame, regardless
+  of whether anything actually changed. Pane rows are now
+  `React.memo`'d, and the App only threads animated props
+  (`workingColor`, `spinnerGlyph`, `cursorBarColor`) into rows
+  that actually consume them — idle/error/waiting rows see
+  stable `undefined` between pulses and skip the re-render.
+- **Move `branchForCwd` out of the render path.** The git
+  branch resolver had a 15 s TTL cache, but every cache miss
+  did a synchronous `git symbolic-ref` spawn from inside
+  render. Now branches are pre-resolved once per resolver tick
+  into a `cwd → branch` map, and render only reads from it.
+  Render is subprocess-free.
+
 ## [0.4.21] — 2026-05-22
 
 macOS bug-fix release — `pi-monitor` now actually finds pi panes on

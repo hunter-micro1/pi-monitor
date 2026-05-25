@@ -26,6 +26,7 @@ import {
   findPiPidForPane,
   parseEtime,
   procCwd,
+  procCwds,
   procStartTime,
 } from "../../src/proc/macos.js";
 
@@ -280,5 +281,87 @@ describe("macos.procCwd", () => {
   it("handles paths containing spaces", () => {
     execFileSyncMock.mockReturnValue("p1234\nfcwd\nn/Users/Hayden/Library/My Things\n");
     expect(procCwd(1234)).toBe("/Users/Hayden/Library/My Things");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// procCwds (bulk)
+// ---------------------------------------------------------------------------
+
+describe("macos.procCwds", () => {
+  it("issues a single lsof spawn for N pids and returns a per-pid map", () => {
+    execFileSyncMock.mockReturnValue(
+      [
+        "p1234",
+        "fcwd",
+        "n/home/a",
+        "p5678",
+        "fcwd",
+        "n/home/b",
+        "p9012",
+        "fcwd",
+        "n/home/c",
+      ].join("\n"),
+    );
+    const out = procCwds([1234, 5678, 9012]);
+    expect(out.get(1234)).toBe("/home/a");
+    expect(out.get(5678)).toBe("/home/b");
+    expect(out.get(9012)).toBe("/home/c");
+    // The whole point: ONE subprocess instead of N.
+    expect(execFileSyncMock).toHaveBeenCalledTimes(1);
+    // Pids are passed as a single comma-separated list.
+    const [cmd, args] = execFileSyncMock.mock.calls[0] as [string, string[]];
+    expect(cmd).toBe("lsof");
+    expect(args).toEqual(["-a", "-p", "1234,5678,9012", "-d", "cwd", "-Fn"]);
+  });
+
+  it("short-circuits with no subprocess when pids is empty", () => {
+    const out = procCwds([]);
+    expect(out.size).toBe(0);
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("returns an empty map when lsof exits non-zero (e.g. one pid gone)", () => {
+    // lsof exits non-zero when *any* of the requested pids is gone,
+    // discarding stdout. We treat that as 'no cwds resolved'; the
+    // resolver falls back to ref.cwd per pane.
+    execFileSyncMock.mockImplementation(() => {
+      throw new Error("lsof: process not found");
+    });
+    const out = procCwds([1234, 5678]);
+    expect(out.size).toBe(0);
+  });
+
+  it("omits pids with no n-line from the result map", () => {
+    // 5678 has a p marker but no n-line (e.g. cwd unreadable).
+    execFileSyncMock.mockReturnValue(
+      ["p1234", "fcwd", "n/home/a", "p5678", "fcwd"].join("\n"),
+    );
+    const out = procCwds([1234, 5678]);
+    expect(out.get(1234)).toBe("/home/a");
+    expect(out.has(5678)).toBe(false);
+  });
+
+  it("dedupes pids before passing to lsof", () => {
+    execFileSyncMock.mockReturnValue("p1234\nfcwd\nn/home/a\n");
+    procCwds([1234, 1234, 1234]);
+    const [, args] = execFileSyncMock.mock.calls[0] as [string, string[]];
+    expect(args).toEqual(["-a", "-p", "1234", "-d", "cwd", "-Fn"]);
+  });
+
+  it("handles paths with embedded spaces across multiple pids", () => {
+    execFileSyncMock.mockReturnValue(
+      [
+        "p1234",
+        "fcwd",
+        "n/Users/Hayden/My Things",
+        "p5678",
+        "fcwd",
+        "n/tmp/with space",
+      ].join("\n"),
+    );
+    const out = procCwds([1234, 5678]);
+    expect(out.get(1234)).toBe("/Users/Hayden/My Things");
+    expect(out.get(5678)).toBe("/tmp/with space");
   });
 });

@@ -149,6 +149,14 @@ export function App(props: AppProps): ReactElement {
   // a non-TTY stdout report no row count.
   const termRows = stdout?.rows ?? 24;
   const [entries, setEntries] = useState<readonly AppEntry[]>([]);
+  // Pre-resolved git branch per cwd. Populated by the resolver tick
+  // so render never has to call `branchForCwd` (which spawnSyncs
+  // `git symbolic-ref` on cache-miss); the 80 ms pulse re-render
+  // path stays subprocess-free, which is what makes 5+ panes feel
+  // responsive on macOS.
+  const [branchByCwd, setBranchByCwd] = useState<ReadonlyMap<string, string | null>>(
+    () => new Map(),
+  );
   const [cursor, dispatch] = useReducer(cursorReducer, INITIAL_CURSOR);
   const [mode, setMode] = useState<AppMode>("list");
   // Captured at the moment the user presses 'o' on a pane row, so
@@ -219,6 +227,27 @@ export function App(props: AppProps): ReactElement {
         const result = await getEntries();
         if (!mounted) return;
         setEntries(result);
+        // Pre-resolve git branches for every unique cwd OUTSIDE
+        // the render path. branchForCwd has a 15s TTL cache, but
+        // cache misses do a synchronous `git symbolic-ref` spawn;
+        // calling it from the render path used to freeze the UI
+        // for tens of ms during cursor navigation. Doing it here
+        // batches all resolutions into the tick budget (which
+        // already does ps/lsof/tmux subprocess work) and keeps
+        // every subsequent pulse re-render subprocess-free.
+        const nextBranches = new Map<string, string | null>();
+        for (const e of result) {
+          if (e.cwd === "" || nextBranches.has(e.cwd)) continue;
+          nextBranches.set(e.cwd, branchForCwd(e.cwd));
+        }
+        if (!mounted) return;
+        // Only swap the state map when something actually changed,
+        // so a steady-state tick (same panes, same branches) doesn't
+        // bump a fresh Map reference into state and trigger a
+        // pointless re-render for every PaneRow consumer.
+        setBranchByCwd((prev) =>
+          sameBranchMap(prev, nextBranches) ? prev : nextBranches,
+        );
       } catch {
         // Swallow; transient resolver failures shouldn't kill the
         // TUI. Next tick retries.
@@ -230,7 +259,7 @@ export function App(props: AppProps): ReactElement {
       mounted = false;
       clearInterval(id);
     };
-  }, [getEntries, pollIntervalMs]);
+  }, [getEntries, pollIntervalMs, branchForCwd]);
 
   // ---------------------------------------------------------------------
   // Display order. groupBySession buckets entries by session AND lifts
@@ -500,20 +529,37 @@ export function App(props: AppProps): ReactElement {
               chip={chip}
               first={sectionIdx === 0}
             >
-              {items.map((entry) => (
-                <PaneRow
-                  key={entry.paneId}
-                  status={entry.status}
-                  paneTitle={entry.paneTitle}
-                  paneIndex={entry.paneIndex}
-                  branch={branchForCwd(entry.cwd)}
-                  selected={entry.paneId === selectedPaneId}
-                  workingColor={pulseHex}
-                  cursorBarColor={cursorBarHex}
-                  spinnerGlyph={BRAILLE_FRAMES[spinnerFrame]}
-                  sessionColor={sectionColor}
-                />
-              ))}
+              {items.map((entry) => {
+                // Gate animated props so PaneRow's memo can skip
+                // re-renders on the 80 ms pulse tick for rows that
+                // don't consume them:
+                //   - workingColor + spinnerGlyph only matter when
+                //     state === "working" (the row is breathing).
+                //   - cursorBarColor only matters when the row is
+                //     selected (the bar lerps brightward briefly
+                //     after a cursor move).
+                // Non-working, non-selected rows see stable
+                // `undefined` between pulses; React.memo's default
+                // shallow comparator then skips the render.
+                const isWorking = entry.status.state === "working";
+                const isSelected = entry.paneId === selectedPaneId;
+                return (
+                  <PaneRow
+                    key={entry.paneId}
+                    status={entry.status}
+                    paneTitle={entry.paneTitle}
+                    paneIndex={entry.paneIndex}
+                    // Read pre-resolved branch from the tick-populated
+                    // map; null until the first tick lands (one frame).
+                    branch={branchByCwd.get(entry.cwd) ?? null}
+                    selected={isSelected}
+                    workingColor={isWorking ? pulseHex : undefined}
+                    cursorBarColor={isSelected ? cursorBarHex : undefined}
+                    spinnerGlyph={isWorking ? BRAILLE_FRAMES[spinnerFrame] : undefined}
+                    sessionColor={sectionColor}
+                  />
+                );
+              })}
             </SessionGroup>
           );
         })}
@@ -554,7 +600,11 @@ export function App(props: AppProps): ReactElement {
                 status={cursorEntry?.status ?? null}
                 paneTitle={cursorEntry?.paneTitle ?? null}
                 paneIndex={cursorEntry?.paneIndex ?? 0}
-                branch={cursorEntry !== null ? branchForCwd(cursorEntry.cwd) : null}
+                branch={
+                  cursorEntry !== null
+                    ? (branchByCwd.get(cursorEntry.cwd) ?? null)
+                    : null
+                }
                 cwd={cursorEntry?.cwd ?? null}
               />
             );
@@ -686,6 +736,23 @@ export function groupBySession(
     items.sort((a, b) => PRIORITY_RANK[a.status.state] - PRIORITY_RANK[b.status.state]);
     return { session: s, items };
   });
+}
+
+/**
+ * Shallow-equal compare for the cwd→branch map produced by the
+ * resolver tick. Same keys + same values per key. Used to skip a
+ * pointless `setBranchByCwd` (and the re-render it triggers) when
+ * a steady-state tick re-resolves identical branches.
+ */
+function sameBranchMap(
+  a: ReadonlyMap<string, string | null>,
+  b: ReadonlyMap<string, string | null>,
+): boolean {
+  if (a.size !== b.size) return false;
+  for (const [k, v] of a) {
+    if (!b.has(k) || b.get(k) !== v) return false;
+  }
+  return true;
 }
 
 function countByState(states: readonly AgentState[]): Record<AgentState, number> {

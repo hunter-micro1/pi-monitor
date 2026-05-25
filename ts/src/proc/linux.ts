@@ -31,6 +31,21 @@ export function procCwd(pid: number): string | null {
 }
 
 /**
+ * Bulk equivalent of {@link procCwd}. Linux readlink is
+ * microseconds, so this is just a loop — the bulk shape exists
+ * for API parity with the macOS impl, where the resolver collapses
+ * N lsof spawns into 1.
+ */
+export function procCwds(pids: readonly number[]): Map<number, string | null> {
+  const out = new Map<number, string | null>();
+  for (const pid of pids) {
+    const cwd = procCwd(pid);
+    if (cwd !== null) out.set(pid, cwd);
+  }
+  return out;
+}
+
+/**
  * Process start time in unix seconds, or null if the pid is gone or
  * unreadable. We use the ctime of `/proc/<pid>/` which the kernel
  * stamps when it creates the proc entry \u2014 same value, no clock-tick
