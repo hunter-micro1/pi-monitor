@@ -27,6 +27,7 @@ import { type ReactElement, useState } from "react";
 
 import { ACCENT, FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
 import { type ListDir, completeDirPath } from "./dirComplete.js";
+import { branchForCwd as defaultBranchForCwd } from "./git.js";
 
 export type NewPiMode = "session" | "window";
 
@@ -47,6 +48,15 @@ export interface NewPiResult {
    * heuristic (basename + collision suffix).
    */
   readonly name?: string;
+  /**
+   * True iff pi should be launched with `-w`, so the bundled
+   * auto-worktree extension creates a fresh `agent/<base>-<ts>`
+   * worktree and re-execs pi inside it. False to run pi in place
+   * on the cwd's current branch. Default in the UI is true when
+   * the cwd resolves to a git checkout on a named branch; the
+   * user can toggle with `w`.
+   */
+  readonly worktree: boolean;
 }
 
 export interface NewPiScreenProps {
@@ -67,6 +77,13 @@ export interface NewPiScreenProps {
    * sidebar without overflowing on narrow panes.
    */
   readonly width?: number;
+  /**
+   * Branch resolver override (tests). Returns the git branch name
+   * for a cwd, or null if not a checkout / detached HEAD. The
+   * default cached resolver is used in production. Used to seed
+   * the worktree-toggle default (true when on a named branch).
+   */
+  readonly branchForCwd?: (cwd: string) => string | null;
 }
 
 /**
@@ -86,10 +103,18 @@ export function deriveSessionName(cwd: string): string {
 /** Width of the dim label column on the left of each input row. */
 const LABEL_COL = 14;
 
-type FocusedField = "cwd" | "name";
+/**
+ * Focusable element in the modal. Tab cycles between them; the two
+ * text inputs only react to keystrokes while focused, and the
+ * worktree row only intercepts the toggle hotkeys while focused.
+ * This keeps `w` / Space from being typed into the cwd/name fields.
+ */
+type FocusedField = "cwd" | "name" | "worktree";
 
 export function NewPiScreen(props: NewPiScreenProps): ReactElement {
   const { mode, defaultCwd, onSubmit, onCancel, listDir, width } = props;
+
+  const branchResolver = props.branchForCwd ?? defaultBranchForCwd;
 
   const [cwdValue, setCwdValue] = useState(defaultCwd);
   const [matches, setMatches] = useState<readonly string[]>([]);
@@ -100,10 +125,32 @@ export function NewPiScreen(props: NewPiScreenProps): ReactElement {
   const [nameValue, setNameValue] = useState(() => deriveSessionName(defaultCwd));
   const [nameTouched, setNameTouched] = useState(false);
   const [focused, setFocused] = useState<FocusedField>("cwd");
+  // Worktree toggle. Default: on when the cwd appears to be a git
+  // checkout on a named branch (so the auto-worktree extension has
+  // something to do), off otherwise. The user can flip with `w`.
+  // We snapshot the default at mount; later edits to the cwd field
+  // don't silently flip the toggle out from under the user.
+  const [worktree, setWorktree] = useState<boolean>(() => {
+    return branchResolver(defaultCwd) !== null;
+  });
+  // Once the user explicitly toggles, stop auto-syncing on cwd
+  // edits. Until then, a cwd change that moves between a git
+  // checkout and a non-checkout updates the toggle.
+  const [worktreeTouched, setWorktreeTouched] = useState<boolean>(false);
 
-  // Window mode hides the name field entirely; tabs only cycle
-  // within the cwd field (i.e. completion never moves focus).
+  // Window mode hides the name field entirely; tabs cycle
+  // cwd ↔ worktree only in that mode.
   const showNameField = mode === "session";
+
+  /**
+   * Next focus target in the Tab cycle. Cwd → name → worktree → cwd
+   * in session mode; cwd → worktree → cwd in window mode.
+   */
+  const nextFocus = (current: FocusedField): FocusedField => {
+    if (current === "cwd") return showNameField ? "name" : "worktree";
+    if (current === "name") return "worktree";
+    return "cwd";
+  };
 
   const title =
     mode === "session"
@@ -120,32 +167,30 @@ export function NewPiScreen(props: NewPiScreenProps): ReactElement {
       return;
     }
     if (key.tab) {
-      // In the cwd field: try completion first; if completion
-      // produced no change AND no candidate list, cycle focus to
-      // the name field (when name field is visible). In the name
-      // field: cycle back to cwd.
+      // In the cwd field: try completion. If Tab advanced the
+      // value, stay on cwd so the user can keep tabbing through
+      // deeper levels. If it just listed alternates (advance=false
+      // but matches were returned), cycle to the next field —
+      // otherwise the user gets stuck on cwd whenever the current
+      // directory has any subdirs. On a no-op Tab (no advance, no
+      // matches) we also cycle. In the name/worktree fields:
+      // unconditional cycle.
       if (focused === "cwd") {
         const result = completeDirPath(cwdValue, listDir);
         const advanced = result.value !== cwdValue;
-        const hasMatches = result.matches.length > 0;
-        if (advanced || hasMatches) {
+        if (advanced) {
           setCwdValue(result.value);
           setMatches(result.matches);
-          if (advanced && !nameTouched) {
+          if (!nameTouched) {
             setNameValue(deriveSessionName(result.value));
           }
           return;
         }
-        // No further completion; cycle focus when name field is
-        // available. In window mode, just stay (tab is a no-op).
-        if (showNameField) {
-          setFocused("name");
-          setMatches([]);
-        }
+        setMatches(result.matches);
+        setFocused(nextFocus("cwd"));
         return;
       }
-      // Currently focused on name; cycle back to cwd.
-      setFocused("cwd");
+      setFocused(nextFocus(focused));
       return;
     }
     if (key.return) {
@@ -162,8 +207,21 @@ export function NewPiScreen(props: NewPiScreenProps): ReactElement {
         // heuristic' so the existing collision-suffix path stays
         // available. Window mode always sends an empty name.
         name: showNameField ? trimmedName : "",
+        worktree,
       });
       return;
+    }
+    // Worktree row is focused: Space or `w` flips the toggle.
+    // We only honor these here so neither key is ever consumed by
+    // the text inputs (their `focus` prop is false when the
+    // worktree row is the focused element, so they aren't reading
+    // stdin in this state).
+    if (focused === "worktree") {
+      if (input === " " || input === "w") {
+        setWorktree((v) => !v);
+        setWorktreeTouched(true);
+        return;
+      }
     }
     // Any other input — user is typing again. Clear the stale match
     // list once they start adding/removing characters in the cwd
@@ -176,10 +234,17 @@ export function NewPiScreen(props: NewPiScreenProps): ReactElement {
   // Keep the session-name pre-fill in sync with the cwd basename
   // until the user edits the name field. Once they do, nameTouched
   // flips and the auto-sync stops.
+  // Worktree toggle: auto-sync on cwd-change until the user has
+  // explicitly pressed `w`. Re-resolving the branch every keystroke
+  // hits a cached git probe, so it's cheap; the cache keeps it
+  // sub-microsecond after the first lookup per cwd.
   const handleCwdChange = (next: string): void => {
     setCwdValue(next);
     if (!nameTouched) {
       setNameValue(deriveSessionName(next));
+    }
+    if (!worktreeTouched) {
+      setWorktree(branchResolver(next) !== null);
     }
   };
   const handleNameChange = (next: string): void => {
@@ -240,6 +305,28 @@ export function NewPiScreen(props: NewPiScreenProps): ReactElement {
       )}
 
       <MatchesLine matches={matches} />
+
+      {/* Worktree toggle. Always visible (session AND window
+          mode); auto-worktree fires whenever pi launches with `-w`,
+          regardless of whether we used `tmux new-session` or
+          `tmux new-window` to start it. Tab-focusable so `w`/Space
+          don't conflict with text-input typing. */}
+      <Box marginTop={1} flexDirection="row">
+        <Box width={LABEL_COL}>
+          <Text color={FOREGROUND_MUTED}>Worktree</Text>
+        </Box>
+        <Text color={focused === "worktree" ? ACCENT : FOREGROUND_MUTED}>
+          {"\u203a "}
+        </Text>
+        <Text bold color={worktree ? ACCENT : FOREGROUND_MUTED}>
+          {worktree ? "[\u2713] ON " : "[ ] OFF"}
+        </Text>
+        <Text color={FOREGROUND_MUTED}>{"  Tab to focus, "}</Text>
+        <Text color={focused === "worktree" ? ACCENT : FOREGROUND_MUTED}>w</Text>
+        <Text color={FOREGROUND_MUTED}>{"/"}</Text>
+        <Text color={focused === "worktree" ? ACCENT : FOREGROUND_MUTED}>Space</Text>
+        <Text color={FOREGROUND_MUTED}>{" to toggle"}</Text>
+      </Box>
 
       <Box marginTop={1}>
         <Text color={ACCENT}>Tab</Text>

@@ -85,8 +85,14 @@ export interface AppProps {
    * Called when the user submits the new-pi modal. The App returns
    * to list mode immediately after; the caller is responsible for
    * the actual tmux invocation. Defaults to a no-op.
+   *
+   * Return a string to surface a launch error as a red banner;
+   * return null / undefined on success. Returning is the only way
+   * to display launch failures — stderr is invisible behind Ink's
+   * full-screen rendering, which is why silent `nothing happens`
+   * was the failure mode before this signature change.
    */
-  readonly onLaunchPi?: (result: NewPiResult) => void;
+  readonly onLaunchPi?: (result: NewPiResult) => string | null | undefined | void;
   /** Initial cwd for the new-pi modal. Defaults to `process.cwd()`. */
   readonly defaultCwd?: string;
   /** Optional listDir override forwarded to NewPiScreen (tests). */
@@ -479,7 +485,14 @@ export function App(props: AppProps): ReactElement {
         : result;
     setMode("list");
     setWindowTarget(null);
-    onLaunchPi?.(enriched);
+    const err = onLaunchPi?.(enriched);
+    if (typeof err === "string" && err !== "") {
+      setBanner({
+        title: "pi-monitor \u00b7 launch failed",
+        body: err,
+        severity: "critical",
+      });
+    }
   };
 
   const cursorPos = currentPos(cursor);

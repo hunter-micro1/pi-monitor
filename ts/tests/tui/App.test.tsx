@@ -449,6 +449,9 @@ describe("App modal mode", () => {
       cwd: "/home/u",
       // 0.4.19: name field auto-derived from cwd basename.
       name: "u",
+      // 0.4.23: worktree toggle defaults OFF when branchForCwd
+      // returns null (this test injects a null-returning resolver).
+      worktree: false,
     });
     // Back on the list.
     expect(lastFrame() ?? "").not.toContain("Launch pi in a new");
@@ -473,6 +476,57 @@ describe("App modal mode", () => {
     await wait();
     expect(onLaunchPi).not.toHaveBeenCalled();
     expect(lastFrame() ?? "").not.toContain("Launch pi in a new");
+  });
+
+  it("surfaces a launch error from onLaunchPi as a red banner", async () => {
+    // 0.4.23 regression guard: before this change, onLaunchPi
+    // wrote to stderr (invisible behind Ink) and the user saw
+    // 'nothing happens' when a launch failed.
+    const onLaunchPi = vi.fn(() => "directory not found: /tmp/does-not-exist");
+    const { stdin, lastFrame } = render(
+      <App
+        getEntries={() => []}
+        branchForCwd={() => null}
+        defaultCwd="/home/u"
+        onLaunchPi={onLaunchPi}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+        notificationDismissMs={9999}
+      />,
+    );
+    await wait();
+    stdin.write("o");
+    await wait();
+    stdin.write("\r");
+    await wait();
+    const out = lastFrame() ?? "";
+    expect(onLaunchPi).toHaveBeenCalledTimes(1);
+    expect(out).toContain("launch failed");
+    expect(out).toContain("directory not found");
+    // Modal is closed regardless of the error.
+    expect(out).not.toContain("Launch pi in a new");
+  });
+
+  it("does not surface a banner when onLaunchPi returns null/undefined (success)", async () => {
+    const onLaunchPi = vi.fn(() => null);
+    const { stdin, lastFrame } = render(
+      <App
+        getEntries={() => []}
+        branchForCwd={() => null}
+        defaultCwd="/home/u"
+        onLaunchPi={onLaunchPi}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+        notificationDismissMs={9999}
+      />,
+    );
+    await wait();
+    stdin.write("o");
+    await wait();
+    stdin.write("\r");
+    await wait();
+    expect(onLaunchPi).toHaveBeenCalledTimes(1);
+    expect(lastFrame() ?? "").not.toContain("launch failed");
   });
 });
 
@@ -668,6 +722,7 @@ describe("App new-pi targetSession", () => {
       cwd: "/home/u",
       // 0.4.19: name field auto-derived from cwd basename.
       name: "u",
+      worktree: false,
     });
     // targetSession field is absent on session-mode submissions.
     expect(onLaunchPi.mock.calls[0]?.[0]).not.toHaveProperty("targetSession");
@@ -705,6 +760,7 @@ describe("App new-pi targetSession", () => {
       // 0.4.19: window mode always sends an empty name (the
       // popup hides the Session-name field for window mode).
       name: "",
+      worktree: false,
     });
   });
 

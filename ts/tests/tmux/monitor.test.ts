@@ -21,6 +21,10 @@ vi.mock("../../src/tmux/viewer.js", () => ({
   cleanupOrphanViewers: vi.fn(),
 }));
 
+vi.mock("../../src/tmux/worktree.js", () => ({
+  createAgentWorktree: vi.fn(),
+}));
+
 vi.mock("node:fs", () => ({
   existsSync: vi.fn(),
   statSync: vi.fn(),
@@ -41,11 +45,13 @@ import {
 } from "../../src/tmux/monitor.js";
 import { listPanes } from "../../src/tmux/panes.js";
 import { cleanupOrphanViewers } from "../../src/tmux/viewer.js";
+import { createAgentWorktree } from "../../src/tmux/worktree.js";
 
 const tmuxRunMock = vi.mocked(tmuxRun);
 const sessionExistsMock = vi.mocked(sessionExists);
 const listPanesMock = vi.mocked(listPanes);
 const cleanupOrphanViewersMock = vi.mocked(cleanupOrphanViewers);
+const createAgentWorktreeMock = vi.mocked(createAgentWorktree);
 const existsSyncMock = vi.mocked(existsSync);
 const statSyncMock = vi.mocked(statSync);
 
@@ -54,6 +60,7 @@ beforeEach(() => {
   sessionExistsMock.mockReset();
   listPanesMock.mockReset();
   cleanupOrphanViewersMock.mockReset();
+  createAgentWorktreeMock.mockReset();
   existsSyncMock.mockReset();
   statSyncMock.mockReset();
   // Sensible defaults; individual tests override.
@@ -308,6 +315,57 @@ describe("createPiSession", () => {
     sessionExistsMock.mockReturnValue(true);
     expect(() => createPiSession("/home/u/project", "taken")).toThrow(TmuxError);
   });
+
+  it("calls createAgentWorktree and uses its path when worktree is true", () => {
+    existsSyncMock.mockReturnValue(true);
+    statSyncMock.mockReturnValue({
+      isDirectory: () => true,
+    } as ReturnType<typeof statSync>);
+    sessionExistsMock.mockReturnValue(false);
+    createAgentWorktreeMock.mockReturnValue({
+      path: "/home/u/project-main-20260101-000000",
+      branch: "agent/main-20260101-000000",
+      base: "main",
+    });
+
+    createPiSession("/home/u/project", "named", true);
+    expect(createAgentWorktreeMock).toHaveBeenCalledWith("/home/u/project");
+    expect(tmuxRunMock).toHaveBeenCalledWith([
+      "new-session",
+      "-d",
+      "-s",
+      "named",
+      "-c",
+      "/home/u/project-main-20260101-000000",
+      "pi",
+    ]);
+  });
+
+  it("does NOT call createAgentWorktree when worktree is false", () => {
+    existsSyncMock.mockReturnValue(true);
+    statSyncMock.mockReturnValue({
+      isDirectory: () => true,
+    } as ReturnType<typeof statSync>);
+    sessionExistsMock.mockReturnValue(false);
+
+    createPiSession("/home/u/project", "named", false);
+    expect(createAgentWorktreeMock).not.toHaveBeenCalled();
+    // Cwd passed straight through; no `-w` argument either.
+    const args = tmuxRunMock.mock.calls[0]?.[0] as string[];
+    expect(args).toContain("/home/u/project");
+    expect(args).not.toContain("-w");
+  });
+
+  it("propagates createAgentWorktree errors as TmuxError", () => {
+    existsSyncMock.mockReturnValue(true);
+    statSyncMock.mockReturnValue({
+      isDirectory: () => true,
+    } as ReturnType<typeof statSync>);
+    createAgentWorktreeMock.mockImplementation(() => {
+      throw new TmuxError("not a git checkout: /tmp");
+    });
+    expect(() => createPiSession("/tmp", "named", true)).toThrow(TmuxError);
+  });
 });
 
 describe("createPiWindow", () => {
@@ -328,6 +386,28 @@ describe("createPiWindow", () => {
       "contracts",
       "-c",
       "/home/u/c",
+      "pi",
+    ]);
+  });
+
+  it("uses createAgentWorktree's path when worktree is true", () => {
+    existsSyncMock.mockReturnValue(true);
+    statSyncMock.mockReturnValue({
+      isDirectory: () => true,
+    } as ReturnType<typeof statSync>);
+    createAgentWorktreeMock.mockReturnValue({
+      path: "/home/u/c-main-20260101-000000",
+      branch: "agent/main-20260101-000000",
+      base: "main",
+    });
+    createPiWindow("contracts", "/home/u/c", true);
+    expect(createAgentWorktreeMock).toHaveBeenCalledWith("/home/u/c");
+    expect(tmuxRunMock).toHaveBeenCalledWith([
+      "new-window",
+      "-t",
+      "contracts",
+      "-c",
+      "/home/u/c-main-20260101-000000",
       "pi",
     ]);
   });
