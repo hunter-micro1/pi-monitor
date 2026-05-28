@@ -20,7 +20,7 @@
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 
-const VERSION = "0.4.22";
+const VERSION = "0.4.23";
 
 async function main(argv: readonly string[]): Promise<number> {
   if (argv.includes("--help") || argv.includes("-h")) {
@@ -164,7 +164,9 @@ async function runTui(): Promise<number> {
     cwd: string;
     targetSession?: string;
     name?: string;
-  }): void => {
+    worktree?: boolean;
+  }): string | null => {
+    const worktree = result.worktree === true;
     try {
       if (result.mode === "session") {
         // Empty `name` from the popup means 'use the
@@ -173,20 +175,23 @@ async function runTui(): Promise<number> {
         // suggestSessionName path runs.
         const sessionName =
           result.name !== undefined && result.name !== "" ? result.name : undefined;
-        createPiSession(result.cwd, sessionName);
+        createPiSession(result.cwd, sessionName, worktree);
       } else if (result.targetSession !== undefined) {
-        createPiWindow(result.targetSession, result.cwd);
+        createPiWindow(result.targetSession, result.cwd, worktree);
       } else {
         // Defensive: window mode without target falls back to a
         // new session so we don't silently swallow the user's
         // intent.
-        createPiSession(result.cwd);
+        createPiSession(result.cwd, undefined, worktree);
       }
+      return null;
     } catch (err) {
-      // We don't have a notification surface yet; write to stderr so
-      // the message survives the Ink overdraw.
+      // Return the error message so App can surface it as a
+      // critical banner. stderr is invisible behind Ink's
+      // full-screen rendering, which is why the previous
+      // stderr-only path looked like 'nothing happens' to users.
       const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`pi-monitor: launch failed: ${msg}\n`);
+      return msg;
     }
   };
 

@@ -84,7 +84,7 @@ describe("NewPiScreen behavior", () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
-  it("calls onSubmit({ mode, cwd }) on Enter with non-empty input", async () => {
+  it("calls onSubmit({ mode, cwd, name, worktree }) on Enter with non-empty input", async () => {
     const onSubmit = vi.fn();
     const { stdin } = render(
       <NewPiScreen
@@ -92,6 +92,8 @@ describe("NewPiScreen behavior", () => {
         defaultCwd="/home/u"
         onSubmit={onSubmit}
         onCancel={() => {}}
+        // Non-git cwd → worktree default is false.
+        branchForCwd={() => null}
       />,
     );
     await wait();
@@ -104,6 +106,7 @@ describe("NewPiScreen behavior", () => {
       // basename. Default render still submits 'u' as the name
       // when the user doesn't touch the name field.
       name: "u",
+      worktree: false,
     });
   });
 
@@ -208,6 +211,7 @@ describe("NewPiScreen session-name field", () => {
         defaultCwd="/home/u/Projects/contracts"
         onSubmit={onSubmit}
         onCancel={() => {}}
+        branchForCwd={() => null}
       />,
     );
     await wait();
@@ -217,6 +221,7 @@ describe("NewPiScreen session-name field", () => {
       mode: "session",
       cwd: "/home/u/Projects/contracts",
       name: "contracts",
+      worktree: false,
     });
   });
 
@@ -230,6 +235,7 @@ describe("NewPiScreen session-name field", () => {
         onSubmit={onSubmit}
         onCancel={() => {}}
         listDir={listDir}
+        branchForCwd={() => null}
       />,
     );
     await wait();
@@ -249,6 +255,7 @@ describe("NewPiScreen session-name field", () => {
       // Original auto-derived name is "foo"; user appended
       // "custom-name", giving "foocustom-name".
       name: "foocustom-name",
+      worktree: false,
     });
   });
 
@@ -260,6 +267,7 @@ describe("NewPiScreen session-name field", () => {
         defaultCwd="/home/u/Projects/foo"
         onSubmit={onSubmit}
         onCancel={() => {}}
+        branchForCwd={() => null}
       />,
     );
     await wait();
@@ -269,7 +277,159 @@ describe("NewPiScreen session-name field", () => {
       mode: "window",
       cwd: "/home/u/Projects/foo",
       name: "",
+      worktree: false,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 0.4.23: Worktree toggle.
+// ---------------------------------------------------------------------------
+
+describe("NewPiScreen worktree toggle", () => {
+  // Tab cycle in session mode: cwd → name → worktree.
+  // Tab cycle in window mode: cwd → worktree.
+  // The cwd-field Tab first attempts completion; with listDir = () => []
+  // there are no candidates so the Tab actually cycles focus.
+  const noListDir: ListDir = () => [];
+
+  it("renders the Worktree row with the Tab-to-focus hint", () => {
+    const { lastFrame } = render(
+      <NewPiScreen
+        mode="session"
+        defaultCwd="/home/u/Projects/foo"
+        onSubmit={() => {}}
+        onCancel={() => {}}
+        branchForCwd={() => null}
+      />,
+    );
+    const out = lastFrame() ?? "";
+    expect(out).toContain("Worktree");
+    expect(out).toContain("Tab to focus");
+    expect(out).toContain("to toggle");
+  });
+
+  it("defaults worktree ON when cwd resolves to a named branch", async () => {
+    const onSubmit = vi.fn();
+    const { lastFrame, stdin } = render(
+      <NewPiScreen
+        mode="session"
+        defaultCwd="/home/u/repo"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+        branchForCwd={(cwd) => (cwd === "/home/u/repo" ? "main" : null)}
+      />,
+    );
+    await wait();
+    expect(lastFrame() ?? "").toContain("ON");
+    stdin.write("\r");
+    await wait();
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ worktree: true }),
+    );
+  });
+
+  it("defaults worktree OFF when cwd is not a git checkout", async () => {
+    const onSubmit = vi.fn();
+    const { lastFrame, stdin } = render(
+      <NewPiScreen
+        mode="session"
+        defaultCwd="/tmp"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+        branchForCwd={() => null}
+      />,
+    );
+    await wait();
+    expect(lastFrame() ?? "").toContain("OFF");
+    stdin.write("\r");
+    await wait();
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ worktree: false }),
+    );
+  });
+
+  it("Tab to worktree row, then w flips OFF -> ON in session mode", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(
+      <NewPiScreen
+        mode="session"
+        defaultCwd="/tmp"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+        branchForCwd={() => null}
+        listDir={noListDir}
+      />,
+    );
+    await wait();
+    // Tab from cwd → name (session mode has the name field).
+    stdin.write("\t");
+    await wait();
+    // Tab from name → worktree.
+    stdin.write("\t");
+    await wait();
+    // Now `w` toggles (was OFF → ON).
+    stdin.write("w");
+    await wait();
+    stdin.write("\r");
+    await wait();
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ worktree: true }),
+    );
+  });
+
+  it("Space also toggles when the worktree row is focused", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(
+      <NewPiScreen
+        mode="window"
+        defaultCwd="/home/u/repo"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+        // Defaults ON because branch resolver returns a name.
+        branchForCwd={() => "main"}
+        listDir={noListDir}
+      />,
+    );
+    await wait();
+    // Window mode skips the name field: cwd → worktree in one Tab.
+    stdin.write("\t");
+    await wait();
+    // Space flips ON → OFF.
+    stdin.write(" ");
+    await wait();
+    stdin.write("\r");
+    await wait();
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ worktree: false }),
+    );
+  });
+
+  it("`w` keystroke flows into the cwd field while cwd is focused (no global toggle)", async () => {
+    // Regression guard: `w` is a normal character while the cwd
+    // field is focused. We rely on the focus check to keep it
+    // from doing double-duty.
+    const onSubmit = vi.fn();
+    const { stdin } = render(
+      <NewPiScreen
+        mode="session"
+        defaultCwd="/tmp"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+        branchForCwd={() => null}
+        listDir={noListDir}
+      />,
+    );
+    await wait();
+    stdin.write("w");
+    await wait();
+    stdin.write("\r");
+    await wait();
+    // `w` was typed into the cwd field; worktree stays at its
+    // default (OFF for /tmpw which isn't a git checkout).
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: "/tmpw", worktree: false }),
+    );
   });
 });
 

@@ -14,6 +14,7 @@ import { existsSync, statSync } from "node:fs";
 import { TmuxError, sessionExists, tmuxRun } from "./client.js";
 import { listPanes } from "./panes.js";
 import { cleanupOrphanViewers } from "./viewer.js";
+import { createAgentWorktree } from "./worktree.js";
 
 /** Name of the monitor session. */
 export const MONITOR_SESSION = "monitor";
@@ -232,31 +233,53 @@ function suggestSessionName(cwd: string): string {
  * the final session name (which may differ from the requested one
  * if a collision suffix was appended).
  *
+ * When `worktree` is true, pi-monitor creates a fresh git worktree
+ * (`<repo_parent>/<repo>-<base>-<ts>` on branch `agent/<base>-<ts>`)
+ * via `createAgentWorktree` and pi is launched inside the new
+ * worktree path, NOT `cwd`. This was previously delegated to the
+ * `pi -w` flag handled by the auto-worktree extension; pi v0.76
+ * hard-rejects unknown CLI flags before extensions load, so
+ * pi-monitor now owns the worktree creation directly.
+ *
  * Mirrors `create_pi_session`.
  */
-export function createPiSession(cwd: string, name?: string): string {
+export function createPiSession(
+  cwd: string,
+  name?: string,
+  worktree: boolean = false,
+): string {
   if (!isDirectory(cwd)) {
     throw new TmuxError(`directory not found: ${cwd}`);
   }
+  const launchCwd = worktree ? createAgentWorktree(cwd).path : cwd;
+  // Session-name collision check uses the user-typed name (or the
+  // basename of the original cwd); the worktree path's basename
+  // is a noisy `<repo>-<base>-<ts>` so we keep the friendlier name.
   const finalName = name ?? suggestSessionName(cwd);
   if (name !== undefined && sessionExists(name)) {
     throw new TmuxError(`session ${JSON.stringify(name)} already exists`);
   }
-  tmuxRun(["new-session", "-d", "-s", finalName, "-c", cwd, "pi"]);
+  tmuxRun(["new-session", "-d", "-s", finalName, "-c", launchCwd, "pi"]);
   return finalName;
 }
 
 /**
  * Create a new window in `targetSession` running `pi` in `cwd`.
  * Each pi agent gets its own window (tab) inside the session.
+ * `worktree` semantics match `createPiSession`.
  *
  * Mirrors `create_pi_window`.
  */
-export function createPiWindow(targetSession: string, cwd: string): void {
+export function createPiWindow(
+  targetSession: string,
+  cwd: string,
+  worktree: boolean = false,
+): void {
   if (!isDirectory(cwd)) {
     throw new TmuxError(`directory not found: ${cwd}`);
   }
-  tmuxRun(["new-window", "-t", targetSession, "-c", cwd, "pi"]);
+  const launchCwd = worktree ? createAgentWorktree(cwd).path : cwd;
+  tmuxRun(["new-window", "-t", targetSession, "-c", launchCwd, "pi"]);
 }
 
 // ---------------------------------------------------------------------------
