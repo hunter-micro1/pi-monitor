@@ -23,7 +23,12 @@ vi.mock("../../src/proc/index.js", () => ({
 
 import { findPiPidForPane } from "../../src/proc/index.js";
 import { TmuxError, tmuxRun } from "../../src/tmux/client.js";
-import { isViewerSession, listPanes, listPiPanes } from "../../src/tmux/panes.js";
+import {
+  isViewerSession,
+  listPanes,
+  listPiPanes,
+  sanitizePaneTitle,
+} from "../../src/tmux/panes.js";
 
 const tmuxRunMock = vi.mocked(tmuxRun);
 const findPiPidForPaneMock = vi.mocked(findPiPidForPane);
@@ -140,6 +145,21 @@ describe("listPanes", () => {
     expect(listPanes()).toEqual([]);
   });
 
+  it("blanks leaked Kitty-graphics titles so the pane-N fallback applies", () => {
+    // pi-tui clears inline images with `ESC _ Ga=d,d=A,q=2 ESC \`;
+    // tmux routes that APC payload into pane_title. We must not show
+    // `Ga=d,d=A,q=2` as the agent name — it should normalize to "".
+    tmuxRunMock.mockReturnValue(
+      `${fakeLine({
+        paneId: "%9",
+        title: "Ga=d,d=A,q=2",
+        command: "pi",
+      })}\n`,
+    );
+    const [pane] = listPanes();
+    expect(pane?.title).toBe("");
+  });
+
   it("preserves cwd / title strings with embedded spaces", () => {
     tmuxRunMock.mockReturnValue(
       `${fakeLine({
@@ -209,6 +229,43 @@ describe("listPiPanes", () => {
     );
     const piOnly = listPiPanes();
     expect(piOnly.map((p) => p.paneId)).toEqual(["%1", "%3"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sanitizePaneTitle
+// ---------------------------------------------------------------------------
+
+describe("sanitizePaneTitle", () => {
+  it("strips leaked Kitty-graphics control payloads", () => {
+    // The exact strings pi-tui emits (deleteAllKittyImages /
+    // deleteKittyImage / transmit), minus the ESC_ ... ESC\ frame
+    // that tmux consumes when it copies the APC payload into the
+    // pane title.
+    for (const leaked of [
+      "Ga=d,d=A,q=2", // delete all images
+      "Ga=d,d=I,i=12345,q=2", // delete one image by id
+      "Ga=T,f=100,q=2;iVBORw0KGgoAAAANS", // transmit + display (base64)
+      "Ga=T,f=100,q=2,m=1;iVBORw0K", // chunked first frame
+      "Gm=1;Zm9vYmFy", // continuation chunk
+      "Gm=0;", // final (empty) chunk
+    ]) {
+      expect(sanitizePaneTitle(leaked)).toBe("");
+    }
+  });
+
+  it("leaves genuine titles untouched", () => {
+    for (const real of [
+      "",
+      "agent",
+      "long agent name here",
+      "\u03c0 - patent-search - apps",
+      "Architecture diagram: design end to end cost estimation system",
+      "Gatsby build", // starts with G but is not key=value graphics data
+      "G=2", // single token, no graphics-style key letter before '='
+    ]) {
+      expect(sanitizePaneTitle(real)).toBe(real);
+    }
   });
 });
 
