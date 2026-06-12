@@ -21,6 +21,7 @@ tmux without colliding with the outer monitor session's `C-b` prefix.
 
 from __future__ import annotations
 
+import re
 import shlex
 import shutil
 import subprocess
@@ -64,6 +65,29 @@ _LIST_FORMAT = (
     "\t#{pane_pid}\t#{pane_current_path}\t#{pane_title}\t#{pane_current_command}"
 )
 
+# Matches a pane_title that is actually a leaked Kitty graphics protocol
+# control payload. pi (via pi-tui) renders/clears inline images with APC
+# sequences like `ESC _ Ga=d,d=A,q=2 ESC \` ("delete all images"); tmux has
+# no Kitty-graphics support and copies the APC payload straight into the
+# pane title, so the title becomes the raw control string (e.g.
+# `Ga=d,d=A,q=2`). The payload starts with `G`, then comma-separated
+# single-letter `key=value` controls, optionally then `;<base64>`. Mirror of
+# `KITTY_GRAPHICS_TITLE_RE` in `ts/src/tmux/panes.ts`.
+_KITTY_GRAPHICS_TITLE_RE = re.compile(
+    r"^G[a-z]=[^,;]*(?:,[a-z]=[^,;]*)*(?:;[A-Za-z0-9+/=]*)?$"
+)
+
+
+def _sanitize_pane_title(title: str) -> str:
+    """Drop leaked Kitty-graphics control payloads from a pane title.
+
+    Returns "" for such titles so the TUI falls back to the numeric
+    `pane N` name instead of showing the raw control string as an
+    agent name. Genuine titles are returned unchanged. Mirror of
+    `sanitizePaneTitle` in the TS build.
+    """
+    return "" if _KITTY_GRAPHICS_TITLE_RE.match(title) else title
+
 
 def list_panes() -> list[Pane]:
     """Every pane on the tmux server. Empty list if tmux isn't running."""
@@ -87,7 +111,7 @@ def list_panes() -> list[Pane]:
                     pane_index=int(pidx),
                     pid=int(pid),
                     cwd=cwd,
-                    title=title,
+                    title=_sanitize_pane_title(title),
                     command=cmd,
                 )
             )

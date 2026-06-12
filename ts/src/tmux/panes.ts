@@ -13,6 +13,38 @@ import { TmuxError, tmuxRun } from "./client.js";
 export const VIEWER_SESSION_PREFIX = "pi-monitor-view-";
 
 /**
+ * Matches a `pane_title` that is actually a leaked Kitty graphics
+ * protocol control payload, not a real title.
+ *
+ * pi (via pi-tui) renders and clears inline images with Kitty
+ * graphics APC sequences like `ESC _ Ga=d,d=A,q=2 ESC \` ("delete
+ * all images") or `ESC _ Ga=T,f=100,q=2;<base64> ESC \`. tmux has
+ * no native Kitty-graphics support, and its APC handler routes the
+ * *payload* of any `ESC _ ... ESC \` string straight into the pane
+ * title. So a pi pane's title gets overwritten with the raw control
+ * string — e.g. `Ga=d,d=A,q=2` — which pi-monitor would otherwise
+ * display as the agent's name.
+ *
+ * The payload always starts with `G`, then comma-separated
+ * single-letter `key=value` controls, optionally followed by
+ * `;<base64>`. We full-match that exact shape so a legitimate
+ * user/agent title is never touched.
+ */
+const KITTY_GRAPHICS_TITLE_RE =
+  /^G[a-z]=[^,;]*(?:,[a-z]=[^,;]*)*(?:;[A-Za-z0-9+/=]*)?$/;
+
+/**
+ * Drop pane titles that are leaked Kitty-graphics control payloads
+ * (see `KITTY_GRAPHICS_TITLE_RE`). Returns `""` for such titles so
+ * the render pipeline falls back to the numeric `pane N` name
+ * (`cli.ts` maps `""` → `null`, and `fmtRowMain` then uses the
+ * fallback). Any genuine title is returned unchanged.
+ */
+export function sanitizePaneTitle(title: string): string {
+  return KITTY_GRAPHICS_TITLE_RE.test(title) ? "" : title;
+}
+
+/**
  * Format string handed to `tmux list-panes -F`. Tab-separated so
  * fields with embedded spaces (paths, titles) survive the round
  * trip. Matches `_LIST_FORMAT` in the Python build column-for-
@@ -37,7 +69,12 @@ export interface Pane {
   pid: number;
   /** `pane_current_path` — cwd of the foreground process. */
   cwd: string;
-  /** `pane_title` — may be set by the user (`tmux select-pane -T`). */
+  /**
+   * `pane_title` — may be set by the user (`tmux select-pane -T`) or
+   * by pi via an OSC title sequence. Leaked Kitty-graphics control
+   * payloads (see `sanitizePaneTitle`) are normalized to `""` here so
+   * they never surface as an agent name.
+   */
   title: string;
   /**
    * `pane_current_command` — e.g. "pi", "zsh".
@@ -115,7 +152,7 @@ export function listPanes(): Pane[] {
       paneIndex,
       pid: pidNum,
       cwd,
-      title,
+      title: sanitizePaneTitle(title),
       command,
       isPi,
     });

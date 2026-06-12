@@ -7,6 +7,21 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.24] — 2026-06-12
+
+Fix agent names flipping to `Ga=d,d=A,q=2` (and similar) in the
+sidebar.
+
+- **Ignore leaked Kitty-graphics titles.** pi (via pi-tui) renders
+  and clears inline images with Kitty graphics APC sequences such as
+  `ESC _ Ga=d,d=A,q=2 ESC \`. tmux has no native Kitty-graphics
+  support and copies the APC payload straight into `pane_title`, so a
+  pi pane's title gets overwritten with the raw control string —
+  which pi-monitor read as the agent's name. `listPanes` now
+  normalizes any title matching the Kitty graphics control shape to
+  `""`, so the existing empty-title → `pane N` fallback applies
+  instead of showing the garbage. Mirrored in the Python build.
+
 ## [0.4.22] — 2026-05-25
 
 Sidebar perf fixes for 5+-pane sessions on macOS. No behavior
