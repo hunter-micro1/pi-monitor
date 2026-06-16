@@ -47,12 +47,16 @@ export function sanitizePaneTitle(title: string): string {
 /**
  * Format string handed to `tmux list-panes -F`. Tab-separated so
  * fields with embedded spaces (paths, titles) survive the round
- * trip. Matches `_LIST_FORMAT` in the Python build column-for-
- * column.
+ * trip. Mirrors the Python build's `_LIST_FORMAT`, plus a trailing
+ * `@pi_pane_label` — the per-pane user option the pi-tmux-pane-title
+ * extension writes. We prefer it over `pane_title` because pi-tui's
+ * Kitty graphics APC corrupts pane_title (see `sanitizePaneTitle`),
+ * while the `@`-prefixed option lives in a namespace APC can't touch.
  */
 const LIST_FORMAT =
   "#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_index}" +
-  "\t#{pane_pid}\t#{pane_current_path}\t#{pane_title}\t#{pane_current_command}";
+  "\t#{pane_pid}\t#{pane_current_path}\t#{pane_title}\t#{pane_current_command}" +
+  "\t#{@pi_pane_label}";
 
 /**
  * One tmux pane. Mirrors the Python `Pane` dataclass.
@@ -70,10 +74,12 @@ export interface Pane {
   /** `pane_current_path` — cwd of the foreground process. */
   cwd: string;
   /**
-   * `pane_title` — may be set by the user (`tmux select-pane -T`) or
-   * by pi via an OSC title sequence. Leaked Kitty-graphics control
-   * payloads (see `sanitizePaneTitle`) are normalized to `""` here so
-   * they never surface as an agent name.
+   * Display name for the pane. Prefers the `@pi_pane_label` user
+   * option (set by the pi-tmux-pane-title extension; immune to the
+   * Kitty-graphics clobber). Falls back to `pane_title` for panes
+   * without a label, with leaked Kitty-graphics payloads normalized
+   * to `""` (see `sanitizePaneTitle`) so garbage never surfaces as an
+   * agent name.
    */
   title: string;
   /**
@@ -116,17 +122,12 @@ export function listPanes(): Pane[] {
   for (const line of raw.split("\n")) {
     if (line === "") continue;
     const parts = line.split("\t");
-    if (parts.length !== 8) continue;
-    const [paneId, session, win, pidx, pid, cwd, title, command] = parts as [
-      string,
-      string,
-      string,
-      string,
-      string,
-      string,
-      string,
-      string,
-    ];
+    if (parts.length !== 9) continue;
+    const [paneId, session, win, pidx, pid, cwd, paneTitle, command, paneLabel] =
+      parts as [string, string, string, string, string, string, string, string, string];
+    // Prefer the extension's clobber-proof @pi_pane_label; otherwise fall
+    // back to pane_title with leaked Kitty-graphics payloads stripped.
+    const title = paneLabel.length > 0 ? paneLabel : sanitizePaneTitle(paneTitle);
     const windowIndex = Number.parseInt(win, 10);
     const paneIndex = Number.parseInt(pidx, 10);
     const pidNum = Number.parseInt(pid, 10);
@@ -152,7 +153,7 @@ export function listPanes(): Pane[] {
       paneIndex,
       pid: pidNum,
       cwd,
-      title: sanitizePaneTitle(title),
+      title,
       command,
       isPi,
     });

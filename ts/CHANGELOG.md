@@ -7,6 +7,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The Python build at the repo root has its own changelog at
 [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## [0.4.25] — 2026-06-16
+
+Prefer a clobber-proof per-pane label for agent names.
+
+- **Read `@pi_pane_label`.** The `pi-tmux-pane-title` extension now
+  mirrors each pi session's task name onto a per-pane tmux *user
+  option* (`@pi_pane_label`) instead of the built-in `pane_title`,
+  which pi-tui's Kitty-graphics APC corrupts. `listPanes` now prefers
+  that option for the agent name and only falls back to (sanitized)
+  `pane_title` when no label is set. Without this, panes driven by the
+  new extension would show `pane N` because nothing writes
+  `pane_title` anymore. The 0.4.24 Kitty-graphics sanitizer is kept as
+  the `pane_title` fallback. TS build only.
+
 ## [0.4.24] — 2026-06-12
 
 Fix agent names flipping to `Ga=d,d=A,q=2` (and similar) in the

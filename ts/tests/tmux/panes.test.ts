@@ -49,7 +49,7 @@ afterEach(() => {
 /**
  * Build a fake `tmux list-panes -F` line with the field order our
  * format string expects: pane_id \t session \t window \t pane_idx
- *  \t pid \t cwd \t title \t command.
+ *  \t pid \t cwd \t title \t command \t label (@pi_pane_label).
  */
 function fakeLine(args: {
   paneId?: string;
@@ -60,6 +60,7 @@ function fakeLine(args: {
   cwd?: string;
   title?: string;
   command?: string;
+  label?: string;
 }): string {
   return [
     args.paneId ?? "%1",
@@ -70,6 +71,7 @@ function fakeLine(args: {
     args.cwd ?? "/home/u",
     args.title ?? "",
     args.command ?? "zsh",
+    args.label ?? "",
   ].join("\t");
 }
 
@@ -121,14 +123,14 @@ describe("listPanes", () => {
     expect(second.target).toBe("main:0.1");
   });
 
-  it("skips lines that don't have exactly 8 tab-separated fields", () => {
+  it("skips lines that don't have exactly 9 tab-separated fields", () => {
     tmuxRunMock.mockReturnValue("only one column\n");
     expect(listPanes()).toEqual([]);
   });
 
   it("skips lines with non-integer numeric columns", () => {
     tmuxRunMock.mockReturnValue(
-      `${["%1", "main", "x", "0", "1234", "/", "", "zsh"].join("\t")}\n`,
+      `${["%1", "main", "x", "0", "1234", "/", "", "zsh", ""].join("\t")}\n`,
     );
     expect(listPanes()).toEqual([]);
   });
@@ -158,6 +160,25 @@ describe("listPanes", () => {
     );
     const [pane] = listPanes();
     expect(pane?.title).toBe("");
+  });
+
+  it("prefers @pi_pane_label over pane_title (incl. a clobbered one)", () => {
+    tmuxRunMock.mockReturnValue(
+      `${[
+        // label present -> wins, even when pane_title is Kitty garbage.
+        fakeLine({
+          paneId: "%1",
+          title: "Ga=d,d=A,q=2",
+          label: "Auth: fix login",
+          command: "pi",
+        }),
+        // no label -> fall back to the (sanitized) pane_title.
+        fakeLine({ paneId: "%2", title: "shell", label: "", command: "zsh" }),
+      ].join("\n")}\n`,
+    );
+    const panes = listPanes();
+    expect(panes[0]?.title).toBe("Auth: fix login");
+    expect(panes[1]?.title).toBe("shell");
   });
 
   it("preserves cwd / title strings with embedded spaces", () => {
