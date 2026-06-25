@@ -25,7 +25,8 @@ import {
   useState,
 } from "react";
 
-import { STATE_COLORS, fmtStatusWidget } from "../format/row.js";
+import type { PiMonitorConfig } from "../config.js";
+import { fmtIdle, fmtStatusWidget } from "../format/row.js";
 import { Notifier } from "../notify/notifier.js";
 import type { AgentState, PaneStatus } from "../state/types.js";
 import { EmptyState } from "./EmptyState.js";
@@ -34,14 +35,21 @@ import { type NewPiResult, NewPiScreen } from "./NewPiScreen.js";
 import { type BannerNotification, NotificationBanner } from "./NotificationBanner.js";
 import { PaneDetails } from "./PaneDetails.js";
 import { PaneRow } from "./PaneRow.js";
-import { SessionGroup, pickSessionChip } from "./SessionGroup.js";
-import { ACCENT, FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
+import { SessionGroup } from "./SessionGroup.js";
+import { ThemeProvider } from "./ThemeContext.js";
 import { INITIAL_CURSOR, currentPos, cursorReducer } from "./cursor.js";
 import type { ListDir } from "./dirComplete.js";
 import { branchForCwd as defaultBranchForCwd } from "./git.js";
 import { lerpColor, pulseColor } from "./pulse.js";
 import { sessionHeaderColor } from "./sessionColors.js";
 import { BRAILLE_FRAMES } from "./spinner.js";
+import {
+  DEFAULT_THEME,
+  type Theme,
+  nextTheme,
+  resolveTheme,
+  themeByName,
+} from "./themes.js";
 import type { TmuxBridge } from "./tmuxBridge.js";
 
 /** One displayable agent. Pane metadata + resolved status. */
@@ -119,7 +127,28 @@ export interface AppProps {
   readonly notificationsEnabled?: boolean;
   /** Banner auto-dismiss timeout (ms). Default 5000. */
   readonly notificationDismissMs?: number;
+  /**
+   * Initial theme name (persisted choice from config). Validated
+   * against the curated set; falls back to the default. Default
+   * `tokyo-night`.
+   */
+  readonly initialThemeName?: string;
+  /**
+   * Initial sort mode. `tmux` keeps pane order (matches the README
+   * screenshot); `status` floats needs-attention panes to the top.
+   * Default `tmux`.
+   */
+  readonly initialSortMode?: SortMode;
+  /**
+   * Called when the user changes a persisted setting via `t` / `s` /
+   * `m`. The caller merges the patch into config and writes it to
+   * disk. Default no-op (display-only mode / tests).
+   */
+  readonly onConfigChange?: (patch: Partial<PiMonitorConfig>) => void;
 }
+
+/** Pane ordering within a session card. */
+export type SortMode = "tmux" | "status";
 
 type AppMode = "list" | "help" | "newSession" | "newWindow";
 
@@ -136,6 +165,9 @@ export function App(props: AppProps): ReactElement {
     setStatusWidget,
     notificationsEnabled = true,
     notificationDismissMs = 5000,
+    initialThemeName = DEFAULT_THEME,
+    initialSortMode = "tmux",
+    onConfigChange,
   } = props;
 
   const ink = useApp();
@@ -165,6 +197,18 @@ export function App(props: AppProps): ReactElement {
   );
   const [cursor, dispatch] = useReducer(cursorReducer, INITIAL_CURSOR);
   const [mode, setMode] = useState<AppMode>("list");
+  // Active theme. Owned in state (not module globals like the Python
+  // build) so a `t` cycle re-renders the whole tree via context.
+  const [themeName, setThemeName] = useState<string>(() =>
+    resolveTheme(initialThemeName),
+  );
+  const theme = useMemo(() => themeByName(themeName), [themeName]);
+  // Pane sort mode (`s` cycles). Default tmux order matches the
+  // README screenshot; status floats attention panes up.
+  const [sortMode, setSortMode] = useState<SortMode>(initialSortMode);
+  // Notifications muted (`m` toggles). Initialized from the enabled
+  // prop so the notifier + titlebar suffix agree on first paint.
+  const [muted, setMuted] = useState<boolean>(!notificationsEnabled);
   // Captured at the moment the user presses 'o' on a pane row, so
   // the new-pi modal can carry the target session through to
   // onLaunchPi when the cursor moves before submission.
@@ -193,15 +237,18 @@ export function App(props: AppProps): ReactElement {
       },
     });
   }
-  // Keep enabled flag in sync if the prop ever flips.
-  if (notifierRef.current.enabled !== notificationsEnabled) {
-    notifierRef.current.enabled = notificationsEnabled;
+  // Keep the notifier's enabled flag in sync with the mute toggle.
+  const wantNotifierEnabled = !muted;
+  if (notifierRef.current.enabled !== wantNotifierEnabled) {
+    notifierRef.current.enabled = wantNotifierEnabled;
   }
 
   // Pulse animation state. Anchor t0 once and recompute the live
   // color on the pulseInterval timer; PaneRow consumes it via prop.
   const [pulseT0] = useState<number>(() => performance.now() / 1000);
-  const [pulseHex, setPulseHex] = useState<string>(() => pulseColor(pulseT0, pulseT0));
+  const [pulseHex, setPulseHex] = useState<string>(() =>
+    pulseColor(pulseT0, pulseT0, theme.workingPulseDim, theme.state.working),
+  );
 
   // Cursor-move flash animation. We track the timestamp of the
   // last cursor change in a ref; the pulse interval below derives
@@ -211,7 +258,7 @@ export function App(props: AppProps): ReactElement {
   // here" beat without needing real frame-by-frame tweening.
   const lastCursorIndex = useRef(cursor.index);
   const cursorMoveAtRef = useRef<number>(performance.now() / 1000);
-  const [cursorBarHex, setCursorBarHex] = useState<string>(ACCENT);
+  const [cursorBarHex, setCursorBarHex] = useState<string>(theme.accent);
 
   // Spinner frame index for the working-row Braille animation.
   // Bumped on the same 80ms cadence as the pulse below; one tick
@@ -275,7 +322,7 @@ export function App(props: AppProps): ReactElement {
   // must walk panes in the same order the user sees them, otherwise
   // j/k would skip around the visible list.
   // ---------------------------------------------------------------------
-  const groups = useMemo(() => groupBySession(entries), [entries]);
+  const groups = useMemo(() => groupBySession(entries, sortMode), [entries, sortMode]);
   const orderedPaneIds = useMemo(
     () => groups.flatMap((g) => g.items.map((i) => i.paneId)),
     [groups],
@@ -300,20 +347,20 @@ export function App(props: AppProps): ReactElement {
   useEffect(() => {
     const id = setInterval(() => {
       const now = performance.now() / 1000;
-      setPulseHex(pulseColor(now, pulseT0));
-      // Cursor flash: lerp ACCENT -> #FFFFFF based on a 250ms
+      setPulseHex(pulseColor(now, pulseT0, theme.workingPulseDim, theme.state.working));
+      // Cursor flash: lerp accent -> #FFFFFF based on a 250ms
       // linear decay since the last cursor move. Settles back to
-      // solid ACCENT after the window expires; cheap because the
-      // interval was already running for the working pulse.
+      // the solid theme accent after the window expires; cheap
+      // because the interval was already running for the pulse.
       const flash = Math.max(0, 1 - (now - cursorMoveAtRef.current) / 0.25);
-      setCursorBarHex(lerpColor(ACCENT, "#FFFFFF", flash * 0.6));
+      setCursorBarHex(lerpColor(theme.accent, "#FFFFFF", flash * 0.6));
       // Bump the Braille spinner frame on the same tick. pulse
       // uses 80ms by default which is exactly pi-tui's Loader
       // cadence, so the two animations stay phase-locked.
       setSpinnerFrame((f) => (f + 1) % BRAILLE_FRAMES.length);
     }, pulseIntervalMs);
     return () => clearInterval(id);
-  }, [pulseT0, pulseIntervalMs]);
+  }, [pulseT0, pulseIntervalMs, theme]);
 
   // ---------------------------------------------------------------------
   // Notifier driving. transition() is called per pane on every
@@ -420,6 +467,31 @@ export function App(props: AppProps): ReactElement {
         setMode("help");
         return;
       }
+      if (input === "t") {
+        // Cycle the curated theme set + persist. The whole tree
+        // re-themes via context on the next render.
+        const nt = nextTheme(themeName);
+        setThemeName(nt);
+        onConfigChange?.({ theme: nt });
+        return;
+      }
+      if (input === "s") {
+        // Toggle pane sort: tmux order <-> needs-attention-first.
+        const ns: SortMode = sortMode === "tmux" ? "status" : "tmux";
+        setSortMode(ns);
+        onConfigChange?.({ sort_mode: ns });
+        return;
+      }
+      if (input === "m") {
+        // Toggle desktop + in-app notifications (mute/unmute).
+        const nextMuted = !muted;
+        setMuted(nextMuted);
+        if (notifierRef.current !== null) {
+          notifierRef.current.enabled = !nextMuted;
+        }
+        onConfigChange?.({ notifications_enabled: !nextMuted });
+        return;
+      }
       if (input === "o") {
         // 'o' on a pane row => new window inside that pane's session.
         // 'o' on the new-row affordance (or empty) => new session.
@@ -462,7 +534,11 @@ export function App(props: AppProps): ReactElement {
   // Render.
   // ---------------------------------------------------------------------
   if (mode === "help") {
-    return <HelpScreen onDismiss={() => setMode("list")} />;
+    return (
+      <ThemeProvider theme={theme}>
+        <HelpScreen onDismiss={() => setMode("list")} />
+      </ThemeProvider>
+    );
   }
   // newSession / newWindow no longer return early. Instead the
   // App tree stays mounted and renders the NewPiScreen as a
@@ -501,132 +577,148 @@ export function App(props: AppProps): ReactElement {
   const newSelected = cursorPos !== null && cursorPos.kind === "new";
   const counts = countByState(entries.map((e) => e.status.state));
   const empty = entries.length === 0;
+  // Session whose card holds the cursor row — its border lights up.
+  const activeSession =
+    selectedPaneId !== null
+      ? (entries.find((e) => e.paneId === selectedPaneId)?.session ?? null)
+      : null;
+  // Card spans the padded content width; rows sit inside the card's
+  // border (1) + padding (1) on each side.
+  const cardWidth = Math.max(20, contentWidth - 4);
+  const rowWidth = Math.max(10, contentWidth - 8);
+  const attention = topAttention(entries);
 
   return (
-    <Box flexDirection="column" width={contentWidth} height={termRows}>
-      <TitleBar counts={counts} />
-      {banner !== null && <NotificationBanner notification={banner} />}
+    <ThemeProvider theme={theme}>
+      <Box flexDirection="column" width={contentWidth} height={termRows}>
+        <TitleBar counts={counts} sortMode={sortMode} muted={muted} theme={theme} />
+        {attention !== null && <AttentionBanner attention={attention} theme={theme} />}
+        {banner !== null && <NotificationBanner notification={banner} />}
 
-      {/* The middle region (row list + flex spacer + details box)
+        {/* The middle region (row list + flex spacer + details box)
           claims all height between the TitleBar/banner above and
           the Footer below. The flex spacer inside it pushes
           PaneDetails to the very bottom regardless of how many
           pane rows are in the list. */}
-      <Box flexDirection="column" paddingX={2} marginTop={1} flexGrow={1}>
-        {/* + new pi session affordance. Same selection-bar pattern
+        <Box flexDirection="column" paddingX={2} marginTop={1} flexGrow={1}>
+          {/* + new pi session affordance. Same selection-bar pattern
             as PaneRow so the cursor moves through a single visual
             grammar across every selectable row. */}
-        <Box flexDirection="row">
-          <Box width={2}>
-            <Text bold color={newSelected ? cursorBarHex : ACCENT}>
-              {newSelected ? "\u258e" : " "}
+          <Box flexDirection="row">
+            <Box width={2}>
+              <Text bold color={newSelected ? cursorBarHex : theme.accent}>
+                {newSelected ? "\u258e" : " "}
+              </Text>
+            </Box>
+            <Text bold color={newSelected ? theme.accent : theme.foregroundMuted}>
+              + new session
             </Text>
           </Box>
-          <Text bold color={newSelected ? ACCENT : FOREGROUND_MUTED}>
-            + new pi session
-          </Text>
-        </Box>
 
-        {empty && <EmptyState />}
+          {empty && <EmptyState />}
 
-        {groups.map(({ session, items }, sectionIdx) => {
-          const chip = pickSessionChip(items.map((e) => e.status));
-          // Hash-of-name color reused on every row in this section
-          // so each section reads as a colored block. PaneRow
-          // applies it to non-working titles only.
-          const sectionColor = sessionHeaderColor(session);
-          return (
-            <SessionGroup
-              key={session}
-              session={session}
-              chip={chip}
-              first={sectionIdx === 0}
-            >
-              {items.map((entry) => {
-                // Gate animated props so PaneRow's memo can skip
-                // re-renders on the 80 ms pulse tick for rows that
-                // don't consume them:
-                //   - workingColor + spinnerGlyph only matter when
-                //     state === "working" (the row is breathing).
-                //   - cursorBarColor only matters when the row is
-                //     selected (the bar lerps brightward briefly
-                //     after a cursor move).
-                // Non-working, non-selected rows see stable
-                // `undefined` between pulses; React.memo's default
-                // shallow comparator then skips the render.
-                const isWorking = entry.status.state === "working";
-                const isSelected = entry.paneId === selectedPaneId;
-                return (
-                  <PaneRow
-                    key={entry.paneId}
-                    status={entry.status}
-                    paneTitle={entry.paneTitle}
-                    paneIndex={entry.paneIndex}
-                    // Read pre-resolved branch from the tick-populated
-                    // map; null until the first tick lands (one frame).
-                    branch={branchByCwd.get(entry.cwd) ?? null}
-                    selected={isSelected}
-                    workingColor={isWorking ? pulseHex : undefined}
-                    cursorBarColor={isSelected ? cursorBarHex : undefined}
-                    spinnerGlyph={isWorking ? BRAILLE_FRAMES[spinnerFrame] : undefined}
-                    sessionColor={sectionColor}
-                  />
-                );
-              })}
-            </SessionGroup>
-          );
-        })}
+          {groups.map(({ session, items }, sectionIdx) => {
+            // Hash-of-name color reused on every row in this section
+            // so each section reads as a colored block. PaneRow
+            // applies it to non-working titles only.
+            const sectionColor = sessionHeaderColor(session);
+            return (
+              <SessionGroup
+                key={session}
+                session={session}
+                width={cardWidth}
+                active={session === activeSession}
+                first={sectionIdx === 0}
+              >
+                {items.map((entry) => {
+                  // Gate animated props so PaneRow's memo can skip
+                  // re-renders on the 80 ms pulse tick for rows that
+                  // don't consume them:
+                  //   - workingColor + spinnerGlyph only matter when
+                  //     state === "working" (the row is breathing).
+                  //   - cursorBarColor only matters when the row is
+                  //     selected (the bar lerps brightward briefly
+                  //     after a cursor move).
+                  // Non-working, non-selected rows see stable
+                  // `undefined` between pulses; React.memo's default
+                  // shallow comparator then skips the render.
+                  const isWorking = entry.status.state === "working";
+                  const isSelected = entry.paneId === selectedPaneId;
+                  return (
+                    <PaneRow
+                      key={entry.paneId}
+                      status={entry.status}
+                      paneTitle={entry.paneTitle}
+                      paneIndex={entry.paneIndex}
+                      // Read pre-resolved branch from the tick-populated
+                      // map; null until the first tick lands (one frame).
+                      branch={branchByCwd.get(entry.cwd) ?? null}
+                      selected={isSelected}
+                      workingColor={isWorking ? pulseHex : undefined}
+                      cursorBarColor={isSelected ? cursorBarHex : undefined}
+                      spinnerGlyph={
+                        isWorking ? BRAILLE_FRAMES[spinnerFrame] : undefined
+                      }
+                      sessionColor={sectionColor}
+                      rowWidth={rowWidth}
+                    />
+                  );
+                })}
+              </SessionGroup>
+            );
+          })}
 
-        {/* Flex spacer pushes the details box to the very bottom
+          {/* Flex spacer pushes the details box to the very bottom
             of the sidebar. With short pane lists this leaves an
             empty band above the box; the box's vertical position
             stays constant so users can train their eye on it. */}
-        <Box flexGrow={1} />
+          <Box flexGrow={1} />
 
-        {/* Bottom slot. The popup takes over while open so the
+          {/* Bottom slot. The popup takes over while open so the
             user can type a path without losing the pane list
             above; otherwise we render the details box for the
             cursor row. PaneDetails returns null when status is
             null, so non-pane cursor positions collapse cleanly. */}
-        {popupOpen ? (
-          <Box marginTop={1}>
-            <NewPiScreen
-              mode={popupNewPiMode}
-              defaultCwd={popupCwdHint}
-              onCancel={closePopup}
-              onSubmit={submitPopup}
-              listDir={listDir}
-              // Fit inside the row list's paddingX={2} on each
-              // side so the popup never exceeds the sidebar
-              // width on narrow panes.
-              width={Math.max(20, contentWidth - 4)}
-            />
-          </Box>
-        ) : (
-          (() => {
-            const cursorEntry =
-              selectedPaneId !== null
-                ? (entries.find((e) => e.paneId === selectedPaneId) ?? null)
-                : null;
-            return (
-              <PaneDetails
-                status={cursorEntry?.status ?? null}
-                paneTitle={cursorEntry?.paneTitle ?? null}
-                paneIndex={cursorEntry?.paneIndex ?? 0}
-                branch={
-                  cursorEntry !== null
-                    ? (branchByCwd.get(cursorEntry.cwd) ?? null)
-                    : null
-                }
-                cwd={cursorEntry?.cwd ?? null}
+          {popupOpen ? (
+            <Box marginTop={1}>
+              <NewPiScreen
+                mode={popupNewPiMode}
+                defaultCwd={popupCwdHint}
+                onCancel={closePopup}
+                onSubmit={submitPopup}
+                listDir={listDir}
+                // Fit inside the row list's paddingX={2} on each
+                // side so the popup never exceeds the sidebar
+                // width on narrow panes.
+                width={Math.max(20, contentWidth - 4)}
               />
-            );
-          })()
-        )}
-      </Box>
+            </Box>
+          ) : (
+            (() => {
+              const cursorEntry =
+                selectedPaneId !== null
+                  ? (entries.find((e) => e.paneId === selectedPaneId) ?? null)
+                  : null;
+              return (
+                <PaneDetails
+                  status={cursorEntry?.status ?? null}
+                  paneTitle={cursorEntry?.paneTitle ?? null}
+                  paneIndex={cursorEntry?.paneIndex ?? 0}
+                  branch={
+                    cursorEntry !== null
+                      ? (branchByCwd.get(cursorEntry.cwd) ?? null)
+                      : null
+                  }
+                  cwd={cursorEntry?.cwd ?? null}
+                />
+              );
+            })()
+          )}
+        </Box>
 
-      <Footer />
-    </Box>
+        <Footer theme={theme} />
+      </Box>
+    </ThemeProvider>
   );
 }
 
@@ -636,65 +728,148 @@ export function App(props: AppProps): ReactElement {
 
 interface TitleBarProps {
   readonly counts: Readonly<Record<AgentState, number>>;
+  readonly sortMode: SortMode;
+  readonly muted: boolean;
+  readonly theme: Theme;
 }
 
-function TitleBar({ counts }: TitleBarProps): ReactElement {
-  // Order matches the priority lattice: error first, then waiting,
-  // idle, retrying, working. unknown / no_pi suppressed.
-  const chips: Array<{ state: AgentState; n: number }> = [];
-  for (const state of [
-    "error",
-    "waiting",
-    "idle",
-    "retrying",
-    "working",
-  ] as AgentState[]) {
-    const n = counts[state];
-    if (n > 0) chips.push({ state, n });
-  }
+/**
+ * Brand + always-on `N working \u00b7 N idle \u00b7 N error` counts, with a
+ * trailing `\u00b7 status` / `\u00b7 muted` suffix when those modes are
+ * active. Mirrors `_update_chrome` in tui.py: colored count words
+ * (no leading glyph), zero counts dimmed, brand-only when idle.
+ */
+function TitleBar({ counts, sortMode, muted, theme }: TitleBarProps): ReactElement {
+  const total = (Object.values(counts) as number[]).reduce((a, b) => a + b, 0);
+  const chipDefs: Array<{ state: AgentState; label: string }> = [
+    { state: "working", label: "working" },
+    { state: "idle", label: "idle" },
+    { state: "error", label: "error" },
+  ];
+  const suffix: string[] = [];
+  if (sortMode !== "tmux") suffix.push(sortMode);
+  if (muted) suffix.push("muted");
   return (
     <Box paddingX={2} paddingY={0} flexDirection="row">
-      <Box flexGrow={1}>
-        <Text bold color={ACCENT}>
-          pi-monitor
-        </Text>
-      </Box>
-      <Box flexDirection="row">
-        {chips.map((c, i) => (
-          <Box key={c.state} marginLeft={i === 0 ? 0 : 3}>
-            {/* Colored ● indicator + dim count + dim label. Reads
-                like a status pill at-a-glance: dot says 'this kind
-                of attention', count + label fill in the detail. */}
-            <Text color={STATE_COLORS[c.state]}>{"● "}</Text>
-            <Text color={FOREGROUND}>{c.n}</Text>
-            <Text color={FOREGROUND_MUTED}>{` ${c.state}`}</Text>
-          </Box>
-        ))}
-      </Box>
+      <Text bold color={theme.accent}>
+        pi-monitor
+      </Text>
+      {total > 0 && (
+        <>
+          <Text>{"   "}</Text>
+          {chipDefs.map((c, i) => {
+            const n = counts[c.state];
+            return (
+              <Box key={c.state} flexDirection="row">
+                {i > 0 && <Text color={theme.foregroundMuted}>{"  \u00b7  "}</Text>}
+                <Text color={n > 0 ? theme.state[c.state] : theme.foregroundMuted}>
+                  {`${n} ${c.label}`}
+                </Text>
+              </Box>
+            );
+          })}
+          {suffix.length > 0 && (
+            <Text color={theme.foregroundMuted}>
+              {`   \u00b7   ${suffix.join("  \u00b7  ")}`}
+            </Text>
+          )}
+        </>
+      )}
     </Box>
   );
 }
 
-function Footer(): ReactElement {
+/**
+ * The single most-attention-needing pane, surfaced by name under the
+ * title bar. Mirrors `_update_attention_banner`: highest priority
+ * wins (error > waiting > idle), ties broken by longest-idle.
+ */
+function AttentionBanner({
+  attention,
+  theme,
+}: {
+  attention: Attention;
+  theme: Theme;
+}): ReactElement {
+  const idlePart = attention.idleTag !== "" ? ` ${attention.idleTag}` : "";
+  return (
+    <Box paddingX={2} flexDirection="row">
+      <Text bold color={theme.foreground}>
+        {attention.target}
+      </Text>
+      <Text>{"  "}</Text>
+      <Text color={theme.state[attention.state]}>{`${attention.verb}${idlePart}`}</Text>
+      {attention.rest > 0 && (
+        <Text color={theme.foregroundMuted}>{`  \u00b7 +${attention.rest} more`}</Text>
+      )}
+      <Text color={theme.foregroundMuted}>{"  \u00b7 press 1\u20139 to jump"}</Text>
+    </Box>
+  );
+}
+
+function Footer({ theme }: { theme: Theme }): ReactElement {
   const hints: Array<{ key: string; label: string }> = [
-    { key: "j k", label: "move" },
-    { key: "↵", label: "focus" },
+    { key: "s", label: "sort" },
+    { key: "t", label: "theme" },
+    { key: "m", label: "mute" },
     { key: "o", label: "new" },
-    { key: "?", label: "help" },
     { key: "q", label: "quit" },
+    { key: "?", label: "help" },
   ];
   return (
     <Box paddingX={2} marginTop={1} flexDirection="row">
       {hints.map((h, i) => (
-        <Box key={h.key} marginLeft={i === 0 ? 0 : 4}>
-          <Text bold color={ACCENT}>
+        <Box key={h.key} marginLeft={i === 0 ? 0 : 3}>
+          <Text bold color={theme.accent}>
             {h.key}
           </Text>
-          <Text color={FOREGROUND_MUTED}>{`  ${h.label}`}</Text>
+          <Text color={theme.foregroundMuted}>{`  ${h.label}`}</Text>
         </Box>
       ))}
     </Box>
   );
+}
+
+/** Attention-banner view model (the top needs-attention pane). */
+interface Attention {
+  readonly target: string;
+  readonly state: AgentState;
+  readonly verb: string;
+  readonly idleTag: string;
+  readonly rest: number;
+}
+
+const ATTENTION_STATES: readonly AgentState[] = ["error", "waiting", "idle"];
+
+/**
+ * Pick the single most-attention-needing pane for the subtitle, or
+ * null when nothing needs the user. Highest priority wins; ties
+ * broken by longest-idle (oldest issue first).
+ */
+function topAttention(entries: readonly AppEntry[]): Attention | null {
+  const candidates = entries.filter((e) => ATTENTION_STATES.includes(e.status.state));
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => {
+    const r = PRIORITY_RANK[a.status.state] - PRIORITY_RANK[b.status.state];
+    return r !== 0 ? r : b.status.idleSeconds - a.status.idleSeconds;
+  });
+  const top = candidates[0] as AppEntry;
+  const verbMap: Partial<Record<AgentState, string>> = {
+    error: "errored",
+    waiting: "waiting",
+    idle: "idle",
+  };
+  const title =
+    top.paneTitle !== null && top.paneTitle.length > 0
+      ? top.paneTitle
+      : String(top.paneIndex);
+  return {
+    target: `${top.session}/${title}`,
+    state: top.status.state,
+    verb: verbMap[top.status.state] ?? top.status.state,
+    idleTag: fmtIdle(top.status.idleSeconds),
+    rest: candidates.length - 1,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -732,6 +907,7 @@ const PRIORITY_RANK: Record<AgentState, number> = {
  */
 export function groupBySession(
   entries: readonly AppEntry[],
+  sortMode: SortMode = "status",
 ): Array<{ session: string; items: AppEntry[] }> {
   const order: string[] = [];
   const buckets = new Map<string, AppEntry[]>();
@@ -744,9 +920,14 @@ export function groupBySession(
   }
   return order.map((s) => {
     const items = buckets.get(s) as AppEntry[];
-    // Stable sort: Array.prototype.sort is spec-stable on V8 (Node
-    // 12+), so equal-priority items keep resolver order.
-    items.sort((a, b) => PRIORITY_RANK[a.status.state] - PRIORITY_RANK[b.status.state]);
+    // `status` mode floats attention panes up; `tmux` mode keeps
+    // resolver (pane) order. Array.prototype.sort is spec-stable on
+    // V8, so equal-priority items keep resolver order.
+    if (sortMode === "status") {
+      items.sort(
+        (a, b) => PRIORITY_RANK[a.status.state] - PRIORITY_RANK[b.status.state],
+      );
+    }
     return { session: s, items };
   });
 }
@@ -781,6 +962,3 @@ function countByState(states: readonly AgentState[]): Record<AgentState, number>
   for (const s of states) counts[s] += 1;
   return counts;
 }
-
-// Re-export for tests / external callers.
-export { FOREGROUND, FOREGROUND_MUTED };

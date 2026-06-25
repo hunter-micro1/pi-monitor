@@ -147,7 +147,7 @@ describe("App render", () => {
     await wait();
     const out = lastFrame() ?? "";
     expect(out).toContain("pi-monitor");
-    expect(out).toContain("+ new pi session");
+    expect(out).toContain("+ new session");
     expect(out).toContain("No pi sessions yet");
   });
 
@@ -390,7 +390,7 @@ describe("App modal mode", () => {
     expect(lastFrame() ?? "").toContain("Launch pi in a new tmux session");
   });
 
-  it("opens NewPiScreen when Enter is pressed on the `+ new pi session` row", async () => {
+  it("opens NewPiScreen when Enter is pressed on the `+ new session` row", async () => {
     // 0.4.19: Enter on the new-pi affordance should activate it,
     // matching button-row UX expectations. Empty list means the
     // cursor lands on the new-pi row by default.
@@ -950,5 +950,120 @@ describe("App notification banner", () => {
     await wait(60);
     // No banner despite the transition.
     expect(lastFrame() ?? "").not.toContain("agent state: idle");
+  });
+});
+
+describe("App settings keybindings (t / s / m)", () => {
+  it("cycles the theme and persists the choice on `t`", async () => {
+    const onConfigChange = vi.fn();
+    const { stdin } = render(
+      <App
+        getEntries={() => [entry({ paneId: "%1" })]}
+        branchForCwd={() => null}
+        onConfigChange={onConfigChange}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+        notificationsEnabled={false}
+      />,
+    );
+    await wait();
+    stdin.write("t");
+    await wait();
+    // tokyo-night -> catppuccin-mocha is the first step of the cycle.
+    expect(onConfigChange).toHaveBeenCalledWith({ theme: "catppuccin-mocha" });
+  });
+
+  it("toggles the sort mode and persists it on `s`", async () => {
+    const onConfigChange = vi.fn();
+    const { stdin } = render(
+      <App
+        getEntries={() => [entry({ paneId: "%1" })]}
+        branchForCwd={() => null}
+        onConfigChange={onConfigChange}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+        notificationsEnabled={false}
+      />,
+    );
+    await wait();
+    stdin.write("s");
+    await wait();
+    // Default tmux -> status.
+    expect(onConfigChange).toHaveBeenCalledWith({ sort_mode: "status" });
+  });
+
+  it("toggles mute on `m`, persists it, and shows the muted suffix", async () => {
+    const onConfigChange = vi.fn();
+    const { stdin, lastFrame } = render(
+      <App
+        getEntries={() => [entry({ paneId: "%1", status: status({ state: "idle" }) })]}
+        branchForCwd={() => null}
+        onConfigChange={onConfigChange}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+        notificationsEnabled={true}
+      />,
+    );
+    await wait();
+    expect(lastFrame() ?? "").not.toContain("muted");
+    stdin.write("m");
+    await wait();
+    expect(onConfigChange).toHaveBeenCalledWith({ notifications_enabled: false });
+    expect(lastFrame() ?? "").toContain("muted");
+  });
+
+  it("renders the screenshot-style title counts and footer", async () => {
+    const { lastFrame } = render(
+      <App
+        getEntries={() => [
+          entry({ paneId: "%1", session: "s", status: status({ state: "working" }) }),
+          entry({
+            paneId: "%2",
+            session: "s",
+            paneIndex: 1,
+            status: status({ state: "idle", idleSeconds: 12 }),
+          }),
+        ]}
+        branchForCwd={() => null}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+        notificationsEnabled={false}
+      />,
+    );
+    await wait();
+    const out = lastFrame() ?? "";
+    expect(out).toContain("1 working");
+    expect(out).toContain("1 idle");
+    expect(out).toContain("0 error");
+    // Footer keys present in screenshot order.
+    expect(out).toContain("sort");
+    expect(out).toContain("theme");
+    expect(out).toContain("mute");
+  });
+});
+
+describe("groupBySession sort modes", () => {
+  it("preserves resolver (pane) order in tmux mode", () => {
+    const result = groupBySession(
+      [
+        entry({ paneId: "%1", session: "s", status: status({ state: "working" }) }),
+        entry({ paneId: "%2", session: "s", status: status({ state: "idle" }) }),
+        entry({ paneId: "%3", session: "s", status: status({ state: "error" }) }),
+      ],
+      "tmux",
+    );
+    expect(result[0]?.items.map((i) => i.paneId)).toEqual(["%1", "%2", "%3"]);
+  });
+
+  it("floats attention panes up in status mode", () => {
+    const result = groupBySession(
+      [
+        entry({ paneId: "%1", session: "s", status: status({ state: "working" }) }),
+        entry({ paneId: "%2", session: "s", status: status({ state: "idle" }) }),
+        entry({ paneId: "%3", session: "s", status: status({ state: "error" }) }),
+      ],
+      "status",
+    );
+    expect(result[0]?.items.map((i) => i.paneId)).toEqual(["%3", "%2", "%1"]);
   });
 });

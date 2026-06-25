@@ -29,19 +29,29 @@ export function lerpColor(from: string, to: string, fraction: number): string {
 /**
  * Compute the WORKING pulse color at time `tNow` (seconds), with
  * `tStart` set when the App mounted. Returns a `#RRGGBB` string
- * lerped between WORKING_PULSE_DIM and STATE_COLORS.working over a
- * sine wave with floor fraction 0.40 and ceiling 1.00 (== 0.70 +/-
- * 0.30 sin).
+ * lerped between `dim` and `bright` over a sine wave with floor
+ * fraction 0.40 and ceiling 1.00 (== 0.70 +/- 0.30 sin).
+ *
+ * `dim` / `bright` default to the static tokyo-night working colors
+ * so callers (and tests) that don't thread a theme keep the previous
+ * behavior. The App passes the active theme's `workingPulseDim` +
+ * `state.working` so the breathe tracks the live palette, the way
+ * `_refresh_state_colors` re-derives them per-theme in tui.py.
  *
  * Mirrors the formula in `_pulse_color`:
  *   elapsed = (now - t0) % PERIOD
  *   fraction = 0.70 + 0.30 * sin(2\u03c0 \u00b7 elapsed / PERIOD)
  */
-export function pulseColor(tNow: number, tStart: number): string {
+export function pulseColor(
+  tNow: number,
+  tStart: number,
+  dim: string = WORKING_PULSE_DIM,
+  bright: string = STATE_COLORS.working,
+): string {
   const elapsed =
     (((tNow - tStart) % PULSE_PERIOD_S) + PULSE_PERIOD_S) % PULSE_PERIOD_S;
   const fraction = 0.7 + 0.3 * Math.sin((2 * Math.PI * elapsed) / PULSE_PERIOD_S);
-  return lerpColor(WORKING_PULSE_DIM, STATE_COLORS.working, fraction);
+  return lerpColor(dim, bright, fraction);
 }
 
 // ---------------------------------------------------------------------------

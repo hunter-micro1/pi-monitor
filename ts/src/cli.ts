@@ -201,6 +201,13 @@ async function runTui(): Promise<number> {
   // user attaches.
   setStatusWidget("pi-monitor");
 
+  // Persisted user prefs (theme / sort / mute). Shared on-disk with
+  // the Python build at ~/.config/pi-monitor/config.json. Held in a
+  // mutable object so onConfigChange can merge + rewrite it on every
+  // `t` / `s` / `m`.
+  const { loadConfig, saveConfig } = await import("./config.js");
+  const config = loadConfig();
+
   const { waitUntilExit } = render(
     createElement(App, {
       getEntries,
@@ -208,6 +215,13 @@ async function runTui(): Promise<number> {
       onLaunchPi,
       defaultCwd: homedir(),
       setStatusWidget,
+      initialThemeName: config.theme,
+      initialSortMode: config.sort_mode,
+      notificationsEnabled: config.notifications_enabled,
+      onConfigChange: (patch) => {
+        Object.assign(config, patch);
+        saveConfig(config);
+      },
     }),
   );
 

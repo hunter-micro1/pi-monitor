@@ -47,7 +47,7 @@ import {
   truncate,
 } from "../format/row.js";
 import type { PaneStatus } from "../state/types.js";
-import { FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
+import { useTheme } from "./ThemeContext.js";
 
 /** Width reserved for the "Branch"/"Worktree"/"When"/"Prompt"/"Tokens" label column. */
 const LABEL_COL = 10;
@@ -99,13 +99,22 @@ export function PaneDetails({
   home,
   nowSeconds,
 }: PaneDetailsProps): ReactElement | null {
+  const theme = useTheme();
+  const FOREGROUND = theme.foreground;
   if (status === null) return null;
 
   // workingColor is intentionally NOT threaded here — the box
   // stays static so it doesn't flicker on slow tmux pipelines.
-  // See the file-level comment.
-  const main = fmtRowMain({ paneTitle, paneIndex, status, branch });
-  const tag: ActivityTag = activityTag(status);
+  // See the file-level comment. State colors still follow the
+  // active theme so the tag matches the row list above.
+  const main = fmtRowMain({
+    paneTitle,
+    paneIndex,
+    status,
+    branch,
+    stateColors: theme.state,
+  });
+  const tag: ActivityTag = activityTag(status, null, theme.state);
 
   const tree = cwd && cwd.length > 0 ? fmtCwdDisplay(cwd, resolveHome(home)) : null;
   const when = describeWhen(status, nowSeconds);
@@ -155,13 +164,14 @@ export function PaneDetails({
 
 /** One label-value detail line. */
 function Detail({ label, value }: { label: string; value: string }): ReactElement {
+  const theme = useTheme();
   return (
     <Box flexDirection="row" paddingX={2}>
       <Box width={LABEL_COL}>
-        <Text color={FOREGROUND_MUTED}>{label}</Text>
+        <Text color={theme.foregroundMuted}>{label}</Text>
       </Box>
       <Box flexGrow={1} flexShrink={1}>
-        <Text color={FOREGROUND}>{value}</Text>
+        <Text color={theme.foreground}>{value}</Text>
       </Box>
     </Box>
   );
@@ -205,6 +215,7 @@ function describeWhen(
 }
 
 function Divider(): ReactElement {
+  const theme = useTheme();
   return (
     <Box
       marginX={2}
@@ -213,7 +224,7 @@ function Divider(): ReactElement {
       borderRight={false}
       borderLeft={false}
       borderBottom={false}
-      borderColor={FOREGROUND_MUTED}
+      borderColor={theme.foregroundMuted}
     />
   );
 }

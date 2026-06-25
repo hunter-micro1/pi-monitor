@@ -25,7 +25,7 @@ import { Box, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { type ReactElement, useState } from "react";
 
-import { ACCENT, FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
+import { useTheme } from "./ThemeContext.js";
 import { type ListDir, completeDirPath } from "./dirComplete.js";
 import { branchForCwd as defaultBranchForCwd } from "./git.js";
 
@@ -113,6 +113,12 @@ type FocusedField = "cwd" | "name" | "worktree";
 
 export function NewPiScreen(props: NewPiScreenProps): ReactElement {
   const { mode, defaultCwd, onSubmit, onCancel, listDir, width } = props;
+
+  // Theme palette aliased to the historical color-constant names so
+  // the JSX below stays unchanged while still tracking `t` cycles.
+  const theme = useTheme();
+  const ACCENT = theme.accent;
+  const FOREGROUND_MUTED = theme.foregroundMuted;
 
   const branchResolver = props.branchForCwd ?? defaultBranchForCwd;
 
@@ -349,6 +355,9 @@ function MatchesLine({
 }: {
   readonly matches: readonly string[];
 }): ReactElement {
+  const theme = useTheme();
+  const FOREGROUND = theme.foreground;
+  const FOREGROUND_MUTED = theme.foregroundMuted;
   if (matches.length === 0) {
     // Reserve the line so the layout doesn't jump when matches arrive.
     return <Box marginTop={1} />;

@@ -29,13 +29,13 @@ import type { AgentState, PaneStatus } from "../state/types.js";
  * Ink's `<Text color>` prop, which accepts hex or named colors.
  */
 export const STATE_COLORS: Record<AgentState, string> = {
-  working: "#4EBF71",
-  idle: "#FFA62B",
-  error: "#BA3C5B",
-  waiting: "#de935f", // warm orange \u2014 calls attention
-  retrying: "#81a2be", // steel blue \u2014 "automated, ongoing"
-  unknown: "#808080",
-  no_pi: "#505050",
+  working: "#9ECE6A",
+  idle: "#E0AF68",
+  error: "#F7768E",
+  waiting: "#FF9E64", // warm orange \u2014 calls attention
+  retrying: "#7DCFFF", // steel blue \u2014 "automated, ongoing"
+  unknown: "#565F89",
+  no_pi: "#414868",
 };
 
 /** Per-state-tag verbs that depend only on the state (no idle math). */
@@ -250,9 +250,10 @@ export interface ActivityTag {
 export function activityTag(
   status: PaneStatus,
   workingColor: string | null = null,
+  stateColors: Record<AgentState, string> = STATE_COLORS,
 ): ActivityTag {
   const state = status.state;
-  const baseColor = STATE_COLORS[state] ?? "#808080";
+  const baseColor = stateColors[state] ?? "#808080";
 
   if (state === "working") {
     return {
@@ -365,14 +366,22 @@ export function fmtRowMain(args: {
   status: PaneStatus;
   branch: string | null;
   workingColor?: string | null;
+  stateColors?: Record<AgentState, string>;
 }): RowMain {
-  const { paneTitle, paneIndex, status, branch, workingColor = null } = args;
+  const {
+    paneTitle,
+    paneIndex,
+    status,
+    branch,
+    workingColor = null,
+    stateColors = STATE_COLORS,
+  } = args;
   const name = paneTitle && paneTitle.length > 0 ? paneTitle : `pane ${paneIndex}`;
   const isWorking = status.state === "working";
   return {
     name,
     branch,
-    nameColor: isWorking ? (workingColor ?? STATE_COLORS.working) : null,
+    nameColor: isWorking ? (workingColor ?? stateColors.working) : null,
   };
 }
 

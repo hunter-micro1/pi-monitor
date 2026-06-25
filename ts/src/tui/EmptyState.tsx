@@ -11,9 +11,10 @@
 import { Box, Text } from "ink";
 import type { ReactElement } from "react";
 
-import { ACCENT, FOREGROUND_MUTED } from "./colors.js";
+import { useTheme } from "./ThemeContext.js";
 
 export function EmptyState(): ReactElement {
+  const theme = useTheme();
   return (
     <Box
       flexGrow={1}
@@ -22,22 +23,22 @@ export function EmptyState(): ReactElement {
       justifyContent="center"
       paddingY={2}
     >
-      <Text bold color={ACCENT}>
+      <Text bold color={theme.accent}>
         No pi sessions yet
       </Text>
       <Box marginTop={1}>
-        <Text color={FOREGROUND_MUTED}>Press </Text>
-        <Text bold color={ACCENT}>
+        <Text color={theme.foregroundMuted}>Press </Text>
+        <Text bold color={theme.accent}>
           o
         </Text>
-        <Text color={FOREGROUND_MUTED}> to launch a new agent</Text>
+        <Text color={theme.foregroundMuted}> to launch a new agent</Text>
       </Box>
       <Box>
-        <Text color={FOREGROUND_MUTED}>Press </Text>
-        <Text bold color={ACCENT}>
+        <Text color={theme.foregroundMuted}>Press </Text>
+        <Text bold color={theme.accent}>
           ?
         </Text>
-        <Text color={FOREGROUND_MUTED}> to see all keybindings</Text>
+        <Text color={theme.foregroundMuted}> to see all keybindings</Text>
       </Box>
     </Box>
   );

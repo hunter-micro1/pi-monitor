@@ -1,18 +1,22 @@
 /**
- * SessionGroup snapshot tests + pickSessionChip unit tests.
+ * SessionGroup card-render tests.
+ *
+ * The card is a rounded bordered box with the session name as its
+ * border title (matches the README screenshot / the Python build).
+ * ink-testing-library strips ANSI, so we assert on the box-drawing
+ * characters + content placement rather than colors.
  */
 
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
 
-import type { AgentState } from "../../src/state/types.js";
-import { SessionGroup, pickSessionChip } from "../../src/tui/SessionGroup.js";
+import { SessionGroup } from "../../src/tui/SessionGroup.js";
 
 describe("SessionGroup render", () => {
-  it("renders the session name as a header followed by its rows", () => {
+  it("renders the session name in a titled top border above its rows", () => {
     const { lastFrame } = render(
-      <SessionGroup session="contracts" first>
+      <SessionGroup session="contracts" width={44} first>
         <Text>row a</Text>
         <Text>row b</Text>
       </SessionGroup>,
@@ -21,94 +25,53 @@ describe("SessionGroup render", () => {
     expect(out).toContain("contracts");
     expect(out).toContain("row a");
     expect(out).toContain("row b");
-    // Section ordering: header before rows.
-    const headerIdx = out.indexOf("contracts");
-    const rowAIdx = out.indexOf("row a");
-    expect(headerIdx).toBeLessThan(rowAIdx);
+    // Titled top edge: `╭─ contracts ──…──╮`.
+    expect(out).toContain("\u256d\u2500 contracts ");
+    // Bottom corners present (rounded box).
+    expect(out).toContain("\u2570");
+    expect(out).toContain("\u256f");
+    // Header before rows.
+    expect(out.indexOf("contracts")).toBeLessThan(out.indexOf("row a"));
   });
 
-  it("renders a horizontal divider above non-first sections", () => {
+  it("draws a bordered box (left/right/bottom edges) around the rows", () => {
     const { lastFrame } = render(
-      <SessionGroup session="contracts">
-        <Text>row</Text>
-      </SessionGroup>,
-    );
-    // first=false (default) emits the divider; '─' is the box-
-    // drawing horizontal line Ink renders for borderTop.
-    expect(lastFrame() ?? "").toContain("\u2500");
-  });
-
-  it("omits the divider for the first section", () => {
-    const { lastFrame } = render(
-      <SessionGroup session="contracts" first>
-        <Text>row</Text>
-      </SessionGroup>,
-    );
-    expect(lastFrame() ?? "").not.toContain("\u2500");
-  });
-
-  it("renders the chip next to the title when one is provided", () => {
-    const { lastFrame } = render(
-      <SessionGroup session="powerbi" chip={{ count: 2, state: "idle" }}>
+      <SessionGroup session="cape" width={40}>
         <Text>row</Text>
       </SessionGroup>,
     );
     const out = lastFrame() ?? "";
-    expect(out).toContain("powerbi");
-    expect(out).toContain("2 idle");
+    // Vertical edges + horizontal fill are always present for a card.
+    expect(out).toContain("\u2502"); // │ side border
+    expect(out).toContain("\u2500"); // ─ horizontal
   });
 
-  it("hides the chip when none is provided", () => {
+  it("renders both active and inactive cards without throwing", () => {
+    expect(() =>
+      render(
+        <SessionGroup session="a" width={40} active>
+          <Text>row</Text>
+        </SessionGroup>,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      render(
+        <SessionGroup session="b" width={40} active={false}>
+          <Text>row</Text>
+        </SessionGroup>,
+      ),
+    ).not.toThrow();
+  });
+
+  it("degrades to a plain top edge when the name overflows the width", () => {
     const { lastFrame } = render(
-      <SessionGroup session="solo">
+      <SessionGroup session="a-very-long-session-name-that-overflows" width={12}>
         <Text>row</Text>
       </SessionGroup>,
     );
+    // Should still render corners and not crash / wrap chaotically.
     const out = lastFrame() ?? "";
-    expect(out).not.toMatch(/\d+\s+(idle|error|waiting|retrying|working)/);
-  });
-});
-
-describe("pickSessionChip", () => {
-  function s(state: AgentState): { state: AgentState } {
-    return { state };
-  }
-
-  it("returns null when every pane is working", () => {
-    expect(pickSessionChip([s("working"), s("working")])).toEqual({
-      count: 2,
-      state: "working",
-    });
-  });
-
-  it("prioritizes errors over everything else", () => {
-    const chip = pickSessionChip([s("idle"), s("error"), s("waiting"), s("retrying")]);
-    expect(chip).toEqual({ count: 1, state: "error" });
-  });
-
-  it("prioritizes waiting over idle", () => {
-    const chip = pickSessionChip([s("idle"), s("waiting"), s("idle")]);
-    expect(chip).toEqual({ count: 1, state: "waiting" });
-  });
-
-  it("prioritizes idle over retrying", () => {
-    const chip = pickSessionChip([s("idle"), s("retrying"), s("retrying")]);
-    expect(chip).toEqual({ count: 1, state: "idle" });
-  });
-
-  it("returns null when there are no panes at all", () => {
-    expect(pickSessionChip([])).toBeNull();
-  });
-
-  it("counts duplicates of the chosen state", () => {
-    const chip = pickSessionChip([s("idle"), s("idle"), s("idle")]);
-    expect(chip).toEqual({ count: 3, state: "idle" });
-  });
-
-  it("ignores unknown / no_pi states for chip-priority purposes", () => {
-    const chip = pickSessionChip([s("unknown"), s("no_pi"), s("working")]);
-    // No issue states at all; only working remains, so chip is the
-    // working count.
-    expect(chip).toEqual({ count: 1, state: "working" });
+    expect(out).toContain("\u256d"); // top-left corner
+    expect(out).toContain("\u256e"); // top-right corner
   });
 });

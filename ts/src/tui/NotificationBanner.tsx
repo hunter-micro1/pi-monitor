@@ -11,7 +11,7 @@
 import { Box, Text } from "ink";
 import type { ReactElement } from "react";
 
-import { ACCENT, FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
+import { useTheme } from "./ThemeContext.js";
 
 export interface BannerNotification {
   /** Short header (e.g. "pi-monitor \u00b7 %17"). */
@@ -29,7 +29,9 @@ export interface NotificationBannerProps {
 export function NotificationBanner({
   notification,
 }: NotificationBannerProps): ReactElement {
-  const borderColor = notification.severity === "critical" ? "#F7768E" : ACCENT;
+  const theme = useTheme();
+  const borderColor =
+    notification.severity === "critical" ? theme.state.error : theme.accent;
   return (
     <Box
       flexDirection="row"
@@ -40,11 +42,11 @@ export function NotificationBanner({
       marginTop={1}
     >
       <Box flexGrow={1}>
-        <Text bold color={FOREGROUND}>
+        <Text bold color={theme.foreground}>
           {notification.title}
         </Text>
-        <Text color={FOREGROUND_MUTED}>{"  \u00b7  "}</Text>
-        <Text color={FOREGROUND}>{notification.body}</Text>
+        <Text color={theme.foregroundMuted}>{"  \u00b7  "}</Text>
+        <Text color={theme.foreground}>{notification.body}</Text>
       </Box>
     </Box>
   );
