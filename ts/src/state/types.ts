@@ -38,6 +38,9 @@ export const AgentState = {
   NO_PI: "no_pi",
 } as const satisfies Record<string, AgentState>;
 
+/** Supported agent runtimes pi-monitor can observe in tmux panes. */
+export type AgentKind = "pi" | "claude";
+
 /**
  * Snapshot of a session JSONL file at one moment in time.
  *
@@ -85,9 +88,10 @@ export interface JsonlSnapshot {
    */
   lastUserPrompt: string | null;
   /**
-   * Sum of `usage.totalTokens` across every assistant message in
-   * the JSONL scanned so far. 0 when no assistant has spoken yet
-   * or the assistant messages don't carry usage metadata.
+   * Sum of token usage across every assistant message in the JSONL
+   * scanned so far. Pi contributes `usage.totalTokens`; Claude Code
+   * contributes input/cache/output token fields. 0 when no assistant
+   * has spoken yet or messages don't carry usage metadata.
    */
   cumulativeTokens: number;
   /**

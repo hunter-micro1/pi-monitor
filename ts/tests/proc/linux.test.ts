@@ -10,6 +10,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  findAgentProcessForPane,
+  findClaudePidForPane,
   findPiPidForPane,
   procCwd,
   procCwds,
@@ -263,5 +265,39 @@ describe("linux.findPiPidForPane", () => {
       children: { 100: [101], 101: [] },
     });
     expect(findPiPidForPane(100)).toBe(101);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findAgentProcessForPane / findClaudePidForPane
+// ---------------------------------------------------------------------------
+
+describe("linux.findAgentProcessForPane", () => {
+  it("finds claude descendants", () => {
+    withProcLayout({
+      comms: { 100: "zsh", 101: "node", 102: "claude" },
+      children: { 100: [101], 101: [102], 102: [] },
+    });
+    expect(findAgentProcessForPane(100)).toEqual({ kind: "claude", pid: 102 });
+    expect(findClaudePidForPane(100)).toBe(102);
+    expect(findPiPidForPane(100)).toBeNull();
+  });
+
+  it("keeps the first supported kind as primary when a different agent is nested", () => {
+    withProcLayout({
+      comms: { 100: "zsh", 101: "pi", 102: "claude" },
+      children: { 100: [101], 101: [102], 102: [] },
+    });
+    expect(findAgentProcessForPane(100)).toEqual({ kind: "pi", pid: 101 });
+    expect(findPiPidForPane(100)).toBe(101);
+    expect(findClaudePidForPane(100)).toBeNull();
+  });
+
+  it("returns the deepest process of the primary supported kind", () => {
+    withProcLayout({
+      comms: { 100: "zsh", 101: "claude", 102: "node", 103: "claude" },
+      children: { 100: [101], 101: [102], 102: [103], 103: [] },
+    });
+    expect(findAgentProcessForPane(100)).toEqual({ kind: "claude", pid: 103 });
   });
 });

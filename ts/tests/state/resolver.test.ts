@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/proc/index.js", () => ({
-  findPiPidForPane: vi.fn(),
+  findAgentProcessForPane: vi.fn(),
   procStartTime: vi.fn(),
   procCwds: vi.fn(),
 }));
@@ -27,20 +27,26 @@ vi.mock("../../src/heartbeat/reader.js", () => ({
 }));
 
 import { readHeartbeat } from "../../src/heartbeat/reader.js";
-import { findPiPidForPane, procCwds, procStartTime } from "../../src/proc/index.js";
-import { cwdToSessionDir } from "../../src/state/files.js";
+import {
+  findAgentProcessForPane,
+  procCwds,
+  procStartTime,
+} from "../../src/proc/index.js";
+import { cwdToClaudeProjectDir, cwdToSessionDir } from "../../src/state/files.js";
 import { type PaneRef, StateResolver } from "../../src/state/resolver.js";
 
-const findPiPidForPaneMock = vi.mocked(findPiPidForPane);
+const findAgentProcessForPaneMock = vi.mocked(findAgentProcessForPane);
 const procStartTimeMock = vi.mocked(procStartTime);
 const procCwdsMock = vi.mocked(procCwds);
 const readHeartbeatMock = vi.mocked(readHeartbeat);
 
 let sessionsRoot: string;
+let claudeProjectsRoot: string;
 
 beforeEach(() => {
   sessionsRoot = mkdtempSync(join(tmpdir(), "pi-mon-resolver-"));
-  findPiPidForPaneMock.mockReset();
+  claudeProjectsRoot = mkdtempSync(join(tmpdir(), "pi-mon-claude-resolver-"));
+  findAgentProcessForPaneMock.mockReset();
   procStartTimeMock.mockReset();
   procCwdsMock.mockReset();
   readHeartbeatMock.mockReset();
@@ -54,6 +60,7 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(sessionsRoot, { recursive: true, force: true });
+  rmSync(claudeProjectsRoot, { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -74,22 +81,39 @@ function writeJsonl(args: {
   return path;
 }
 
+function writeClaudeJsonl(args: {
+  cwd: string;
+  filename: string;
+  mtime: number;
+  body?: string;
+}): string {
+  const dir = cwdToClaudeProjectDir(args.cwd, claudeProjectsRoot);
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, args.filename);
+  writeFileSync(path, args.body ?? "");
+  utimesSync(path, args.mtime, args.mtime);
+  return path;
+}
+
 function ref(args: {
   paneId: string;
   cwd: string;
+  agentKind?: PaneRef["agentKind"];
   isPi?: boolean;
   panePid?: number;
 }): PaneRef {
+  const agentKind = args.agentKind ?? (args.isPi === false ? null : "pi");
   return {
     paneId: args.paneId,
     cwd: args.cwd,
-    isPi: args.isPi ?? true,
+    agentKind,
+    isPi: agentKind === "pi",
     panePid: args.panePid ?? 1000,
   };
 }
 
 function newResolver(): StateResolver {
-  return new StateResolver({ sessionsRoot });
+  return new StateResolver({ sessionsRoot, claudeProjectsRoot });
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +122,7 @@ function newResolver(): StateResolver {
 
 describe("StateResolver \u2014 heartbeat fast-path", () => {
   it("uses the heartbeat phase and skips JSONL inference entirely", () => {
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentProcessForPaneMock.mockReturnValue({ kind: "pi", pid: 9999 });
     procStartTimeMock.mockReturnValue(1000.0);
     readHeartbeatMock.mockReturnValue({
       pid: 9999,
@@ -124,7 +148,7 @@ describe("StateResolver \u2014 heartbeat fast-path", () => {
   });
 
   it("maps tool_running + ask_user_question to waiting (blocks on user)", () => {
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentProcessForPaneMock.mockReturnValue({ kind: "pi", pid: 9999 });
     procStartTimeMock.mockReturnValue(1000.0);
     readHeartbeatMock.mockReturnValue({
       pid: 9999,
@@ -148,7 +172,7 @@ describe("StateResolver \u2014 heartbeat fast-path", () => {
   });
 
   it("keeps tool_running + null currentTool as working (regression)", () => {
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentProcessForPaneMock.mockReturnValue({ kind: "pi", pid: 9999 });
     procStartTimeMock.mockReturnValue(1000.0);
     readHeartbeatMock.mockReturnValue({
       pid: 9999,
@@ -167,7 +191,7 @@ describe("StateResolver \u2014 heartbeat fast-path", () => {
   });
 
   it("populates snapshot from JSONL even on heartbeat fast-path", () => {
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentProcessForPaneMock.mockReturnValue({ kind: "pi", pid: 9999 });
     procStartTimeMock.mockReturnValue(1000.0);
     // Resolver used to set snapshot:null on the heartbeat path,
     // which hid the Prompt + Tokens lines in PaneDetails because
@@ -209,7 +233,7 @@ describe("StateResolver \u2014 heartbeat fast-path", () => {
   });
 
   it("falls back to JSONL when the heartbeat is unrecognized", () => {
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentProcessForPaneMock.mockReturnValue({ kind: "pi", pid: 9999 });
     procStartTimeMock.mockReturnValue(1000.0);
     readHeartbeatMock.mockReturnValue({
       pid: 9999,
@@ -239,9 +263,9 @@ describe("StateResolver \u2014 heartbeat fast-path", () => {
   });
 
   it("marks the heartbeat's session_file as claimed so siblings can't steal it", () => {
-    findPiPidForPaneMock
-      .mockReturnValueOnce(1111) // p1
-      .mockReturnValueOnce(2222); // p2
+    findAgentProcessForPaneMock
+      .mockReturnValueOnce({ kind: "pi", pid: 1111 }) // p1
+      .mockReturnValueOnce({ kind: "pi", pid: 2222 }); // p2
     procStartTimeMock
       .mockReturnValueOnce(1000.0) // p1
       .mockReturnValueOnce(1100.0); // p2
@@ -282,7 +306,7 @@ describe("StateResolver \u2014 heartbeat fast-path", () => {
 
 describe("StateResolver \u2014 JSONL path", () => {
   it("infers IDLE for a session with assistant + stop past the threshold", () => {
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentProcessForPaneMock.mockReturnValue({ kind: "pi", pid: 9999 });
     procStartTimeMock.mockReturnValue(1000.0);
     const path = writeJsonl({
       cwd: "/x",
@@ -318,7 +342,7 @@ describe("StateResolver \u2014 JSONL path", () => {
 
   it("promotes a fresh pi with no flushed JSONL to WORKING during the grace window", () => {
     // pi started 5 s ago; STARTING_GRACE_S is 30 s.
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentProcessForPaneMock.mockReturnValue({ kind: "pi", pid: 9999 });
     procStartTimeMock.mockReturnValue(1500.0);
     // No JSONL on disk.
 
@@ -330,7 +354,7 @@ describe("StateResolver \u2014 JSONL path", () => {
   });
 
   it("demotes a long-running no-flushed-JSONL pi to UNKNOWN past the grace", () => {
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentProcessForPaneMock.mockReturnValue({ kind: "pi", pid: 9999 });
     procStartTimeMock.mockReturnValue(1000.0); // 100 s ago
 
     const resolver = newResolver();
@@ -341,9 +365,9 @@ describe("StateResolver \u2014 JSONL path", () => {
   });
 
   it("two pis in the same cwd \u2014 the cohabit-swap regression: a fresh idle pi must NOT steal the older sibling's actively-written file", () => {
-    findPiPidForPaneMock
-      .mockReturnValueOnce(1111) // p1 (older)
-      .mockReturnValueOnce(2222); // p2 (younger, fresh)
+    findAgentProcessForPaneMock
+      .mockReturnValueOnce({ kind: "pi", pid: 1111 }) // p1 (older)
+      .mockReturnValueOnce({ kind: "pi", pid: 2222 }); // p2 (younger, fresh)
     procStartTimeMock
       .mockReturnValueOnce(Date.UTC(2026, 4, 3, 20, 37, 30) / 1000) // p1
       .mockReturnValueOnce(Date.UTC(2026, 4, 3, 20, 50, 0) / 1000); // p2
@@ -382,7 +406,7 @@ describe("StateResolver \u2014 JSONL path", () => {
   });
 
   it("a non-pi pane mixed with pi panes still gets NO_PI", () => {
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentProcessForPaneMock.mockReturnValue({ kind: "pi", pid: 9999 });
     procStartTimeMock.mockReturnValue(1000.0);
     writeJsonl({
       cwd: "/x",
@@ -408,7 +432,7 @@ describe("StateResolver \u2014 JSONL path", () => {
     // `agent/<base>-<ts>` worktree. The tmux pane still reports
     // its shell's cwd; pi writes JSONL keyed off ITS cwd. The
     // resolver has to follow the pi process's actual cwd.
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentProcessForPaneMock.mockReturnValue({ kind: "pi", pid: 9999 });
     procStartTimeMock.mockReturnValue(1000.0);
     procCwdsMock.mockReturnValue(new Map([[9999, "/x-agent-worktree"]]));
     // JSONL file lives in the agent-worktree's session dir, NOT
@@ -437,7 +461,7 @@ describe("StateResolver \u2014 JSONL path", () => {
   });
 
   it("falls back to ref.cwd when the procCwd lookup returns null", () => {
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentProcessForPaneMock.mockReturnValue({ kind: "pi", pid: 9999 });
     procStartTimeMock.mockReturnValue(1000.0);
     procCwdsMock.mockReturnValue(new Map());
     writeJsonl({
@@ -451,5 +475,154 @@ describe("StateResolver \u2014 JSONL path", () => {
 
     const status = out.get("p1");
     expect(status?.sessionFile).toContain("--x--");
+  });
+
+  it("infers state for a Claude Code pane from ~/.claude/projects JSONL", () => {
+    findAgentProcessForPaneMock.mockReturnValue({ kind: "claude", pid: 7777 });
+    procStartTimeMock.mockReturnValue(1000.0);
+    const path = writeClaudeJsonl({
+      cwd: "/Users/foo/project",
+      filename: "session.jsonl",
+      mtime: 1500.0,
+      body: `${JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "done" }],
+          stop_reason: "end_turn",
+        },
+      })}\n`,
+    });
+
+    const resolver = newResolver();
+    const out = resolver.resolve(
+      [ref({ paneId: "claude", cwd: "/Users/foo/project", agentKind: "claude" })],
+      1502.0,
+    );
+
+    const status = out.get("claude");
+    expect(status?.state).toBe("idle");
+    expect(status?.sessionFile).toBe(path);
+    expect(status?.snapshot?.lastAssistantPreview).toBe("done");
+  });
+
+  it("keeps same-cwd Claude panes bound to their own session windows", () => {
+    findAgentProcessForPaneMock.mockImplementation((panePid) => {
+      if (panePid === 100) return { kind: "claude", pid: 7777 };
+      if (panePid === 200) return { kind: "claude", pid: 8888 };
+      return null;
+    });
+    procStartTimeMock.mockImplementation((pid) => {
+      if (pid === 7777) return 1000.0;
+      if (pid === 8888) return 1100.0;
+      return null;
+    });
+    const older = writeClaudeJsonl({
+      cwd: "/Users/foo/project",
+      filename: "older.jsonl",
+      mtime: 1005.0,
+      body: `${JSON.stringify({
+        type: "assistant",
+        timestamp: new Date(1005 * 1000).toISOString(),
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "older" }],
+          stop_reason: "end_turn",
+        },
+      })}\n`,
+    });
+    const younger = writeClaudeJsonl({
+      cwd: "/Users/foo/project",
+      filename: "younger.jsonl",
+      mtime: 1110.0,
+      body: `${JSON.stringify({
+        type: "assistant",
+        timestamp: new Date(1110 * 1000).toISOString(),
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "younger" }],
+          stop_reason: "end_turn",
+        },
+      })}\n`,
+    });
+
+    const resolver = newResolver();
+    const out = resolver.resolve(
+      [
+        ref({
+          paneId: "older",
+          cwd: "/Users/foo/project",
+          agentKind: "claude",
+          panePid: 100,
+        }),
+        ref({
+          paneId: "younger",
+          cwd: "/Users/foo/project",
+          agentKind: "claude",
+          panePid: 200,
+        }),
+      ],
+      1112.0,
+    );
+
+    expect(out.get("older")?.sessionFile).toBe(older);
+    expect(out.get("younger")?.sessionFile).toBe(younger);
+    expect(out.get("older")?.snapshot?.lastAssistantPreview).toBe("older");
+    expect(out.get("younger")?.snapshot?.lastAssistantPreview).toBe("younger");
+  });
+
+  it("does not read pi heartbeat files for Claude Code panes", () => {
+    findAgentProcessForPaneMock.mockReturnValue({ kind: "claude", pid: 7777 });
+    procStartTimeMock.mockReturnValue(1000.0);
+    writeClaudeJsonl({
+      cwd: "/Users/foo/project",
+      filename: "session.jsonl",
+      mtime: 1500.0,
+      body: `${JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_1", name: "Bash" }],
+          stop_reason: "tool_use",
+        },
+      })}\n`,
+    });
+    readHeartbeatMock.mockClear();
+
+    const resolver = newResolver();
+    const out = resolver.resolve(
+      [ref({ paneId: "claude", cwd: "/Users/foo/project", agentKind: "claude" })],
+      1500.5,
+    );
+
+    expect(out.get("claude")?.state).toBe("working");
+    expect(readHeartbeatMock).not.toHaveBeenCalled();
+  });
+
+  it("infers Claude assistant errors from top-level error fields", () => {
+    findAgentProcessForPaneMock.mockReturnValue({ kind: "claude", pid: 7777 });
+    procStartTimeMock.mockReturnValue(1000.0);
+    writeClaudeJsonl({
+      cwd: "/Users/foo/project",
+      filename: "session.jsonl",
+      mtime: 1500.0,
+      body: `${JSON.stringify({
+        type: "assistant",
+        error: "overloaded_error",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "failed" }],
+          stop_reason: "end_turn",
+        },
+      })}\n`,
+    });
+
+    const resolver = newResolver();
+    const out = resolver.resolve(
+      [ref({ paneId: "claude", cwd: "/Users/foo/project", agentKind: "claude" })],
+      1500.5,
+    );
+
+    expect(out.get("claude")?.state).toBe("error");
   });
 });

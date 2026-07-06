@@ -57,26 +57,50 @@ export function firstTextPreview(content: unknown): string | null {
   return null;
 }
 
+function normalizeStopReason(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  if (value === "tool_use") return "toolUse";
+  if (value === "end_turn" || value === "stop_sequence") return "stop";
+  return value;
+}
+
+function numericField(obj: Record<string, unknown>, key: string): number {
+  const value = obj[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function toolCallIds(content: unknown): Set<string> {
+  const ids = new Set<string>();
+  if (!Array.isArray(content)) return ids;
+  for (const item of content as ContentItem[]) {
+    if (typeof item !== "object" || item === null) continue;
+    if (item.type !== "toolCall" && item.type !== "tool_use") continue;
+    if (typeof item.id === "string") ids.add(item.id);
+  }
+  return ids;
+}
+
+function toolResultIds(content: unknown): string[] {
+  const ids: string[] = [];
+  if (!Array.isArray(content)) return ids;
+  for (const item of content as Array<Record<string, unknown>>) {
+    if (typeof item !== "object" || item === null) continue;
+    if (item.type !== "tool_result") continue;
+    const id = item.tool_use_id;
+    if (typeof id === "string") ids.push(id);
+  }
+  return ids;
+}
+
 /**
  * Walk forward through `blob` (the tail of a JSONL session file) and
  * return a `JsonlSnapshot` reflecting the trailing meaningful entry
  * plus any open tool-use turn whose toolCalls aren't all matched yet.
  *
- * Skip rules ported from the Python:
- *   - Empty/whitespace-only lines.
- *   - JSON parse errors.
- *   - Entries whose top-level `type` isn't `"message"`.
- *
- * Role handling:
- *   - `assistant`: capture lastRole, lastStopReason, lastError, and
- *     the first-text preview. If `stopReason === "toolUse"`, replace
- *     `openToolCallIds` with this turn's toolCall ids; otherwise clear
- *     the open set (the assistant turn closed without invoking tools).
- *   - `toolResult`: pop matching toolCallId from `openToolCallIds`.
- *   - `user`: clear `openToolCallIds` (a new prompt supersedes any
- *     pending tool exchange).
- *   - `bashExecution` / `custom`: track lastRole only \u2014 these are
- *     activity events, not assistant/tool round trips.
+ * Supports both pi's historical `type: "message"` wrapper and Claude
+ * Code's direct `type: "assistant" | "user"` entries. Unknown entry
+ * shapes are ignored defensively so a schema addition cannot break the
+ * whole monitor tick.
  */
 export function scanLines(blob: string, mtime: number): JsonlSnapshot {
   let lastRole: JsonlSnapshot["lastRole"] = null;
@@ -98,28 +122,48 @@ export function scanLines(blob: string, mtime: number): JsonlSnapshot {
     } catch {
       continue;
     }
-    if (entry.type !== "message") continue;
 
-    const msg = (entry.message ?? {}) as Record<string, unknown>;
-    const role = msg.role;
+    const entryType = entry.type;
+    let msg: Record<string, unknown>;
+    let role: unknown;
+    if (entryType === "message") {
+      msg = (entry.message ?? {}) as Record<string, unknown>;
+      role = msg.role;
+    } else if (entryType === "assistant" || entryType === "user") {
+      msg = (entry.message ?? {}) as Record<string, unknown>;
+      role = typeof msg.role === "string" ? msg.role : entryType;
+    } else {
+      continue;
+    }
 
     if (role === "assistant") {
       lastRole = "assistant";
-      lastStopReason = typeof msg.stopReason === "string" ? msg.stopReason : null;
-      lastError = typeof msg.errorMessage === "string" ? msg.errorMessage : null;
+      lastStopReason = normalizeStopReason(msg.stopReason ?? msg.stop_reason);
+      lastError =
+        typeof msg.errorMessage === "string"
+          ? msg.errorMessage
+          : typeof entry.error === "string"
+            ? entry.error
+            : null;
 
       const content = msg.content ?? [];
       const preview = firstTextPreview(content);
       if (preview !== null) lastAssistantPreview = preview;
 
-      // Usage / cost roll-up. Defensive: pi sometimes emits
-      // assistant turns without a usage block (e.g. a reconstructed
-      // resume), so missing/malformed fields fall through as zero.
+      // Usage / cost roll-up. Pi publishes usage.totalTokens and
+      // usage.cost.total. Claude Code publishes Anthropic-style
+      // input_tokens + output_tokens and no reliable local cost.
       const usage = msg.usage as Record<string, unknown> | undefined;
       if (usage && typeof usage === "object") {
         const total = usage.totalTokens;
         if (typeof total === "number" && Number.isFinite(total)) {
           cumulativeTokens += total;
+        } else {
+          cumulativeTokens +=
+            numericField(usage, "input_tokens") +
+            numericField(usage, "cache_creation_input_tokens") +
+            numericField(usage, "cache_read_input_tokens") +
+            numericField(usage, "output_tokens");
         }
         const cost = usage.cost as Record<string, unknown> | undefined;
         if (cost && typeof cost === "object") {
@@ -130,14 +174,7 @@ export function scanLines(blob: string, mtime: number): JsonlSnapshot {
         }
       }
 
-      const toolIds = new Set<string>();
-      if (Array.isArray(content)) {
-        for (const item of content as ContentItem[]) {
-          if (typeof item !== "object" || item === null) continue;
-          if (item.type !== "toolCall") continue;
-          if (typeof item.id === "string") toolIds.add(item.id);
-        }
-      }
+      const toolIds = toolCallIds(content);
       if (lastStopReason === "toolUse") {
         // New tool-use turn supersedes any pending one from earlier.
         openToolCallIds = toolIds;
@@ -149,13 +186,20 @@ export function scanLines(blob: string, mtime: number): JsonlSnapshot {
       const tcid = msg.toolCallId;
       if (typeof tcid === "string") openToolCallIds.delete(tcid);
     } else if (role === "user") {
-      lastRole = "user";
-      const prompt = firstTextPreview(msg.content ?? []);
+      const content = msg.content ?? [];
+      const resultIds = toolResultIds(content);
+      if (resultIds.length > 0) {
+        lastRole = "toolResult";
+        for (const id of resultIds) openToolCallIds.delete(id);
+      } else {
+        lastRole = "user";
+        openToolCallIds.clear();
+      }
+      const prompt = firstTextPreview(content);
       if (prompt !== null) lastUserPrompt = prompt;
-      openToolCallIds.clear();
     } else if (role === "bashExecution" || role === "custom") {
       // Activity events; track lastRole but don't change tool / stop
-      // tracking \u2014 those belong to the assistant/tool exchange.
+      // tracking — those belong to the assistant/tool exchange.
       lastRole = role;
     }
   }

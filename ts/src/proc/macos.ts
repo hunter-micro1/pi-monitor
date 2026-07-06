@@ -12,6 +12,13 @@
 
 import { execFileSync } from "node:child_process";
 
+import type { AgentKind } from "../state/types.js";
+
+export interface AgentProcess {
+  kind: AgentKind;
+  pid: number;
+}
+
 /**
  * How long a `ps -A` snapshot is reused across `procStartTime` /
  * `findPiPidForPane` calls. The resolver runs every ~500 ms and
@@ -242,17 +249,16 @@ export function procStartTime(pid: number): number | null {
 }
 
 /**
- * Walk the process tree from `panePid` and return the DEEPEST
- * descendant (inclusive) whose `comm` is exactly `pi`. See the
- * Linux sibling for the rationale: extensions like
- * `auto-worktree` re-exec pi inside an `agent/<base>-<ts>`
- * worktree, so the leaf pi carries the cwd the JSONL claim
- * needs.
+ * Walk the process tree from `panePid` and return the primary
+ * supported agent descendant (inclusive). See the Linux sibling for
+ * the rationale: the first supported kind from the pane root owns the
+ * pane, while the deepest same-kind process carries the cwd the JSONL
+ * claim needs.
  *
  * Builds a parent-to-children index from the cached `ps` snapshot
  * and BFSes from `panePid`, walking the whole reachable tree.
  */
-export function findPiPidForPane(panePid: number): number | null {
+export function findAgentProcessForPane(panePid: number): AgentProcess | null {
   const snap = readPsSnapshot();
 
   // Build parent -> children index from the snapshot. Cheap; the
@@ -267,7 +273,8 @@ export function findPiPidForPane(panePid: number): number | null {
     list.push(row.pid);
   }
 
-  let best: { pid: number; depth: number } | null = null;
+  let primaryKind: AgentKind | null = null;
+  let best: { kind: AgentKind; pid: number; depth: number } | null = null;
   const queue: Array<{ pid: number; depth: number }> = [{ pid: panePid, depth: 0 }];
   const seen = new Set<number>();
 
@@ -278,8 +285,12 @@ export function findPiPidForPane(panePid: number): number | null {
 
     const row = snap.get(pid);
     if (row === undefined) continue;
-    if (row.comm === "pi" && (best === null || depth > best.depth)) {
-      best = { pid, depth };
+    const kind = agentKindFromComm(row.comm);
+    if (kind !== null) {
+      primaryKind ??= kind;
+      if (kind === primaryKind && (best === null || depth > best.depth)) {
+        best = { kind, pid, depth };
+      }
     }
 
     const kids = childrenByPpid.get(pid);
@@ -288,5 +299,23 @@ export function findPiPidForPane(panePid: number): number | null {
       if (!seen.has(kpid)) queue.push({ pid: kpid, depth: depth + 1 });
     }
   }
-  return best?.pid ?? null;
+  return best === null ? null : { kind: best.kind, pid: best.pid };
+}
+
+/** Mirrors the original pi-only helper for existing callers/tests. */
+export function findPiPidForPane(panePid: number): number | null {
+  const agent = findAgentProcessForPane(panePid);
+  return agent?.kind === "pi" ? agent.pid : null;
+}
+
+/** Convenience wrapper for Claude Code callers/tests. */
+export function findClaudePidForPane(panePid: number): number | null {
+  const agent = findAgentProcessForPane(panePid);
+  return agent?.kind === "claude" ? agent.pid : null;
+}
+
+function agentKindFromComm(comm: string): AgentKind | null {
+  if (comm === "pi") return "pi";
+  if (comm === "claude") return "claude";
+  return null;
 }

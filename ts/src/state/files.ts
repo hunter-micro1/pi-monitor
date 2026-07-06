@@ -12,7 +12,14 @@
  * short version.
  */
 
-import { existsSync, readdirSync, statSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -24,6 +31,9 @@ import { join } from "node:path";
  * `/` with `-`, then surrounds the result in `--...--`.
  */
 export const SESSIONS_ROOT = join(homedir(), ".pi", "agent", "sessions");
+
+/** Claude Code's project-session directory root. */
+export const CLAUDE_PROJECTS_ROOT = join(homedir(), ".claude", "projects");
 
 /**
  * Translate a pane's cwd to the directory pi writes its session
@@ -38,6 +48,18 @@ export function cwdToSessionDir(
   const stripped = cwd.replace(/^\/+/, "");
   const encoded = stripped.replace(/\//g, "-");
   return join(sessionsRoot, `--${encoded}--`);
+}
+
+/**
+ * Translate a cwd to Claude Code's project directory layout:
+ *   ~/.claude/projects/-Users-foo-project/*.jsonl
+ */
+export function cwdToClaudeProjectDir(
+  cwd: string,
+  projectsRoot: string = CLAUDE_PROJECTS_ROOT,
+): string {
+  const encoded = cwd.replace(/\//g, "-");
+  return join(projectsRoot, encoded);
 }
 
 /**
@@ -171,6 +193,91 @@ export function claimSessionFile(args: {
   if (resumed.length > 0) return maxByMtime(resumed);
 
   return null;
+}
+
+/**
+ * Pick a Claude Code JSONL file for one agent process in `cwd`.
+ * Claude Code stores UUID-named sessions under the cwd-encoded
+ * project directory, so we recover a session-start timestamp from the
+ * first JSONL entries instead of the filename. That lets multiple
+ * Claude panes in the same cwd use the same ownership window shape as
+ * pi: [agentStart - eps, nextAgentStart - eps). When no start time is
+ * available we fall back to the previous max-mtime heuristic.
+ */
+export function claimClaudeSessionFile(args: {
+  cwd: string;
+  agentStart: number | null;
+  nextAgentStart?: number | null;
+  claimed: Set<string>;
+  projectsRoot?: string;
+}): string | null {
+  const { cwd, agentStart, nextAgentStart = null, claimed, projectsRoot } = args;
+  const dir = cwdToClaudeProjectDir(cwd, projectsRoot ?? CLAUDE_PROJECTS_ROOT);
+  const candidates = listJsonlWithMtime(dir).filter(([p]) => !claimed.has(p));
+  if (candidates.length === 0) return null;
+  if (agentStart === null) return maxByMtime(candidates);
+
+  const eps = FILENAME_TS_EPSILON_S;
+  const lower = agentStart - eps;
+  const upper =
+    nextAgentStart !== null ? nextAgentStart - eps : Number.POSITIVE_INFINITY;
+  const withStarts = candidates.map(([path, mtime]) => ({
+    path,
+    mtime,
+    start: parseClaudeSessionStartTime(path),
+  }));
+
+  const owned = withStarts
+    .filter((c) => c.start !== null && c.start >= lower && c.start < upper)
+    .map((c) => [c.path, c.mtime] as [string, number]);
+  if (owned.length > 0) return maxByMtime(owned);
+
+  const resumed = withStarts
+    .filter((c) => (c.start === null || c.start < lower) && c.mtime >= agentStart)
+    .map((c) => [c.path, c.mtime] as [string, number]);
+  if (resumed.length > 0) return maxByMtime(resumed);
+
+  return null;
+}
+
+/** Read a Claude JSONL's early timestamp, returning unix seconds. */
+export function parseClaudeSessionStartTime(path: string): number | null {
+  const buf = Buffer.alloc(262_144);
+  let fd: number | null = null;
+  let blob = "";
+  try {
+    fd = openSync(path, "r");
+    const bytes = readSync(fd, buf, 0, buf.length, 0);
+    blob = buf.toString("utf8", 0, bytes);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {}
+    }
+  }
+
+  for (const line of blob.split("\n")) {
+    if (line.trim().length === 0) continue;
+    try {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      const ts = timestampSeconds(parsed.timestamp);
+      if (ts !== null) return ts;
+    } catch {
+      // Last chunk line may be partial; fall through to regex fallback.
+    }
+  }
+
+  const match = /"timestamp"\s*:\s*"([^"]+)"/.exec(blob);
+  return match === null ? null : timestampSeconds(match[1]);
+}
+
+function timestampSeconds(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed / 1000;
 }
 
 function maxByMtime(entries: Array<[string, number]>): string {

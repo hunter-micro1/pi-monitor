@@ -247,7 +247,7 @@ describe("resetRightSlotToPlaceholder", () => {
     expect(args).toContain("monitor:0.1");
     // Banner contains the hint text.
     const last = args.at(-1) as string;
-    expect(last).toContain("hover a pi row");
+    expect(last).toContain("hover an agent row");
   });
 });
 

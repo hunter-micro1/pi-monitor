@@ -31,7 +31,7 @@ export const RIGHT_SLOT = `${MONITOR_SESSION}:0.1`;
 function placeholderCmd(): string {
   return (
     "sh -c '" +
-    'printf "\\n  hover a pi row in the tree (j/k) to preview an agent here' +
+    'printf "\\n  hover an agent row in the tree (j/k) to preview it here' +
     '\\n  Enter or Tab focuses this pane so keys go to the agent\\n\\n"; ' +
     "tail -f /dev/null'"
   );
@@ -243,11 +243,7 @@ function suggestSessionName(cwd: string): string {
  *
  * Mirrors `create_pi_session`.
  */
-export function createPiSession(
-  cwd: string,
-  name?: string,
-  worktree: boolean = false,
-): string {
+export function createPiSession(cwd: string, name?: string, worktree = false): string {
   if (!isDirectory(cwd)) {
     throw new TmuxError(`directory not found: ${cwd}`);
   }
@@ -273,7 +269,7 @@ export function createPiSession(
 export function createPiWindow(
   targetSession: string,
   cwd: string,
-  worktree: boolean = false,
+  worktree = false,
 ): void {
   if (!isDirectory(cwd)) {
     throw new TmuxError(`directory not found: ${cwd}`);

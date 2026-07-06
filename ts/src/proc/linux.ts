@@ -12,6 +12,13 @@
 
 import { readFileSync, readlinkSync, statSync } from "node:fs";
 
+import type { AgentKind } from "../state/types.js";
+
+export interface AgentProcess {
+  kind: AgentKind;
+  pid: number;
+}
+
 /**
  * Current working directory for `pid`. Reads the
  * `/proc/<pid>/cwd` symlink and returns its absolute target, or
@@ -62,32 +69,28 @@ export function procStartTime(pid: number): number | null {
 
 /**
  * Walk the process tree from `panePid` and return the DEEPEST
- * descendant whose `comm` is exactly `pi`. Includes `panePid`
- * itself so `exec pi` still resolves.
+ * supported agent descendant. Includes `panePid` itself so
+ * `exec pi` / `exec claude` still resolves.
  *
- * Why deepest, not first: extensions like `auto-worktree` re-exec
- * pi inside an `agent/<base>-<ts>` worktree, producing a chain of
- * pi processes (outer pi at the launch cwd → inner pi at the
- * worktree cwd). The state resolver consumes `procCwd(piPid)` to
- * claim the right JSONL session file, and the worktree cwd lives
- * on the leaf pi. Returning the outer pi — the previous behaviour
- * — left every auto-worktree pane stuck with no snapshot, which
- * collapsed the bottom details box to its title row.
+ * The first supported kind encountered from the pane root is the
+ * primary agent for this pane. We still keep walking to find the
+ * deepest process of that SAME kind (auto-worktree can create pi ->
+ * pi chains), but we ignore nested different-kind tools so a pi pane
+ * that happens to run `claude` as a subprocess does not get reclassified.
  *
  * BFS with a seen-set so a corrupt /proc snapshot can't loop us.
  * Walks the whole reachable tree (cheap: tmux pane subtrees are
- * small) and tracks the deepest pi seen so far.
- *
- * Mirrors `find_pi_pid_for_pane` in the Python build.
+ * small) and tracks the deepest primary-kind agent seen so far.
  */
-export function findPiPidForPane(panePid: number): number | null {
-  let best: { pid: number; depth: number } | null = null;
+export function findAgentProcessForPane(panePid: number): AgentProcess | null {
+  let primaryKind: AgentKind | null = null;
+  let best: { kind: AgentKind; pid: number; depth: number } | null = null;
   const queue: Array<{ pid: number; depth: number }> = [{ pid: panePid, depth: 0 }];
   const seen = new Set<number>();
 
   while (queue.length > 0) {
     // shift() is O(n) on big queues but the descendant count under
-    // a tmux pane shell is tiny (1\u20133 typically), so this is fine.
+    // a tmux pane shell is tiny (1–3 typically), so this is fine.
     const { pid, depth } = queue.shift() as { pid: number; depth: number };
     if (seen.has(pid)) continue;
     seen.add(pid);
@@ -99,8 +102,12 @@ export function findPiPidForPane(panePid: number): number | null {
       // Process disappeared or not readable; skip and continue.
       continue;
     }
-    if (comm === "pi" && (best === null || depth > best.depth)) {
-      best = { pid, depth };
+    const kind = agentKindFromComm(comm);
+    if (kind !== null) {
+      primaryKind ??= kind;
+      if (kind === primaryKind && (best === null || depth > best.depth)) {
+        best = { kind, pid, depth };
+      }
     }
 
     let childrenRaw: string;
@@ -117,5 +124,23 @@ export function findPiPidForPane(panePid: number): number | null {
       }
     }
   }
-  return best?.pid ?? null;
+  return best === null ? null : { kind: best.kind, pid: best.pid };
+}
+
+/** Mirrors the original pi-only helper for existing callers/tests. */
+export function findPiPidForPane(panePid: number): number | null {
+  const agent = findAgentProcessForPane(panePid);
+  return agent?.kind === "pi" ? agent.pid : null;
+}
+
+/** Convenience wrapper for Claude Code callers/tests. */
+export function findClaudePidForPane(panePid: number): number | null {
+  const agent = findAgentProcessForPane(panePid);
+  return agent?.kind === "claude" ? agent.pid : null;
+}
+
+function agentKindFromComm(comm: string): AgentKind | null {
+  if (comm === "pi") return "pi";
+  if (comm === "claude") return "claude";
+  return null;
 }
