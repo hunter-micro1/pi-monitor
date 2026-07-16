@@ -70,7 +70,6 @@ describe("PaneRow", () => {
         paneTitle="agent"
         paneIndex={0}
         branch="main"
-        workingColor="#abcdef"
       />,
     );
     const out = lastFrame() ?? "";
@@ -151,47 +150,72 @@ describe("PaneRow", () => {
     expect(out).not.toContain("idle");
   });
 
-  it("prefixes the right-side tag with the spinner glyph on working rows", () => {
+  it("renders a stable current marker and CURRENT label only when selected", () => {
+    const selected =
+      render(
+        <PaneRow
+          status={status()}
+          agentType="pi"
+          paneTitle="selected"
+          paneIndex={0}
+          branch="main"
+          selected
+        />,
+      ).lastFrame() ?? "";
+    const plain =
+      render(
+        <PaneRow
+          status={status()}
+          agentType="pi"
+          paneTitle="plain"
+          paneIndex={1}
+          branch="main"
+        />,
+      ).lastFrame() ?? "";
+    expect(selected).toContain("▶");
+    expect(selected).toContain("CURRENT");
+    expect(plain).not.toContain("▶");
+    expect(plain).not.toContain("CURRENT");
+  });
+
+  it("labels Pi and Claude rows explicitly", () => {
+    const pi =
+      render(
+        <PaneRow
+          status={status()}
+          agentType="pi"
+          paneTitle="a"
+          paneIndex={0}
+          branch={null}
+        />,
+      ).lastFrame() ?? "";
+    const claude =
+      render(
+        <PaneRow
+          status={status({ state: "unknown" })}
+          agentType="claude"
+          paneTitle="b"
+          paneIndex={1}
+          branch={null}
+        />,
+      ).lastFrame() ?? "";
+    expect(pi).toContain("PI");
+    expect(claude).toContain("CLAUDE");
+    expect(claude).toContain("unknown");
+  });
+
+  it("renders working state as stable text without a spinner", () => {
     const { lastFrame } = render(
       <PaneRow
         status={status({ state: "working", phase: "agent_running" })}
         paneTitle="agent"
         paneIndex={0}
         branch="main"
-        spinnerGlyph={"\u280b"}
-      />,
-    );
-    const out = lastFrame() ?? "";
-    expect(out).toContain("\u280b");
-    expect(out).toContain("thinking");
-  });
-
-  it("omits the spinner glyph on non-working rows even when one is supplied", () => {
-    const { lastFrame } = render(
-      <PaneRow
-        status={status({ state: "idle", idleSeconds: 30 })}
-        paneTitle="agent"
-        paneIndex={0}
-        branch="main"
-        spinnerGlyph={"\u280b"}
-      />,
-    );
-    expect(lastFrame() ?? "").not.toContain("\u280b");
-  });
-
-  it("omits the spinner when no glyph is threaded in (working row falls back to verb only)", () => {
-    const { lastFrame } = render(
-      <PaneRow
-        status={status({ state: "working", phase: "agent_running" })}
-        paneTitle="agent"
-        paneIndex={0}
-        branch="main"
       />,
     );
     const out = lastFrame() ?? "";
     expect(out).toContain("thinking");
-    // None of the 10 Braille frames should appear when the App
-    // hasn't threaded a glyph in (e.g. before the first tick).
+    // No animation glyphs are emitted by the static row.
     for (const cp of [
       "\u280b",
       "\u2819",
@@ -235,14 +259,13 @@ describe("PaneRow", () => {
     expect(out).toContain("main");
   });
 
-  it("renders working rows cleanly when both sessionColor and workingColor are supplied", () => {
+  it("renders working rows cleanly when sessionColor is supplied", () => {
     const { lastFrame } = render(
       <PaneRow
         status={status({ state: "working", phase: "agent_running" })}
         paneTitle="agent"
         paneIndex={0}
         branch="main"
-        workingColor="#9ECE6A"
         sessionColor="#BB9AF7"
       />,
     );

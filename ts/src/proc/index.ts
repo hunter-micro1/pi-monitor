@@ -17,6 +17,7 @@ import * as macos from "./macos.js";
 const impl = process.platform === "darwin" ? macos : linux;
 
 export const procStartTime = impl.procStartTime;
+export const findAgentPidsForPane = impl.findAgentPidsForPane;
 export const findPiPidForPane = impl.findPiPidForPane;
 export const procCwd = impl.procCwd;
 export const procCwds = impl.procCwds;

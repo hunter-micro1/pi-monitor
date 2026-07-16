@@ -15,6 +15,9 @@
  * as a tie-break for free \u2014 same convention the Python build relies
  * on in its `STATE_PRIORITY` table.
  */
+/** Live coding-agent implementation detected in a tmux pane. */
+export type AgentType = "pi" | "claude";
+
 export type AgentState =
   | "error"
   | "waiting"

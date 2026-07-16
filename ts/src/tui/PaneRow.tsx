@@ -6,21 +6,16 @@
  *                                                    leading dot)
  *
  * Selection model:
- *   - The leftmost column reserves 2 cells. When a row is selected
- *     the cursor bar `\u258e` (a thin half-block) renders there in the
- *     `cursorBarColor` (the App lerps it brightward on cursor moves).
- *   - The bar marker is the SOLE cursor cue. Title color does not
- *     change between selected and non-selected rows: every row in
- *     a section already gets that section's `sessionColor` (see
- *     below), and the bar gives an unambiguous "you are here".
+ *   - A stable `▶` marker, bright text, selection background, and
+ *     explicit CURRENT label identify the pane shown in the viewer.
+ *   - Pi/Claude identity is always visible beside the pane title.
  *
  * Per-session title color:
  *   - All non-working rows in a section share that section's
  *     hash-of-name color (`sessionColor` prop, fed by App from
  *     `sessionHeaderColor(session)`). Lets users scan-by-color
  *     across sections without competing with state semantics.
- *   - Working rows ignore `sessionColor` and use their pulse color
- *     instead, so the active row's title visibly breathes.
+ *   - Working rows use the static working-state color.
  *   - Falls back to `FOREGROUND_MUTED` when no `sessionColor` is
  *     threaded in (e.g. unit tests that don't supply one).
  *
@@ -32,18 +27,6 @@
  *   - Dot is suppressed entirely when there's no activity description
  *     (e.g. no_pi rows) so we don't render an orphan dot on a blank
  *     line.
- *
- * Working-row spinner:
- *   - When `state === "working"`, the right-side activity tag is
- *     prefixed with a Braille-spinner glyph (the same 10-frame set
- *     pi itself uses in its `Loader` component). The App threads
- *     in the current frame via `spinnerGlyph`; non-working rows
- *     ignore it.
- *   - On the cursor row the spinner glyph renders in ACCENT instead
- *     of the pulse color, so a working AND selected row gets a
- *     visible "this one is the focus" cue without disturbing the
- *     verb's color (the verb keeps its pulse so the row still
- *     visibly breathes).
  */
 
 import { Box, Text } from "ink";
@@ -55,31 +38,30 @@ import {
   activityTag,
   fmtRowMain,
 } from "../format/row.js";
-import type { PaneStatus } from "../state/types.js";
-import { ACCENT, FOREGROUND_MUTED } from "./colors.js";
+import type { AgentType, PaneStatus } from "../state/types.js";
+import {
+  ACCENT,
+  CLAUDE_ACCENT,
+  FOREGROUND_MUTED,
+  SELECTION_BG,
+  SELECTION_FG,
+} from "./colors.js";
 
 /** Column reserved for the selection bar (1 cell + 1 space). */
 const SELECTION_COL = 2;
 
 export interface PaneRowProps {
   status: PaneStatus;
+  agentType?: AgentType;
   paneTitle: string | null;
   paneIndex: number;
   branch: string | null;
   selected?: boolean;
-  workingColor?: string | null;
-  cursorBarColor?: string;
-  /**
-   * Current Braille-spinner frame for working rows. Threaded in
-   * by the App on its 80ms tick. Ignored when state is not
-   * `working`. Optional so unit tests can omit it.
-   */
-  spinnerGlyph?: string;
   /**
    * Color the App threads in for this section's hash-of-name
    * accent. Applied to non-working pane titles so each section
-   * reads as a colored block. Working titles ignore it (they use
-   * the pulse color instead). Optional so unit tests that don't
+   * reads as a colored block. Working titles use their static
+   * state color instead. Optional so unit tests that don't
    * care about color cohesion can omit it; PaneRow then falls
    * back to the default muted color.
    */
@@ -87,22 +69,16 @@ export interface PaneRowProps {
 }
 
 /**
- * Internal implementation. Wrapped in {@link memo} below so the
- * 80 ms pulse tick in App doesn't force a full re-render of every
- * row on every frame. Animated props (`workingColor`,
- * `spinnerGlyph`, `cursorBarColor`) are only passed in by App
- * when this row actually consumes them — idle/error/waiting rows
- * see stable `undefined` and skip the re-render entirely.
+ * Internal implementation. Wrapped in {@link memo} so unchanged
+ * polling results do not re-render individual rows.
  */
 function PaneRowImpl({
   status,
+  agentType = "pi",
   paneTitle,
   paneIndex,
   branch,
   selected = false,
-  workingColor = null,
-  cursorBarColor = ACCENT,
-  spinnerGlyph,
   sessionColor,
 }: PaneRowProps): ReactElement {
   const main = fmtRowMain({
@@ -110,55 +86,67 @@ function PaneRowImpl({
     paneIndex,
     status,
     branch,
-    workingColor,
   });
-  const tag: ActivityTag = activityTag(status, workingColor);
+  const tag: ActivityTag = activityTag(status);
   const description = activityDescription(status);
 
   // Title color rule:
-  //   - Working rows: pulse color (main.nameColor is set when
-  //     state is working; the title visibly breathes).
+  //   - Working rows: static state color from fmtRowMain.
   //   - Other rows: sessionColor when the App threaded it in, so
   //     each section reads as a colored block. Falls back to
   //     FOREGROUND_MUTED when no sessionColor is supplied.
-  // The cursor cue is the leftmost `▎` bar marker; the title
-  // color deliberately does NOT change between selected and non-
-  // selected rows so the section-color grouping stays clean.
-  const titleColor =
-    main.nameColor !== null ? main.nameColor : (sessionColor ?? FOREGROUND_MUTED);
+  // Selected rows override section/state colors with the high-
+  // contrast current-row palette.
+  const titleColor = selected
+    ? SELECTION_FG
+    : main.nameColor !== null
+      ? main.nameColor
+      : (sessionColor ?? FOREGROUND_MUTED);
+  const agentColor = agentType === "claude" ? CLAUDE_ACCENT : ACCENT;
 
-  const stateDotColor =
-    workingColor && status.state === "working"
-      ? workingColor
-      : (STATE_COLORS[status.state] ?? FOREGROUND_MUTED);
+  const stateDotColor = STATE_COLORS[status.state] ?? FOREGROUND_MUTED;
 
   return (
     <Box flexDirection="column">
       {/* Top line: selection bar + name + branch on the left, state tag on the right. */}
       <Box flexDirection="row">
         <Box width={SELECTION_COL}>
-          <Text bold color={selected ? cursorBarColor : ACCENT}>
-            {selected ? "\u258e" : " "}
+          <Text bold color={selected ? SELECTION_FG : ACCENT}>
+            {selected ? "▶" : " "}
           </Text>
         </Box>
         <Box flexGrow={1} flexShrink={1}>
-          <Text bold color={titleColor}>
-            {main.name}
+          <Text
+            bold
+            color={titleColor}
+            backgroundColor={selected ? SELECTION_BG : undefined}
+          >
+            {` ${main.name} `}
+          </Text>
+          <Text
+            bold
+            color={selected ? SELECTION_FG : agentColor}
+            backgroundColor={selected ? SELECTION_BG : undefined}
+          >
+            {agentType === "claude" ? " CLAUDE " : " PI "}
           </Text>
           {main.branch !== null && (
-            <Text color={FOREGROUND_MUTED}>
-              {" \u00b7 "}
-              {main.branch}
+            <Text
+              color={selected ? SELECTION_FG : FOREGROUND_MUTED}
+              backgroundColor={selected ? SELECTION_BG : undefined}
+            >
+              {` · ${main.branch} `}
             </Text>
           )}
         </Box>
         <Box marginLeft={2}>
-          {status.state === "working" &&
-            spinnerGlyph !== undefined &&
-            spinnerGlyph !== "" && (
-              <Text color={selected ? ACCENT : tag.color}>{`${spinnerGlyph} `}</Text>
-            )}
-          <Text color={tag.color}>{tag.verb}</Text>
+          <Text
+            bold={selected}
+            color={selected ? SELECTION_FG : tag.color}
+            backgroundColor={selected ? SELECTION_BG : undefined}
+          >
+            {selected ? ` CURRENT · ${tag.verb} ` : tag.verb}
+          </Text>
         </Box>
       </Box>
 
@@ -178,13 +166,5 @@ function PaneRowImpl({
   );
 }
 
-/**
- * Memoized PaneRow. Default shallow prop equality is enough: the
- * App threads animated props (workingColor, spinnerGlyph,
- * cursorBarColor) only into rows that consume them, so non-working
- * non-selected rows see stable `undefined` between pulse ticks.
- * Status references stay stable between resolver ticks (the
- * entries array is the same array reference between pulses), so
- * a row with no state change skips the pulse re-render entirely.
- */
+/** Memoized because semantically equal polls preserve row props. */
 export const PaneRow = memo(PaneRowImpl);

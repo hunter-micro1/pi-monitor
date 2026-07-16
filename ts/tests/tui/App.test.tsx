@@ -13,8 +13,28 @@
 import { render } from "ink-testing-library";
 import { describe, expect, it, vi } from "vitest";
 
-import type { PaneStatus } from "../../src/state/types.js";
-import { App, type AppEntry, groupBySession } from "../../src/tui/App.js";
+import type { JsonlSnapshot, PaneStatus } from "../../src/state/types.js";
+import {
+  App,
+  type AppEntry,
+  groupBySession,
+  sameAppEntries,
+} from "../../src/tui/App.js";
+
+function snapshot(fields: Partial<JsonlSnapshot> = {}): JsonlSnapshot {
+  return {
+    mtime: 0,
+    lastRole: null,
+    lastStopReason: null,
+    lastError: null,
+    pendingToolCalls: 0,
+    lastAssistantPreview: null,
+    lastUserPrompt: null,
+    cumulativeTokens: 0,
+    cumulativeCostUsd: 0,
+    ...fields,
+  };
+}
 
 function status(fields: Partial<PaneStatus> = {}): PaneStatus {
   return {
@@ -33,6 +53,7 @@ function status(fields: Partial<PaneStatus> = {}): PaneStatus {
 function entry(fields: Partial<AppEntry> = {}): AppEntry {
   return {
     paneId: fields.paneId ?? "%1",
+    agentType: fields.agentType ?? "pi",
     session: fields.session ?? "main",
     windowIndex: fields.windowIndex ?? 0,
     paneIndex: fields.paneIndex ?? 0,
@@ -111,6 +132,20 @@ describe("groupBySession", () => {
   });
 });
 
+describe("sameAppEntries", () => {
+  it("treats separately allocated equivalent entries as unchanged", () => {
+    expect(sameAppEntries([entry()], [entry()])).toBe(true);
+  });
+
+  it("ignores sub-second idle drift but detects displayed/status changes", () => {
+    const a = entry({ status: status({ idleSeconds: 10.1 }) });
+    const b = entry({ status: status({ idleSeconds: 10.9 }) });
+    const changed = entry({ status: status({ state: "error", idleSeconds: 10.9 }) });
+    expect(sameAppEntries([a], [b])).toBe(true);
+    expect(sameAppEntries([a], [changed])).toBe(false);
+  });
+});
+
 describe("App render", () => {
   it("fills the pane height so the bottom details box pins to the literal bottom", async () => {
     // ink-testing-library's Stdout reports columns=100 and no rows,
@@ -148,7 +183,7 @@ describe("App render", () => {
     const out = lastFrame() ?? "";
     expect(out).toContain("pi-monitor");
     expect(out).toContain("+ new pi session");
-    expect(out).toContain("No pi sessions yet");
+    expect(out).toContain("No live Pi or Claude sessions");
   });
 
   it("renders one SessionGroup per session with its panes", async () => {
@@ -173,7 +208,30 @@ describe("App render", () => {
     expect(out).toContain("agent-b");
     expect(out).toContain("lawyer");
     // Empty-state hidden when entries exist.
-    expect(out).not.toContain("No pi sessions yet");
+    expect(out).not.toContain("No live Pi or Claude sessions");
+  });
+
+  it("moves the single visible current marker with the cursor", async () => {
+    const { stdin, lastFrame } = render(
+      <App
+        getEntries={() => [
+          entry({ paneId: "%1", paneTitle: "alpha", agentType: "pi" }),
+          entry({ paneId: "%2", paneTitle: "beta", agentType: "claude" }),
+        ]}
+        branchForCwd={() => null}
+        pollIntervalMs={9999}
+      />,
+    );
+    await wait();
+    const first = lastFrame() ?? "";
+    expect((first.match(/▶/g) ?? []).length).toBe(1);
+    expect(first.split("\n").find((line) => line.includes("alpha"))).toContain("▶");
+    stdin.write("j");
+    await wait();
+    const second = lastFrame() ?? "";
+    expect((second.match(/▶/g) ?? []).length).toBe(1);
+    expect(second.split("\n").find((line) => line.includes("beta"))).toContain("▶");
+    expect(second).toContain("CLAUDE");
   });
 
   it("calls onQuit when the user presses q", async () => {
@@ -230,6 +288,21 @@ describe("App render", () => {
     expect(calls).toBeGreaterThanOrEqual(3);
   });
 
+  it("does not overlap async polls", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const get = async (): Promise<AppEntry[]> => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await wait(35);
+      active -= 1;
+      return [];
+    };
+    render(<App getEntries={get} branchForCwd={() => null} pollIntervalMs={10} />);
+    await wait(120);
+    expect(maxActive).toBe(1);
+  });
+
   it("re-reads entries on each poll tick", async () => {
     let phase = 0;
     const get = (): AppEntry[] => {
@@ -275,7 +348,7 @@ describe("App render", () => {
     expect(lastFrame() ?? "").toContain("pi-monitor");
   });
 
-  it("threads workingColor into PaneRow on each pulse tick", async () => {
+  it("keeps a working frame stable beyond the former animation cadence", async () => {
     const entries = [
       entry({
         paneId: "%1",
@@ -295,10 +368,10 @@ describe("App render", () => {
       />,
     );
     await wait();
-    expect(lastFrame() ?? "").toContain("running bash");
-    // Let the pulse fire a couple of times; should still render fine.
-    await wait(50);
-    expect(lastFrame() ?? "").toContain("running bash");
+    const first = lastFrame() ?? "";
+    expect(first).toContain("running bash");
+    await wait(200);
+    expect(lastFrame() ?? "").toBe(first);
   });
 });
 
@@ -829,7 +902,24 @@ describe("App status widget", () => {
     expect(setStatusWidget).toHaveBeenCalledWith("");
   });
 
-  it("re-emits setStatusWidget on every poll tick", async () => {
+  it("does not repeat dependent effects for equivalent fresh poll results", async () => {
+    const setStatusWidget = vi.fn();
+    const get = (): AppEntry[] => [entry({ status: status({ state: "idle" }) })];
+    render(
+      <App
+        getEntries={get}
+        branchForCwd={() => null}
+        setStatusWidget={setStatusWidget}
+        pollIntervalMs={20}
+      />,
+    );
+    await wait(50);
+    const settledCalls = setStatusWidget.mock.calls.length;
+    await wait(80);
+    expect(setStatusWidget).toHaveBeenCalledTimes(settledCalls);
+  });
+
+  it("re-emits setStatusWidget when poll data really changes", async () => {
     const setStatusWidget = vi.fn();
     let phase = 0;
     const get = (): AppEntry[] => {
@@ -878,6 +968,123 @@ describe("App notification banner", () => {
     await wait();
     // No banner; just the chrome.
     expect(lastFrame() ?? "").not.toContain("agent state:");
+  });
+
+  it("releases a deferred retryable error on semantically equal polls", async () => {
+    let poll = 0;
+    let nowMs = 20_000;
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+    const get = (): AppEntry[] => {
+      poll += 1;
+      if (poll === 1) {
+        return [entry({ status: status({ state: "working" }) })];
+      }
+      if (poll >= 3) nowMs = 31_000;
+      return [
+        entry({
+          status: status({
+            state: "error",
+            snapshot: snapshot({ lastError: "overloaded_error" }),
+          }),
+        }),
+      ];
+    };
+    const view = render(
+      <App
+        getEntries={get}
+        branchForCwd={() => null}
+        pollIntervalMs={20}
+        notificationDismissMs={9999}
+      />,
+    );
+    try {
+      await wait(120);
+      expect(poll).toBeGreaterThanOrEqual(3);
+      expect(view.lastFrame() ?? "").toContain("agent state: error");
+    } finally {
+      view.unmount();
+      dateNow.mockRestore();
+    }
+  });
+
+  it("cancels a deferred error when the pane recovers at its deadline", async () => {
+    let poll = 0;
+    let nowMs = 20_000;
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+    const get = (): AppEntry[] => {
+      poll += 1;
+      if (poll === 1) {
+        return [entry({ status: status({ state: "working" }) })];
+      }
+      if (poll === 2) {
+        return [
+          entry({
+            status: status({
+              state: "error",
+              snapshot: snapshot({ lastError: "overloaded_error" }),
+            }),
+          }),
+        ];
+      }
+      nowMs = 31_000;
+      return [entry({ status: status({ state: "working" }) })];
+    };
+    const view = render(
+      <App
+        getEntries={get}
+        branchForCwd={() => null}
+        pollIntervalMs={20}
+        notificationDismissMs={9999}
+      />,
+    );
+    try {
+      await wait(120);
+      expect(poll).toBeGreaterThanOrEqual(3);
+      expect(view.lastFrame() ?? "").not.toContain("agent state: error");
+    } finally {
+      view.unmount();
+      dateNow.mockRestore();
+    }
+  });
+
+  it("cancels a deferred error when the pane disappears at its deadline", async () => {
+    let poll = 0;
+    let nowMs = 20_000;
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+    const get = (): AppEntry[] => {
+      poll += 1;
+      if (poll === 1) {
+        return [entry({ status: status({ state: "working" }) })];
+      }
+      if (poll === 2) {
+        return [
+          entry({
+            status: status({
+              state: "error",
+              snapshot: snapshot({ lastError: "overloaded_error" }),
+            }),
+          }),
+        ];
+      }
+      nowMs = 31_000;
+      return [];
+    };
+    const view = render(
+      <App
+        getEntries={get}
+        branchForCwd={() => null}
+        pollIntervalMs={20}
+        notificationDismissMs={9999}
+      />,
+    );
+    try {
+      await wait(120);
+      expect(poll).toBeGreaterThanOrEqual(3);
+      expect(view.lastFrame() ?? "").not.toContain("agent state: error");
+    } finally {
+      view.unmount();
+      dateNow.mockRestore();
+    }
   });
 
   it("shows a banner when a pane transitions to idle", async () => {

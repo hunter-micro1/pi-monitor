@@ -6,7 +6,8 @@
  * `src/pi_monitor/tmux.py`.
  */
 
-import { findPiPidForPane } from "../proc/index.js";
+import { findAgentPidsForPane } from "../proc/index.js";
+import type { AgentType } from "../state/types.js";
 import { TmuxError, tmuxRun } from "./client.js";
 
 /** Prefix used for sessions we create as linked viewers. */
@@ -101,6 +102,10 @@ export interface Pane {
    * kernel-tracked `comm` regardless of platform.
    */
   isPi: boolean;
+  /** True iff this pane contains a live Claude Code process. */
+  isClaude: boolean;
+  /** Detected live coding-agent implementation, or null for ordinary panes. */
+  agentType: AgentType | null;
 }
 
 /**
@@ -125,9 +130,6 @@ export function listPanes(): Pane[] {
     if (parts.length !== 9) continue;
     const [paneId, session, win, pidx, pid, cwd, paneTitle, command, paneLabel] =
       parts as [string, string, string, string, string, string, string, string, string];
-    // Prefer the extension's clobber-proof @pi_pane_label; otherwise fall
-    // back to pane_title with leaked Kitty-graphics payloads stripped.
-    const title = paneLabel.length > 0 ? paneLabel : sanitizePaneTitle(paneTitle);
     const windowIndex = Number.parseInt(win, 10);
     const paneIndex = Number.parseInt(pidx, 10);
     const pidNum = Number.parseInt(pid, 10);
@@ -138,13 +140,24 @@ export function listPanes(): Pane[] {
     ) {
       continue;
     }
-    // Fast path: tmux already says this is a pi pane (Linux, where
-    // pane_current_command honors comm). Skip the proc snapshot
-    // lookup. Slow path: walk the process tree (cached snapshot,
-    // sub-ms). The slow path is what makes macOS work \u2014 there
-    // pane_current_command reports `node` and would otherwise filter
-    // every real pi pane out of the agent list.
-    const isPi = command === "pi" || findPiPidForPane(pidNum) !== null;
+    // Exact tmux commands take the fast path. Otherwise walk the
+    // process subtree once; this covers shell-launched agents and
+    // platforms where tmux reports a wrapper executable.
+    const directType = agentTypeForCommand(command);
+    const detected =
+      directType === "pi" ? { pi: pidNum, claude: null } : findAgentPidsForPane(pidNum);
+    // Pi wins an ambiguous subtree because Pi can launch Claude as a
+    // child tool; Pi's heartbeat/session remains authoritative there.
+    // If a direct Claude process cannot be inspected, retain the exact
+    // tmux command as a reliable fallback instead of dropping the pane.
+    const agentType: AgentType | null =
+      detected.pi !== null ? "pi" : detected.claude !== null ? "claude" : directType;
+    const isPi = agentType === "pi";
+    const isClaude = agentType === "claude";
+    // @pi_pane_label belongs to Pi's extension; never let a stale pane
+    // option rename a Claude row.
+    const title =
+      isPi && paneLabel.length > 0 ? paneLabel : sanitizePaneTitle(paneTitle);
     panes.push({
       paneId,
       target: `${session}:${win}.${pidx}`,
@@ -156,14 +169,27 @@ export function listPanes(): Pane[] {
       title,
       command,
       isPi,
+      isClaude,
+      agentType,
     });
   }
   return panes;
 }
 
-/** Convenience: only panes whose tree contains a `pi` process. */
+/** Convenience: every pane containing a supported live coding agent. */
+export function listAgentPanes(): Pane[] {
+  return listPanes().filter((p) => p.agentType !== null);
+}
+
+/** Compatibility API: only panes whose tree contains a `pi` process. */
 export function listPiPanes(): Pane[] {
   return listPanes().filter((p) => p.isPi);
+}
+
+function agentTypeForCommand(command: string): AgentType | null {
+  if (command === "pi") return "pi";
+  if (command === "claude" || command === "claude-code") return "claude";
+  return null;
 }
 
 /**

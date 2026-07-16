@@ -12,6 +12,11 @@
 
 import { execFileSync } from "node:child_process";
 
+export interface AgentPids {
+  pi: number | null;
+  claude: number | null;
+}
+
 /**
  * How long a `ps -A` snapshot is reused across `procStartTime` /
  * `findPiPidForPane` calls. The resolver runs every ~500 ms and
@@ -242,9 +247,9 @@ export function procStartTime(pid: number): number | null {
 }
 
 /**
- * Walk the process tree from `panePid` and return the DEEPEST
- * descendant (inclusive) whose `comm` is exactly `pi`. See the
- * Linux sibling for the rationale: extensions like
+ * Walk the process tree once and return the deepest exact Pi and
+ * Claude Code matches. See the Linux sibling for the Pi rationale:
+ * extensions like
  * `auto-worktree` re-exec pi inside an `agent/<base>-<ts>`
  * worktree, so the leaf pi carries the cwd the JSONL claim
  * needs.
@@ -252,7 +257,7 @@ export function procStartTime(pid: number): number | null {
  * Builds a parent-to-children index from the cached `ps` snapshot
  * and BFSes from `panePid`, walking the whole reachable tree.
  */
-export function findPiPidForPane(panePid: number): number | null {
+export function findAgentPidsForPane(panePid: number): AgentPids {
   const snap = readPsSnapshot();
 
   // Build parent -> children index from the snapshot. Cheap; the
@@ -267,7 +272,10 @@ export function findPiPidForPane(panePid: number): number | null {
     list.push(row.pid);
   }
 
-  let best: { pid: number; depth: number } | null = null;
+  const best: Record<keyof AgentPids, { pid: number; depth: number } | null> = {
+    pi: null,
+    claude: null,
+  };
   const queue: Array<{ pid: number; depth: number }> = [{ pid: panePid, depth: 0 }];
   const seen = new Set<number>();
 
@@ -278,8 +286,9 @@ export function findPiPidForPane(panePid: number): number | null {
 
     const row = snap.get(pid);
     if (row === undefined) continue;
-    if (row.comm === "pi" && (best === null || depth > best.depth)) {
-      best = { pid, depth };
+    const kind = agentTypeForCommand(row.comm);
+    if (kind !== null && (best[kind] === null || depth > best[kind].depth)) {
+      best[kind] = { pid, depth };
     }
 
     const kids = childrenByPpid.get(pid);
@@ -288,5 +297,17 @@ export function findPiPidForPane(panePid: number): number | null {
       if (!seen.has(kpid)) queue.push({ pid: kpid, depth: depth + 1 });
     }
   }
-  return best?.pid ?? null;
+  return { pi: best.pi?.pid ?? null, claude: best.claude?.pid ?? null };
+}
+
+/** Compatibility API used by Pi's heartbeat/session resolver. */
+export function findPiPidForPane(panePid: number): number | null {
+  return findAgentPidsForPane(panePid).pi;
+}
+
+function agentTypeForCommand(command: string): keyof AgentPids | null {
+  const basename = command.slice(command.lastIndexOf("/") + 1);
+  if (basename === "pi") return "pi";
+  if (basename === "claude" || basename === "claude-code") return "claude";
+  return null;
 }

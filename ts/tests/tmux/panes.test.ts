@@ -16,34 +16,35 @@ vi.mock("../../src/tmux/client.js", () => ({
 }));
 
 vi.mock("../../src/proc/index.js", () => ({
+  findAgentPidsForPane: vi.fn(() => ({ pi: null, claude: null })),
   findPiPidForPane: vi.fn(() => null),
   procStartTime: vi.fn(() => null),
   procCwd: vi.fn(() => null),
 }));
 
-import { findPiPidForPane } from "../../src/proc/index.js";
+import { findAgentPidsForPane } from "../../src/proc/index.js";
 import { TmuxError, tmuxRun } from "../../src/tmux/client.js";
 import {
   isViewerSession,
+  listAgentPanes,
   listPanes,
   listPiPanes,
   sanitizePaneTitle,
 } from "../../src/tmux/panes.js";
 
 const tmuxRunMock = vi.mocked(tmuxRun);
-const findPiPidForPaneMock = vi.mocked(findPiPidForPane);
+const findAgentPidsForPaneMock = vi.mocked(findAgentPidsForPane);
 
 beforeEach(() => {
   tmuxRunMock.mockReset();
-  // Default: no pi descendants. Individual tests override with
-  // mockImplementation when they need the macOS fallback path.
-  findPiPidForPaneMock.mockReset();
-  findPiPidForPaneMock.mockReturnValue(null);
+  // Default: no agent descendants. Individual tests override the fallback.
+  findAgentPidsForPaneMock.mockReset();
+  findAgentPidsForPaneMock.mockReturnValue({ pi: null, claude: null });
 });
 
 afterEach(() => {
   tmuxRunMock.mockReset();
-  findPiPidForPaneMock.mockReset();
+  findAgentPidsForPaneMock.mockReset();
 });
 
 /**
@@ -117,9 +118,13 @@ describe("listPanes", () => {
     expect(first.title).toBe("agent");
     expect(first.command).toBe("pi");
     expect(first.isPi).toBe(true);
+    expect(first.isClaude).toBe(false);
+    expect(first.agentType).toBe("pi");
     expect(first.target).toBe("main:0.0");
     const second = panes[1] as (typeof panes)[number];
     expect(second.isPi).toBe(false);
+    expect(second.isClaude).toBe(false);
+    expect(second.agentType).toBeNull();
     expect(second.target).toBe("main:0.1");
   });
 
@@ -211,11 +216,10 @@ describe("listPanes", () => {
         fakeLine({ paneId: "%3", pid: 86575, command: "node" }),
       ].join("\n")}\n`,
     );
-    findPiPidForPaneMock.mockImplementation((pid: number) => {
-      if (pid === 86074) return 86193; // descendant pi
-      if (pid === 86575) return 86575; // pid itself is pi
-      return null;
-    });
+    findAgentPidsForPaneMock.mockImplementation((pid: number) => ({
+      pi: pid === 86074 ? 86193 : pid === 86575 ? 86575 : null,
+      claude: null,
+    }));
     const panes = listPanes();
     expect(panes).toHaveLength(3);
     expect(panes[0]?.isPi).toBe(true);
@@ -228,13 +232,55 @@ describe("listPanes", () => {
     const panes = listPanes();
     expect(panes[0]?.isPi).toBe(true);
     // Fast path: don't even ask the proc resolver.
-    expect(findPiPidForPaneMock).not.toHaveBeenCalled();
+    expect(findAgentPidsForPaneMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps Pi precedence when an exact Claude command has both descendants", () => {
+    tmuxRunMock.mockReturnValue(
+      `${fakeLine({ paneId: "%1", pid: 500, command: "claude" })}\n`,
+    );
+    findAgentPidsForPaneMock.mockReturnValue({ pi: 501, claude: 500 });
+    const [pane] = listPanes();
+    expect(findAgentPidsForPaneMock).toHaveBeenCalledWith(500);
+    expect(pane?.agentType).toBe("pi");
+    expect(pane?.isPi).toBe(true);
+    expect(pane?.isClaude).toBe(false);
   });
 });
 
 // ---------------------------------------------------------------------------
-// listPiPanes
+// agent filters
 // ---------------------------------------------------------------------------
+
+describe("listAgentPanes", () => {
+  it("includes direct and nested Pi/Claude panes and excludes shells", () => {
+    tmuxRunMock.mockReturnValue(
+      `${[
+        fakeLine({ paneId: "%1", pid: 100, command: "pi" }),
+        fakeLine({ paneId: "%2", pid: 200, command: "claude" }),
+        fakeLine({ paneId: "%3", pid: 300, command: "zsh" }),
+        fakeLine({ paneId: "%4", pid: 400, command: "node" }),
+      ].join("\n")}\n`,
+    );
+    findAgentPidsForPaneMock.mockImplementation((pid: number) => ({
+      pi: null,
+      claude: pid === 400 ? 401 : null,
+    }));
+    const agents = listAgentPanes();
+    expect(agents.map((p) => [p.paneId, p.agentType])).toEqual([
+      ["%1", "pi"],
+      ["%2", "claude"],
+      ["%4", "claude"],
+    ]);
+  });
+
+  it("uses pane_title rather than a stale Pi label for Claude", () => {
+    tmuxRunMock.mockReturnValue(
+      `${fakeLine({ command: "claude", title: "Claude task", label: "Old Pi task" })}\n`,
+    );
+    expect(listAgentPanes()[0]?.title).toBe("Claude task");
+  });
+});
 
 describe("listPiPanes", () => {
   it("filters to panes whose tree contains pi (incl. the macOS 'node' case)", () => {
@@ -245,9 +291,10 @@ describe("listPiPanes", () => {
         fakeLine({ paneId: "%3", pid: 300, command: "node" }), // macOS pi
       ].join("\n")}\n`,
     );
-    findPiPidForPaneMock.mockImplementation((pid: number) =>
-      pid === 300 ? 301 : null,
-    );
+    findAgentPidsForPaneMock.mockImplementation((pid: number) => ({
+      pi: pid === 300 ? 301 : null,
+      claude: null,
+    }));
     const piOnly = listPiPanes();
     expect(piOnly.map((p) => p.paneId)).toEqual(["%1", "%3"]);
   });

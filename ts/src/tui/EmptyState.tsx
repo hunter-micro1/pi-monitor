@@ -1,5 +1,5 @@
 /**
- * Welcome card shown when the user has no pi sessions running.
+ * Welcome card shown when no supported agent sessions are running.
  *
  * Mirrors the centered welcome block in
  * `_render` of the Python `tui.py`. Bold accent heading + two
@@ -23,7 +23,7 @@ export function EmptyState(): ReactElement {
       paddingY={2}
     >
       <Text bold color={ACCENT}>
-        No pi sessions yet
+        No live Pi or Claude sessions
       </Text>
       <Box marginTop={1}>
         <Text color={FOREGROUND_MUTED}>Press </Text>

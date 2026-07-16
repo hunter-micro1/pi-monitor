@@ -1,10 +1,10 @@
 # pi-monitor
 
-Live, tmux-aware status monitor for [pi](https://github.com/badlogic/pi-mono) coding agents.
+Live, tmux-aware status monitor for [Pi](https://github.com/badlogic/pi-mono) and Claude Code sessions.
 
 > **0.4.x ships the TypeScript build as canonical** — install via `npm install -g @hshayde/pi-monitor` (or `pnpm add -g @hshayde/pi-monitor`). The npm package is scoped because the unscoped `pi-monitor` name was already taken; the installed binary on PATH is still just `pi-monitor`. The Python build documented below continues at 0.3.x and stays installable via `uv tool install --from git+https://github.com/hshayde/pi-monitor pi-monitor`. The TS sources live at [`ts/`](./ts) with their own [README](./ts/README.md) and [CHANGELOG](./ts/CHANGELOG.md). Both suites run on every push. See [`docs/REWRITE_PLAN.md`](./docs/REWRITE_PLAN.md) for the rewrite story.
 
-When you run several pi sessions across multiple tmux sessions and panes, it's hard to tell at a glance which agents are streaming, which are stalled, and which are idle waiting for your next prompt. `pi-monitor` gives you a single split view: a card-per-session list of every pi pane on the left with live state + activity, and a real, fully-interactive view of the agent you cursored on the right — without ever moving the source pane out of its origin tmux session.
+When you run several Pi or Claude Code sessions across tmux, it's hard to tell which agent is where. `pi-monitor` gives you a single split view: every live Pi or Claude pane on the left and a real, fully-interactive view of the pane you selected on the right — without moving the source pane out of its origin tmux session. Pi panes retain live heartbeat/JSONL status; Claude panes are labeled explicitly and shown with honest `unknown` status.
 
 ```
 ┌─────────────────────────────────────────────────┬───────────────────────┐
@@ -90,7 +90,7 @@ get the slightly less accurate v1 classification.
 - Pressing `Enter` on a pane row creates (or reuses) a `tmux new-session -t <source>` session-group sister of that pane's source session, focuses the agent's window+pane in that sister, then `respawn-pane`s the right slot with `env -u TMUX tmux attach -t <sister>`. The right slot is now a real, fully interactive nested tmux client. The source pane is **never moved** — your project session's split is left alone.
 - Picking an agent in a different source session swaps the right slot to a fresh sister and kills the previous one. Picking another agent in the same source session just retargets the existing sister.
 - Because the right slot is a nested tmux client, its prefix is set to **`C-a`** (the outer monitor session keeps the default `C-b`), so the two clients' keybindings don't collide. The viewer session's own status line is also disabled — the outer monitor bar already carries pi-monitor's aggregate counts, so we don't stack a duplicate inside the right pane.
-- Status is inferred from each pane's pi session JSONL file (`~/.pi/agent/sessions/`) plus its mtime. No screen scraping.
+- Live Pi and Claude panes are discovered from their exact process names across `tmux list-panes -a`. Pi status is inferred from its session JSONL (`~/.pi/agent/sessions/`) plus optional heartbeat data; Claude status remains `unknown` rather than guessing.
 - Aggregate counts (`🔴N 🟡N 🟢N`) are pushed to a tmux user option `@pi-monitor-status` every 500ms while the TUI runs, so your `status-right` shows them in every session.
 - Crash-safe: every launch sweeps any leftover `pi-monitor-view-*` sister sessions before opening, and the right slot is always reset to its placeholder.
 
@@ -117,7 +117,7 @@ get the slightly less accurate v1 classification.
 
 ## States
 
-The TUI itself is glyph-free — state is conveyed by **color** (the row title pulses in the success color while the agent is working; idle / error / waiting / retrying tint the right-hand state tag) and by a short **state word** in that tag. Emojis below are used only by the tmux status-line widget that pi-monitor pushes to `@pi-monitor-status` so you can show aggregate counts in your normal `status-right`.
+State is conveyed by static color and a short state word in each row. The current viewer pane is marked with `▶`, a high-contrast background, and a `CURRENT` label. Emojis below are used only by the tmux status-line widget that pi-monitor pushes to `@pi-monitor-status`.
 
 | State    | Meaning                                                                               | Emoji (tmux status only) |
 | -------- | ------------------------------------------------------------------------------------- | ------------------------ |

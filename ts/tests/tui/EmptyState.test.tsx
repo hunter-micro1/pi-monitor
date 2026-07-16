@@ -10,7 +10,7 @@ import { EmptyState } from "../../src/tui/EmptyState.js";
 describe("EmptyState", () => {
   it("renders the welcome heading", () => {
     const { lastFrame } = render(<EmptyState />);
-    expect(lastFrame() ?? "").toContain("No pi sessions yet");
+    expect(lastFrame() ?? "").toContain("No live Pi or Claude sessions");
   });
 
   it("documents the o + ? key bindings inline", () => {

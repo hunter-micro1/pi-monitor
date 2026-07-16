@@ -10,6 +10,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  findAgentPidsForPane,
   findPiPidForPane,
   procCwd,
   procCwds,
@@ -167,6 +168,28 @@ describe("linux.procCwds", () => {
     // populate the result map regardless.
     const out = procCwds([]);
     expect(out.size).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// agent process discovery
+// ---------------------------------------------------------------------------
+
+describe("linux.findAgentPidsForPane", () => {
+  it("finds direct and nested Pi and Claude processes in one walk", () => {
+    withProcLayout({
+      comms: { 100: "zsh", 101: "pi", 102: "env", 103: "claude" },
+      children: { 100: [101, 102], 101: [], 102: [103], 103: [] },
+    });
+    expect(findAgentPidsForPane(100)).toEqual({ pi: 101, claude: 103 });
+  });
+
+  it("accepts exact claude-code and rejects lookalike names", () => {
+    withProcLayout({
+      comms: { 100: "zsh", 101: "claude-code", 102: "claude-helper", 103: "pico" },
+      children: { 100: [101, 102, 103], 101: [], 102: [], 103: [] },
+    });
+    expect(findAgentPidsForPane(100)).toEqual({ pi: null, claude: 101 });
   });
 });
 

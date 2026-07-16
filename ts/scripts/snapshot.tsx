@@ -25,6 +25,7 @@ function status(fields: Partial<PaneStatus> = {}): PaneStatus {
 function entry(fields: Partial<AppEntry> = {}): AppEntry {
   return {
     paneId: fields.paneId ?? "%1",
+    agentType: fields.agentType ?? "pi",
     session: fields.session ?? "main",
     windowIndex: fields.windowIndex ?? 0,
     paneIndex: fields.paneIndex ?? 0,

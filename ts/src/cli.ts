@@ -102,7 +102,7 @@ async function runTui(): Promise<number> {
     { createElement },
     { App },
     { makeTmuxBridge },
-    { listPanes, listPiPanes },
+    { listAgentPanes, listPanes },
     { selectAgentPanes },
     { StateResolver },
     { createPiSession, createPiWindow, setStatusWidget, clearStatusWidget },
@@ -131,16 +131,22 @@ async function runTui(): Promise<number> {
     // new-session -t pi-9`). The third rule — dedupe by paneId
     // — is what catches that case; without it `%11` would render
     // once per sister session.
-    const panes = selectAgentPanes(listPiPanes(), ownPaneIds);
-    const refs = panes.map((p) => ({
-      paneId: p.paneId,
-      cwd: p.cwd,
-      isPi: p.isPi,
-      panePid: p.pid,
-    }));
+    const panes = selectAgentPanes(listAgentPanes(), ownPaneIds);
+    // Pi keeps its heartbeat/JSONL inference. Claude panes are live
+    // process discoveries only and intentionally remain UNKNOWN until
+    // a reliable live Claude state source exists.
+    const refs = panes
+      .filter((p) => p.isPi)
+      .map((p) => ({
+        paneId: p.paneId,
+        cwd: p.cwd,
+        isPi: p.isPi,
+        panePid: p.pid,
+      }));
     const statuses = resolver.resolve(refs);
     return panes.map((p) => ({
       paneId: p.paneId,
+      agentType: p.agentType ?? "pi",
       session: p.session,
       windowIndex: p.windowIndex,
       paneIndex: p.paneIndex,
@@ -148,7 +154,7 @@ async function runTui(): Promise<number> {
       cwd: p.cwd,
       status: statuses.get(p.paneId) ?? {
         paneId: p.paneId,
-        state: "no_pi" as const,
+        state: "unknown" as const,
         sessionFile: null,
         snapshot: null,
         idleSeconds: 0,
@@ -277,7 +283,7 @@ function shellQuote(s: string): string {
 
 function helpText(): string {
   return [
-    "pi-monitor \u2014 live tmux-aware status monitor for pi coding agents",
+    "pi-monitor \u2014 live tmux-aware monitor for Pi and Claude Code sessions",
     "",
     "Usage:",
     "  pi-monitor            run the monitor (bootstrap into a tmux session)",

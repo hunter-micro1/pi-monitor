@@ -1,7 +1,7 @@
 /**
  * Top-level Ink component. Owns:
  *   - the resolver tick (default 500ms)
- *   - the WORKING-row pulse animation (default 80ms)
+ *   - stable, change-driven rendering (no continuous animation timer)
  *   - the cursor reducer (j/k navigation, g/G to top/bottom, 1-9 jumps)
  *   - the title bar + footer chrome
  *   - modal mode switching (help, new-pi)
@@ -27,7 +27,7 @@ import {
 
 import { STATE_COLORS, fmtStatusWidget } from "../format/row.js";
 import { Notifier } from "../notify/notifier.js";
-import type { AgentState, PaneStatus } from "../state/types.js";
+import type { AgentState, AgentType, PaneStatus } from "../state/types.js";
 import { EmptyState } from "./EmptyState.js";
 import { HelpScreen } from "./HelpScreen.js";
 import { type NewPiResult, NewPiScreen } from "./NewPiScreen.js";
@@ -39,15 +39,15 @@ import { ACCENT, FOREGROUND, FOREGROUND_MUTED } from "./colors.js";
 import { INITIAL_CURSOR, currentPos, cursorReducer } from "./cursor.js";
 import type { ListDir } from "./dirComplete.js";
 import { branchForCwd as defaultBranchForCwd } from "./git.js";
-import { lerpColor, pulseColor } from "./pulse.js";
 import { sessionHeaderColor } from "./sessionColors.js";
-import { BRAILLE_FRAMES } from "./spinner.js";
 import type { TmuxBridge } from "./tmuxBridge.js";
 
 /** One displayable agent. Pane metadata + resolved status. */
 export interface AppEntry {
   /** Tmux pane id (e.g. "%17"). Unique cursor key. */
   readonly paneId: string;
+  /** Live agent implementation detected in this pane. */
+  readonly agentType: AgentType;
   /** Session name the pane lives in. */
   readonly session: string;
   /** Pane's window index. Threaded into viewerFocusPane. */
@@ -74,7 +74,7 @@ export interface AppProps {
   readonly onQuit?: () => void;
   /** Tick cadence for getEntries (ms). Default 500. */
   readonly pollIntervalMs?: number;
-  /** WORKING pulse cadence (ms). Default 80. */
+  /** @deprecated Retained for caller compatibility; animations are disabled. */
   readonly pulseIntervalMs?: number;
   /**
    * Branch resolver override (for tests). Defaults to the cached
@@ -92,7 +92,7 @@ export interface AppProps {
    * full-screen rendering, which is why silent `nothing happens`
    * was the failure mode before this signature change.
    */
-  readonly onLaunchPi?: (result: NewPiResult) => string | null | undefined | void;
+  readonly onLaunchPi?: (result: NewPiResult) => string | null | undefined;
   /** Initial cwd for the new-pi modal. Defaults to `process.cwd()`. */
   readonly defaultCwd?: string;
   /** Optional listDir override forwarded to NewPiScreen (tests). */
@@ -128,7 +128,6 @@ export function App(props: AppProps): ReactElement {
     getEntries,
     onQuit,
     pollIntervalMs = 500,
-    pulseIntervalMs = 80,
     branchForCwd = defaultBranchForCwd,
     onLaunchPi,
     defaultCwd = process.cwd(),
@@ -157,9 +156,7 @@ export function App(props: AppProps): ReactElement {
   const [entries, setEntries] = useState<readonly AppEntry[]>([]);
   // Pre-resolved git branch per cwd. Populated by the resolver tick
   // so render never has to call `branchForCwd` (which spawnSyncs
-  // `git symbolic-ref` on cache-miss); the 80 ms pulse re-render
-  // path stays subprocess-free, which is what makes 5+ panes feel
-  // responsive on macOS.
+  // `git symbolic-ref` on cache-miss).
   const [branchByCwd, setBranchByCwd] = useState<ReadonlyMap<string, string | null>>(
     () => new Map(),
   );
@@ -181,6 +178,7 @@ export function App(props: AppProps): ReactElement {
   // after notificationDismissMs.
   const [banner, setBanner] = useState<BannerNotification | null>(null);
   const notifierRef = useRef<Notifier | null>(null);
+  const notifierPaneIdsRef = useRef<Set<string>>(new Set());
   if (notifierRef.current === null) {
     notifierRef.current = new Notifier({
       enabled: notificationsEnabled,
@@ -198,31 +196,6 @@ export function App(props: AppProps): ReactElement {
     notifierRef.current.enabled = notificationsEnabled;
   }
 
-  // Pulse animation state. Anchor t0 once and recompute the live
-  // color on the pulseInterval timer; PaneRow consumes it via prop.
-  const [pulseT0] = useState<number>(() => performance.now() / 1000);
-  const [pulseHex, setPulseHex] = useState<string>(() => pulseColor(pulseT0, pulseT0));
-
-  // Cursor-move flash animation. We track the timestamp of the
-  // last cursor change in a ref; the pulse interval below derives
-  // a brightness multiplier that decays from 1.0 -> 0 over
-  // CURSOR_FLASH_MS, lerping the bar color from accent toward
-  // white on the way down. Gives a visible "the cursor moved
-  // here" beat without needing real frame-by-frame tweening.
-  const lastCursorIndex = useRef(cursor.index);
-  const cursorMoveAtRef = useRef<number>(performance.now() / 1000);
-  const [cursorBarHex, setCursorBarHex] = useState<string>(ACCENT);
-
-  // Spinner frame index for the working-row Braille animation.
-  // Bumped on the same 80ms cadence as the pulse below; one tick
-  // = one frame, mirroring pi-tui's Loader timing exactly.
-  const [spinnerFrame, setSpinnerFrame] = useState<number>(0);
-
-  if (lastCursorIndex.current !== cursor.index) {
-    cursorMoveAtRef.current = performance.now() / 1000;
-    lastCursorIndex.current = cursor.index;
-  }
-
   // ---------------------------------------------------------------------
   // Resolver tick.
   // ---------------------------------------------------------------------
@@ -232,15 +205,36 @@ export function App(props: AppProps): ReactElement {
       try {
         const result = await getEntries();
         if (!mounted) return;
-        setEntries(result);
+
+        // Apply the complete fresh observation set before advancing
+        // deferred-notification deadlines. Removed panes transition to
+        // UNKNOWN first, which clears any pending retryable error.
+        const notifier = notifierRef.current;
+        if (notifier !== null) {
+          const nextPaneIds = new Set<string>();
+          for (const entry of result) {
+            nextPaneIds.add(entry.paneId);
+            notifier.transition(entry.paneId, entry.status.state, {
+              errorMessage: entry.status.snapshot?.lastError ?? null,
+            });
+          }
+          for (const paneId of notifierPaneIdsRef.current) {
+            if (!nextPaneIds.has(paneId)) notifier.transition(paneId, "unknown");
+          }
+          notifierPaneIdsRef.current = nextPaneIds;
+          notifier.tick();
+        }
+
+        setEntries((previous) =>
+          sameAppEntries(previous, result) ? previous : result,
+        );
         // Pre-resolve git branches for every unique cwd OUTSIDE
         // the render path. branchForCwd has a 15s TTL cache, but
         // cache misses do a synchronous `git symbolic-ref` spawn;
         // calling it from the render path used to freeze the UI
         // for tens of ms during cursor navigation. Doing it here
         // batches all resolutions into the tick budget (which
-        // already does ps/lsof/tmux subprocess work) and keeps
-        // every subsequent pulse re-render subprocess-free.
+        // already does ps/lsof/tmux subprocess work).
         const nextBranches = new Map<string, string | null>();
         for (const e of result) {
           if (e.cwd === "" || nextBranches.has(e.cwd)) continue;
@@ -256,14 +250,19 @@ export function App(props: AppProps): ReactElement {
         );
       } catch {
         // Swallow; transient resolver failures shouldn't kill the
-        // TUI. Next tick retries.
+        // TUI. Next tick retries. Do not advance notification deadlines
+        // without a fresh, successful observation set.
       }
     };
-    void tick();
-    const id = setInterval(tick, pollIntervalMs);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const run = async (): Promise<void> => {
+      await tick();
+      if (mounted) timer = setTimeout(() => void run(), pollIntervalMs);
+    };
+    void run();
     return () => {
       mounted = false;
-      clearInterval(id);
+      if (timer !== undefined) clearTimeout(timer);
     };
   }, [getEntries, pollIntervalMs, branchForCwd]);
 
@@ -285,52 +284,12 @@ export function App(props: AppProps): ReactElement {
   // Cursor sync. When the visible order changes, recompute selectable
   // positions and try to keep the user's selection alive.
   // ---------------------------------------------------------------------
-  // biome-ignore lint/correctness/useExhaustiveDependencies: cursor.* identity is intentionally not a dep.
   useEffect(() => {
     dispatch({
       type: "sync",
       paneIds: orderedPaneIds,
     });
   }, [orderedPaneIds]);
-
-  // ---------------------------------------------------------------------
-  // Pulse + cursor-flash animation. One interval drives both: the
-  // working-row breathing color AND the brief flash on cursor moves.
-  // ---------------------------------------------------------------------
-  useEffect(() => {
-    const id = setInterval(() => {
-      const now = performance.now() / 1000;
-      setPulseHex(pulseColor(now, pulseT0));
-      // Cursor flash: lerp ACCENT -> #FFFFFF based on a 250ms
-      // linear decay since the last cursor move. Settles back to
-      // solid ACCENT after the window expires; cheap because the
-      // interval was already running for the working pulse.
-      const flash = Math.max(0, 1 - (now - cursorMoveAtRef.current) / 0.25);
-      setCursorBarHex(lerpColor(ACCENT, "#FFFFFF", flash * 0.6));
-      // Bump the Braille spinner frame on the same tick. pulse
-      // uses 80ms by default which is exactly pi-tui's Loader
-      // cadence, so the two animations stay phase-locked.
-      setSpinnerFrame((f) => (f + 1) % BRAILLE_FRAMES.length);
-    }, pulseIntervalMs);
-    return () => clearInterval(id);
-  }, [pulseT0, pulseIntervalMs]);
-
-  // ---------------------------------------------------------------------
-  // Notifier driving. transition() is called per pane on every
-  // entries-change; tick() runs on the same cadence so deferred
-  // retryable errors get released after their suppression window.
-  // ---------------------------------------------------------------------
-  // biome-ignore lint/correctness/useExhaustiveDependencies: notifierRef.current intentionally not a dep.
-  useEffect(() => {
-    const notifier = notifierRef.current;
-    if (notifier === null) return;
-    for (const e of entries) {
-      notifier.transition(e.paneId, e.status.state, {
-        errorMessage: e.status.snapshot?.lastError ?? null,
-      });
-    }
-    notifier.tick();
-  }, [entries]);
 
   // ---------------------------------------------------------------------
   // Banner auto-dismiss. Clears the banner state notificationDismissMs
@@ -362,7 +321,6 @@ export function App(props: AppProps): ReactElement {
     currentPos(cursor)?.kind === "pane"
       ? (currentPos(cursor) as { kind: "pane"; paneId: string }).paneId
       : null;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: cursor identity intentionally collapsed into cursorPaneIdForTmux.
   useEffect(() => {
     if (tmux === null) return;
     if (cursorPaneIdForTmux === null) {
@@ -518,8 +476,8 @@ export function App(props: AppProps): ReactElement {
             grammar across every selectable row. */}
         <Box flexDirection="row">
           <Box width={2}>
-            <Text bold color={newSelected ? cursorBarHex : ACCENT}>
-              {newSelected ? "\u258e" : " "}
+            <Text bold color={ACCENT}>
+              {newSelected ? "▶" : " "}
             </Text>
           </Box>
           <Text bold color={newSelected ? ACCENT : FOREGROUND_MUTED}>
@@ -543,32 +501,18 @@ export function App(props: AppProps): ReactElement {
               first={sectionIdx === 0}
             >
               {items.map((entry) => {
-                // Gate animated props so PaneRow's memo can skip
-                // re-renders on the 80 ms pulse tick for rows that
-                // don't consume them:
-                //   - workingColor + spinnerGlyph only matter when
-                //     state === "working" (the row is breathing).
-                //   - cursorBarColor only matters when the row is
-                //     selected (the bar lerps brightward briefly
-                //     after a cursor move).
-                // Non-working, non-selected rows see stable
-                // `undefined` between pulses; React.memo's default
-                // shallow comparator then skips the render.
-                const isWorking = entry.status.state === "working";
                 const isSelected = entry.paneId === selectedPaneId;
                 return (
                   <PaneRow
                     key={entry.paneId}
                     status={entry.status}
+                    agentType={entry.agentType}
                     paneTitle={entry.paneTitle}
                     paneIndex={entry.paneIndex}
                     // Read pre-resolved branch from the tick-populated
                     // map; null until the first tick lands (one frame).
                     branch={branchByCwd.get(entry.cwd) ?? null}
                     selected={isSelected}
-                    workingColor={isWorking ? pulseHex : undefined}
-                    cursorBarColor={isSelected ? cursorBarHex : undefined}
-                    spinnerGlyph={isWorking ? BRAILLE_FRAMES[spinnerFrame] : undefined}
                     sessionColor={sectionColor}
                   />
                 );
@@ -752,11 +696,42 @@ export function groupBySession(
 }
 
 /**
- * Shallow-equal compare for the cwd→branch map produced by the
- * resolver tick. Same keys + same values per key. Used to skip a
- * pointless `setBranchByCwd` (and the re-render it triggers) when
- * a steady-state tick re-resolves identical branches.
+ * Compare every field that can change the rendered pane list or its
+ * dependent effects. Idle time is displayed at whole-second precision,
+ * so sub-second drift does not repaint the terminal.
  */
+export function sameAppEntries(
+  a: readonly AppEntry[],
+  b: readonly AppEntry[],
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((left, index) => {
+    const right = b[index];
+    if (right === undefined) return false;
+    const ls = left.status;
+    const rs = right.status;
+    return (
+      left.paneId === right.paneId &&
+      left.agentType === right.agentType &&
+      left.session === right.session &&
+      left.windowIndex === right.windowIndex &&
+      left.paneIndex === right.paneIndex &&
+      left.paneTitle === right.paneTitle &&
+      left.cwd === right.cwd &&
+      ls.paneId === rs.paneId &&
+      ls.state === rs.state &&
+      ls.sessionFile === rs.sessionFile &&
+      Math.floor(ls.idleSeconds) === Math.floor(rs.idleSeconds) &&
+      ls.phase === rs.phase &&
+      ls.currentTool === rs.currentTool &&
+      ls.retryAttempt === rs.retryAttempt &&
+      JSON.stringify(ls.snapshot) === JSON.stringify(rs.snapshot)
+    );
+  });
+}
+
+/** Same keys and values means branch state can retain its reference. */
 function sameBranchMap(
   a: ReadonlyMap<string, string | null>,
   b: ReadonlyMap<string, string | null>,

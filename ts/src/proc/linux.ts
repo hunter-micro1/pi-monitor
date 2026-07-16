@@ -12,6 +12,11 @@
 
 import { readFileSync, readlinkSync, statSync } from "node:fs";
 
+export interface AgentPids {
+  pi: number | null;
+  claude: number | null;
+}
+
 /**
  * Current working directory for `pid`. Reads the
  * `/proc/<pid>/cwd` symlink and returns its absolute target, or
@@ -61,9 +66,8 @@ export function procStartTime(pid: number): number | null {
 }
 
 /**
- * Walk the process tree from `panePid` and return the DEEPEST
- * descendant whose `comm` is exactly `pi`. Includes `panePid`
- * itself so `exec pi` still resolves.
+ * Walk the process tree once and return the deepest exact Pi and
+ * Claude Code matches. Includes `panePid` itself for exec launches.
  *
  * Why deepest, not first: extensions like `auto-worktree` re-exec
  * pi inside an `agent/<base>-<ts>` worktree, producing a chain of
@@ -80,8 +84,11 @@ export function procStartTime(pid: number): number | null {
  *
  * Mirrors `find_pi_pid_for_pane` in the Python build.
  */
-export function findPiPidForPane(panePid: number): number | null {
-  let best: { pid: number; depth: number } | null = null;
+export function findAgentPidsForPane(panePid: number): AgentPids {
+  const best: Record<keyof AgentPids, { pid: number; depth: number } | null> = {
+    pi: null,
+    claude: null,
+  };
   const queue: Array<{ pid: number; depth: number }> = [{ pid: panePid, depth: 0 }];
   const seen = new Set<number>();
 
@@ -99,8 +106,9 @@ export function findPiPidForPane(panePid: number): number | null {
       // Process disappeared or not readable; skip and continue.
       continue;
     }
-    if (comm === "pi" && (best === null || depth > best.depth)) {
-      best = { pid, depth };
+    const kind = agentTypeForCommand(comm);
+    if (kind !== null && (best[kind] === null || depth > best[kind].depth)) {
+      best[kind] = { pid, depth };
     }
 
     let childrenRaw: string;
@@ -117,5 +125,16 @@ export function findPiPidForPane(panePid: number): number | null {
       }
     }
   }
-  return best?.pid ?? null;
+  return { pi: best.pi?.pid ?? null, claude: best.claude?.pid ?? null };
+}
+
+/** Compatibility API used by Pi's heartbeat/session resolver. */
+export function findPiPidForPane(panePid: number): number | null {
+  return findAgentPidsForPane(panePid).pi;
+}
+
+function agentTypeForCommand(command: string): keyof AgentPids | null {
+  if (command === "pi") return "pi";
+  if (command === "claude" || command === "claude-code") return "claude";
+  return null;
 }

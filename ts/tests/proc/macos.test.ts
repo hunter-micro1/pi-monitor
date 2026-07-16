@@ -23,6 +23,7 @@ import { execFileSync } from "node:child_process";
 
 import {
   _resetPsCacheForTests,
+  findAgentPidsForPane,
   findPiPidForPane,
   parseEtime,
   procCwd,
@@ -134,6 +135,32 @@ describe("macos.procStartTime", () => {
       throw new Error("ps not found");
     });
     expect(procStartTime(1234)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// agent process discovery
+// ---------------------------------------------------------------------------
+
+describe("macos.findAgentPidsForPane", () => {
+  it("finds direct and nested Pi and Claude processes in one snapshot", () => {
+    fakePsRows([
+      [100, 1, "zsh", 100],
+      [101, 100, "pi", 40],
+      [102, 100, "env", 30],
+      [103, 102, "/opt/claude", 20],
+    ]);
+    expect(findAgentPidsForPane(100)).toEqual({ pi: 101, claude: 103 });
+  });
+
+  it("accepts exact claude-code and rejects lookalike names", () => {
+    fakePsRows([
+      [100, 1, "zsh", 100],
+      [101, 100, "claude-code", 40],
+      [102, 100, "claude-helper", 30],
+      [103, 100, "pico", 20],
+    ]);
+    expect(findAgentPidsForPane(100)).toEqual({ pi: null, claude: 101 });
   });
 });
 

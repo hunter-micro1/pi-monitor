@@ -23,8 +23,12 @@ export const FOREGROUND = "#C0CAF5";
 /** Muted foreground for inactive rows + dim metadata. */
 export const FOREGROUND_MUTED = "#9AA5CE";
 
-/** Bright background tint used for the cursor row's highlight bar. */
+/** High-contrast current-row palette. */
 export const SELECTION_BG = "#3B4261";
+export const SELECTION_FG = "#FFFFFF";
+
+/** Claude Code identity accent, distinct from Pi's blue brand accent. */
+export const CLAUDE_ACCENT = "#D97757";
 
 /**
  * Per-state foreground colors. Same intent as STATE_COLORS in the
