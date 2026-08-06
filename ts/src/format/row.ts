@@ -35,13 +35,13 @@ export const STATE_COLORS: Record<AgentState, string> = {
   waiting: "#FF9E64", // warm orange \u2014 calls attention
   retrying: "#7DCFFF", // steel blue \u2014 "automated, ongoing"
   unknown: "#565F89",
-  no_pi: "#414868",
+  no_agent: "#414868",
 };
 
 /** Per-state-tag verbs that depend only on the state (no idle math). */
 const STATIC_TAG_VERBS: Partial<Record<AgentState, string>> = {
   waiting: "awaiting input",
-  no_pi: "no pi",
+  no_agent: "no agent",
   unknown: "unknown",
 };
 
@@ -402,7 +402,7 @@ export function fmtSessionHeader(session: string): string {
 
 /**
  * Per-state emoji glyphs for the tmux status-line summary. Ports
- * `STATE_GLYPHS` in `tui.py`. unknown / no_pi suppressed in the
+ * `STATE_GLYPHS` in `tui.py`. unknown / no_agent suppressed in the
  * widget output below; they don't represent attention-worthy state.
  */
 export const STATE_GLYPHS: Record<AgentState, string> = {
@@ -412,17 +412,17 @@ export const STATE_GLYPHS: Record<AgentState, string> = {
   waiting: "🟠",
   retrying: "🔵",
   unknown: "❓",
-  no_pi: "⚫",
+  no_agent: "⚫",
 };
 
 /**
  * Build the tmux status-widget string. Format: `<glyph><count>` per
  * non-zero state, space-separated, in attention-priority order:
- * error -> waiting -> idle -> retrying -> working. unknown / no_pi
+ * error -> waiting -> idle -> retrying -> working. unknown / no_agent
  * suppressed.
  *
  * Returns "" when nothing is interesting (e.g. the only states are
- * unknown / no_pi). The caller pushes this verbatim into the
+ * unknown / no_agent). The caller pushes this verbatim into the
  * `@pi-monitor-status` user option, which the user's `status-right`
  * references via `#{@pi-monitor-status}`.
  *

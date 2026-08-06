@@ -59,7 +59,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
       waiting: "#FF9E64",
       retrying: "#7DCFFF",
       unknown: "#565F89",
-      no_pi: "#414868",
+      no_agent: "#414868",
     },
   },
   "catppuccin-mocha": {
@@ -77,7 +77,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
       waiting: "#FAB387",
       retrying: "#89DCEB",
       unknown: "#6C7086",
-      no_pi: "#313244",
+      no_agent: "#313244",
     },
   },
   dracula: {
@@ -95,7 +95,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
       waiting: "#FFB86C",
       retrying: "#8BE9FD",
       unknown: "#6272A4",
-      no_pi: "#383A46",
+      no_agent: "#383A46",
     },
   },
   gruvbox: {
@@ -113,7 +113,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
       waiting: "#FE8019",
       retrying: "#8EC07C",
       unknown: "#928374",
-      no_pi: "#32302F",
+      no_agent: "#32302F",
     },
   },
   "textual-dark": {
@@ -131,7 +131,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
       waiting: "#DE935F",
       retrying: "#81A2BE",
       unknown: "#808080",
-      no_pi: "#505050",
+      no_agent: "#505050",
     },
   },
 };

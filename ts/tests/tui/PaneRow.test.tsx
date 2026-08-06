@@ -135,17 +135,17 @@ describe("PaneRow", () => {
     expect(firstLine).not.toContain("\u00b7");
   });
 
-  it("renders the no_pi state without an activity description", () => {
+  it("renders the no_agent state without an activity description", () => {
     const { lastFrame } = render(
       <PaneRow
-        status={status({ state: "no_pi" })}
+        status={status({ state: "no_agent" })}
         paneTitle="shell"
         paneIndex={0}
         branch={null}
       />,
     );
     const out = lastFrame() ?? "";
-    // Title is present; no activity-style copy bleeds in for no_pi.
+    // Title is present; no activity-style copy bleeds in for no_agent.
     expect(out).toContain("shell");
     expect(out).not.toContain("running");
     expect(out).not.toContain("idle");

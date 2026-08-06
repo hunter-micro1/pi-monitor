@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/proc/index.js", () => ({
-  findPiPidForPane: vi.fn(),
+  findAgentPidForPane: vi.fn(),
   procStartTime: vi.fn(),
   procCwds: vi.fn(),
 }));
@@ -27,11 +27,11 @@ vi.mock("../../src/heartbeat/reader.js", () => ({
 }));
 
 import { readHeartbeat } from "../../src/heartbeat/reader.js";
-import { findPiPidForPane, procCwds, procStartTime } from "../../src/proc/index.js";
+import { findAgentPidForPane, procCwds, procStartTime } from "../../src/proc/index.js";
 import { cwdToSessionDir } from "../../src/state/files.js";
 import { type PaneRef, StateResolver } from "../../src/state/resolver.js";
 
-const findPiPidForPaneMock = vi.mocked(findPiPidForPane);
+const findAgentPidForPaneMock = vi.mocked(findAgentPidForPane);
 const procStartTimeMock = vi.mocked(procStartTime);
 const procCwdsMock = vi.mocked(procCwds);
 const readHeartbeatMock = vi.mocked(readHeartbeat);
@@ -40,7 +40,7 @@ let sessionsRoot: string;
 
 beforeEach(() => {
   sessionsRoot = mkdtempSync(join(tmpdir(), "pi-mon-resolver-"));
-  findPiPidForPaneMock.mockReset();
+  findAgentPidForPaneMock.mockReset();
   procStartTimeMock.mockReset();
   procCwdsMock.mockReset();
   readHeartbeatMock.mockReset();
@@ -77,13 +77,13 @@ function writeJsonl(args: {
 function ref(args: {
   paneId: string;
   cwd: string;
-  isPi?: boolean;
+  harness?: "pi" | "claude" | null;
   panePid?: number;
 }): PaneRef {
   return {
     paneId: args.paneId,
     cwd: args.cwd,
-    isPi: args.isPi ?? true,
+    harness: args.harness === undefined ? "pi" : args.harness,
     panePid: args.panePid ?? 1000,
   };
 }
@@ -98,7 +98,7 @@ function newResolver(): StateResolver {
 
 describe("StateResolver \u2014 heartbeat fast-path", () => {
   it("uses the heartbeat phase and skips JSONL inference entirely", () => {
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentPidForPaneMock.mockReturnValue({ pid: 9999, comm: "pi" });
     procStartTimeMock.mockReturnValue(1000.0);
     readHeartbeatMock.mockReturnValue({
       pid: 9999,
@@ -124,7 +124,7 @@ describe("StateResolver \u2014 heartbeat fast-path", () => {
   });
 
   it("maps tool_running + ask_user_question to waiting (blocks on user)", () => {
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentPidForPaneMock.mockReturnValue({ pid: 9999, comm: "pi" });
     procStartTimeMock.mockReturnValue(1000.0);
     readHeartbeatMock.mockReturnValue({
       pid: 9999,
@@ -148,7 +148,7 @@ describe("StateResolver \u2014 heartbeat fast-path", () => {
   });
 
   it("keeps tool_running + null currentTool as working (regression)", () => {
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentPidForPaneMock.mockReturnValue({ pid: 9999, comm: "pi" });
     procStartTimeMock.mockReturnValue(1000.0);
     readHeartbeatMock.mockReturnValue({
       pid: 9999,
@@ -167,7 +167,7 @@ describe("StateResolver \u2014 heartbeat fast-path", () => {
   });
 
   it("populates snapshot from JSONL even on heartbeat fast-path", () => {
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentPidForPaneMock.mockReturnValue({ pid: 9999, comm: "pi" });
     procStartTimeMock.mockReturnValue(1000.0);
     // Resolver used to set snapshot:null on the heartbeat path,
     // which hid the Prompt + Tokens lines in PaneDetails because
@@ -209,7 +209,7 @@ describe("StateResolver \u2014 heartbeat fast-path", () => {
   });
 
   it("falls back to JSONL when the heartbeat is unrecognized", () => {
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentPidForPaneMock.mockReturnValue({ pid: 9999, comm: "pi" });
     procStartTimeMock.mockReturnValue(1000.0);
     readHeartbeatMock.mockReturnValue({
       pid: 9999,
@@ -239,9 +239,9 @@ describe("StateResolver \u2014 heartbeat fast-path", () => {
   });
 
   it("marks the heartbeat's session_file as claimed so siblings can't steal it", () => {
-    findPiPidForPaneMock
-      .mockReturnValueOnce(1111) // p1
-      .mockReturnValueOnce(2222); // p2
+    findAgentPidForPaneMock
+      .mockReturnValueOnce({ pid: 1111, comm: "pi" }) // p1
+      .mockReturnValueOnce({ pid: 2222, comm: "pi" }); // p2
     procStartTimeMock
       .mockReturnValueOnce(1000.0) // p1
       .mockReturnValueOnce(1100.0); // p2
@@ -282,7 +282,7 @@ describe("StateResolver \u2014 heartbeat fast-path", () => {
 
 describe("StateResolver \u2014 JSONL path", () => {
   it("infers IDLE for a session with assistant + stop past the threshold", () => {
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentPidForPaneMock.mockReturnValue({ pid: 9999, comm: "pi" });
     procStartTimeMock.mockReturnValue(1000.0);
     const path = writeJsonl({
       cwd: "/x",
@@ -308,17 +308,17 @@ describe("StateResolver \u2014 JSONL path", () => {
     expect(status?.idleSeconds).toBeCloseTo(2.0, 1);
   });
 
-  it("returns NO_PI for refs with isPi=false", () => {
+  it("returns NO_AGENT for refs with isPi=false", () => {
     const resolver = newResolver();
-    const refs = [ref({ paneId: "shell-only", cwd: "/x", isPi: false })];
+    const refs = [ref({ paneId: "shell-only", cwd: "/x", harness: null })];
     const out = resolver.resolve(refs, 1500.0);
 
-    expect(out.get("shell-only")?.state).toBe("no_pi");
+    expect(out.get("shell-only")?.state).toBe("no_agent");
   });
 
   it("promotes a fresh pi with no flushed JSONL to WORKING during the grace window", () => {
     // pi started 5 s ago; STARTING_GRACE_S is 30 s.
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentPidForPaneMock.mockReturnValue({ pid: 9999, comm: "pi" });
     procStartTimeMock.mockReturnValue(1500.0);
     // No JSONL on disk.
 
@@ -330,7 +330,7 @@ describe("StateResolver \u2014 JSONL path", () => {
   });
 
   it("demotes a long-running no-flushed-JSONL pi to UNKNOWN past the grace", () => {
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentPidForPaneMock.mockReturnValue({ pid: 9999, comm: "pi" });
     procStartTimeMock.mockReturnValue(1000.0); // 100 s ago
 
     const resolver = newResolver();
@@ -341,9 +341,9 @@ describe("StateResolver \u2014 JSONL path", () => {
   });
 
   it("two pis in the same cwd \u2014 the cohabit-swap regression: a fresh idle pi must NOT steal the older sibling's actively-written file", () => {
-    findPiPidForPaneMock
-      .mockReturnValueOnce(1111) // p1 (older)
-      .mockReturnValueOnce(2222); // p2 (younger, fresh)
+    findAgentPidForPaneMock
+      .mockReturnValueOnce({ pid: 1111, comm: "pi" }) // p1 (older)
+      .mockReturnValueOnce({ pid: 2222, comm: "pi" }); // p2 (younger, fresh)
     procStartTimeMock
       .mockReturnValueOnce(Date.UTC(2026, 4, 3, 20, 37, 30) / 1000) // p1
       .mockReturnValueOnce(Date.UTC(2026, 4, 3, 20, 50, 0) / 1000); // p2
@@ -381,8 +381,8 @@ describe("StateResolver \u2014 JSONL path", () => {
     expect(out.get("p2")?.state).toBe("working");
   });
 
-  it("a non-pi pane mixed with pi panes still gets NO_PI", () => {
-    findPiPidForPaneMock.mockReturnValue(9999);
+  it("a non-pi pane mixed with pi panes still gets NO_AGENT", () => {
+    findAgentPidForPaneMock.mockReturnValue({ pid: 9999, comm: "pi" });
     procStartTimeMock.mockReturnValue(1000.0);
     writeJsonl({
       cwd: "/x",
@@ -394,13 +394,13 @@ describe("StateResolver \u2014 JSONL path", () => {
     const out = resolver.resolve(
       [
         ref({ paneId: "p1", cwd: "/x" }),
-        ref({ paneId: "shell", cwd: "/anywhere", isPi: false }),
+        ref({ paneId: "shell", cwd: "/anywhere", harness: null }),
       ],
       1502.0,
     );
 
-    expect(out.get("p1")?.state).not.toBe("no_pi");
-    expect(out.get("shell")?.state).toBe("no_pi");
+    expect(out.get("p1")?.state).not.toBe("no_agent");
+    expect(out.get("shell")?.state).toBe("no_agent");
   });
 
   it("uses the pi descendant's actual cwd for JSONL claim (auto-worktree)", () => {
@@ -408,7 +408,7 @@ describe("StateResolver \u2014 JSONL path", () => {
     // `agent/<base>-<ts>` worktree. The tmux pane still reports
     // its shell's cwd; pi writes JSONL keyed off ITS cwd. The
     // resolver has to follow the pi process's actual cwd.
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentPidForPaneMock.mockReturnValue({ pid: 9999, comm: "pi" });
     procStartTimeMock.mockReturnValue(1000.0);
     procCwdsMock.mockReturnValue(new Map([[9999, "/x-agent-worktree"]]));
     // JSONL file lives in the agent-worktree's session dir, NOT
@@ -437,7 +437,7 @@ describe("StateResolver \u2014 JSONL path", () => {
   });
 
   it("falls back to ref.cwd when the procCwd lookup returns null", () => {
-    findPiPidForPaneMock.mockReturnValue(9999);
+    findAgentPidForPaneMock.mockReturnValue({ pid: 9999, comm: "pi" });
     procStartTimeMock.mockReturnValue(1000.0);
     procCwdsMock.mockReturnValue(new Map());
     writeJsonl({

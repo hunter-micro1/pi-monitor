@@ -119,33 +119,33 @@ describe("claimSessionFile", () => {
   it("returns null when the directory doesn't exist", () => {
     const got = claimSessionFile({
       cwd: "/no/such/cwd",
-      piStart: 1000.0,
-      nextPiStart: null,
+      agentStart: 1000.0,
+      nextAgentStart: null,
       claimed: new Set(),
       sessionsRoot,
     });
     expect(got).toBeNull();
   });
 
-  it("claims an owned file (filename ts in [piStart - eps, +inf))", () => {
+  it("claims an owned file (filename ts in [agentStart - eps, +inf))", () => {
     const cwd = "/foo";
     const path = writeJsonl({
       cwd,
       filename: "2026-05-03T20-37-34-005Z_owned.jsonl",
       mtime: 1762000010,
     });
-    const piStart = Date.UTC(2026, 4, 3, 20, 37, 30) / 1000; // 4 s before filename ts
+    const agentStart = Date.UTC(2026, 4, 3, 20, 37, 30) / 1000; // 4 s before filename ts
     const got = claimSessionFile({
       cwd,
-      piStart,
-      nextPiStart: null,
+      agentStart,
+      nextAgentStart: null,
       claimed: new Set(),
       sessionsRoot,
     });
     expect(got).toBe(path);
   });
 
-  it("does NOT claim a file outside its [piStart, nextPiStart) window", () => {
+  it("does NOT claim a file outside its [agentStart, nextAgentStart) window", () => {
     const cwd = "/foo";
     const oldFile = writeJsonl({
       cwd,
@@ -157,15 +157,15 @@ describe("claimSessionFile", () => {
       filename: "2026-05-03T21-00-00-000Z_new.jsonl",
       mtime: 1762000020,
     });
-    // The OLDER pi only owns up to nextPiStart - eps. The newer file
+    // The OLDER pi only owns up to nextAgentStart - eps. The newer file
     // belongs to a younger sibling pi and must not be claimed by the
     // older one.
     const oldPiStart = Date.UTC(2026, 4, 3, 20, 37, 30) / 1000;
     const newPiStart = Date.UTC(2026, 4, 3, 20, 50, 0) / 1000;
     const got = claimSessionFile({
       cwd,
-      piStart: oldPiStart,
-      nextPiStart: newPiStart,
+      agentStart: oldPiStart,
+      nextAgentStart: newPiStart,
       claimed: new Set(),
       sessionsRoot,
     });
@@ -173,29 +173,29 @@ describe("claimSessionFile", () => {
     expect(got).not.toBe(newFile);
   });
 
-  it("falls back to a resumed file (filename predates pi, mtime >= piStart)", () => {
+  it("falls back to a resumed file (filename predates pi, mtime >= agentStart)", () => {
     const cwd = "/foo";
-    const piStart = Date.UTC(2026, 4, 3, 20, 37, 30) / 1000;
+    const agentStart = Date.UTC(2026, 4, 3, 20, 37, 30) / 1000;
     // Filename is older than pi's start time; pi resumed it via
-    // `--session`. mtime > piStart means pi has actually written
+    // `--session`. mtime > agentStart means pi has actually written
     // since opening.
     const path = writeJsonl({
       cwd,
       filename: "2025-01-01T00-00-00-000Z_resumed.jsonl",
-      mtime: piStart + 5, // pi appended after starting
+      mtime: agentStart + 5, // pi appended after starting
     });
     const got = claimSessionFile({
       cwd,
-      piStart,
-      nextPiStart: null,
+      agentStart,
+      nextAgentStart: null,
       claimed: new Set(),
       sessionsRoot,
     });
     expect(got).toBe(path);
   });
 
-  it("returns null when nothing is claimable for a known piStart", () => {
-    // Cohabit-swap regression: a fresh idle pi (piStart in the future
+  it("returns null when nothing is claimable for a known agentStart", () => {
+    // Cohabit-swap regression: a fresh idle pi (agentStart in the future
     // relative to all existing files) must NOT steal the older
     // sibling's actively-written file. The Python build's previous
     // behaviour was to greedy-pick max-by-mtime here; the new
@@ -212,15 +212,15 @@ describe("claimSessionFile", () => {
     const claimed = new Set([olderFile]); // older sibling already grabbed it
     const got = claimSessionFile({
       cwd,
-      piStart: youngerPi,
-      nextPiStart: null,
+      agentStart: youngerPi,
+      nextAgentStart: null,
       claimed,
       sessionsRoot,
     });
     expect(got).toBeNull();
   });
 
-  it("falls back to mtime-DESC when piStart is null (no-info path)", () => {
+  it("falls back to mtime-DESC when agentStart is null (no-info path)", () => {
     const cwd = "/foo";
     writeJsonl({ cwd, filename: "old.jsonl", mtime: 1000 });
     const newest = writeJsonl({
@@ -230,8 +230,8 @@ describe("claimSessionFile", () => {
     });
     const got = claimSessionFile({
       cwd,
-      piStart: null,
-      nextPiStart: null,
+      agentStart: null,
+      nextAgentStart: null,
       claimed: new Set(),
       sessionsRoot,
     });
@@ -245,8 +245,8 @@ describe("claimSessionFile", () => {
     // b is already claimed by a sibling; we should land on a.
     const got = claimSessionFile({
       cwd,
-      piStart: null,
-      nextPiStart: null,
+      agentStart: null,
+      nextAgentStart: null,
       claimed: new Set([b]),
       sessionsRoot,
     });

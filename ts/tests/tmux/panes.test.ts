@@ -16,34 +16,34 @@ vi.mock("../../src/tmux/client.js", () => ({
 }));
 
 vi.mock("../../src/proc/index.js", () => ({
-  findPiPidForPane: vi.fn(() => null),
+  findAgentPidForPane: vi.fn(() => null),
   procStartTime: vi.fn(() => null),
   procCwd: vi.fn(() => null),
 }));
 
-import { findPiPidForPane } from "../../src/proc/index.js";
+import { findAgentPidForPane } from "../../src/proc/index.js";
 import { TmuxError, tmuxRun } from "../../src/tmux/client.js";
 import {
   isViewerSession,
   listPanes,
-  listPiPanes,
+  listAgentPanes,
   sanitizePaneTitle,
 } from "../../src/tmux/panes.js";
 
 const tmuxRunMock = vi.mocked(tmuxRun);
-const findPiPidForPaneMock = vi.mocked(findPiPidForPane);
+const findAgentPidForPaneMock = vi.mocked(findAgentPidForPane);
 
 beforeEach(() => {
   tmuxRunMock.mockReset();
   // Default: no pi descendants. Individual tests override with
   // mockImplementation when they need the macOS fallback path.
-  findPiPidForPaneMock.mockReset();
-  findPiPidForPaneMock.mockReturnValue(null);
+  findAgentPidForPaneMock.mockReset();
+  findAgentPidForPaneMock.mockReturnValue(null);
 });
 
 afterEach(() => {
   tmuxRunMock.mockReset();
-  findPiPidForPaneMock.mockReset();
+  findAgentPidForPaneMock.mockReset();
 });
 
 /**
@@ -116,10 +116,10 @@ describe("listPanes", () => {
     expect(first.cwd).toBe("/x");
     expect(first.title).toBe("agent");
     expect(first.command).toBe("pi");
-    expect(first.isPi).toBe(true);
+    expect(first.harness).toBe("pi");
     expect(first.target).toBe("main:0.0");
     const second = panes[1] as (typeof panes)[number];
-    expect(second.isPi).toBe(false);
+    expect(second.harness).toBeNull();
     expect(second.target).toBe("main:0.1");
   });
 
@@ -211,32 +211,32 @@ describe("listPanes", () => {
         fakeLine({ paneId: "%3", pid: 86575, command: "node" }),
       ].join("\n")}\n`,
     );
-    findPiPidForPaneMock.mockImplementation((pid: number) => {
-      if (pid === 86074) return 86193; // descendant pi
-      if (pid === 86575) return 86575; // pid itself is pi
+    findAgentPidForPaneMock.mockImplementation((pid: number) => {
+      if (pid === 86074) return { pid: 86193, comm: "pi" }; // descendant pi
+      if (pid === 86575) return { pid: 86575, comm: "pi" }; // pid itself is pi
       return null;
     });
     const panes = listPanes();
     expect(panes).toHaveLength(3);
-    expect(panes[0]?.isPi).toBe(true);
-    expect(panes[1]?.isPi).toBe(false);
-    expect(panes[2]?.isPi).toBe(true);
+    expect(panes[0]?.harness).toBe("pi");
+    expect(panes[1]?.harness).toBeNull();
+    expect(panes[2]?.harness).toBe("pi");
   });
 
   it("skips the tree walk when tmux already reports command='pi' (Linux fast path)", () => {
     tmuxRunMock.mockReturnValue(`${fakeLine({ paneId: "%1", command: "pi" })}\n`);
     const panes = listPanes();
-    expect(panes[0]?.isPi).toBe(true);
+    expect(panes[0]?.harness).toBe("pi");
     // Fast path: don't even ask the proc resolver.
-    expect(findPiPidForPaneMock).not.toHaveBeenCalled();
+    expect(findAgentPidForPaneMock).not.toHaveBeenCalled();
   });
 });
 
 // ---------------------------------------------------------------------------
-// listPiPanes
+// listAgentPanes
 // ---------------------------------------------------------------------------
 
-describe("listPiPanes", () => {
+describe("listAgentPanes", () => {
   it("filters to panes whose tree contains pi (incl. the macOS 'node' case)", () => {
     tmuxRunMock.mockReturnValue(
       `${[
@@ -245,10 +245,10 @@ describe("listPiPanes", () => {
         fakeLine({ paneId: "%3", pid: 300, command: "node" }), // macOS pi
       ].join("\n")}\n`,
     );
-    findPiPidForPaneMock.mockImplementation((pid: number) =>
-      pid === 300 ? 301 : null,
+    findAgentPidForPaneMock.mockImplementation((pid: number) =>
+      pid === 300 ? { pid: 301, comm: "pi" } : null,
     );
-    const piOnly = listPiPanes();
+    const piOnly = listAgentPanes();
     expect(piOnly.map((p) => p.paneId)).toEqual(["%1", "%3"]);
   });
 });

@@ -6,7 +6,8 @@
  * `src/pi_monitor/tmux.py`.
  */
 
-import { findPiPidForPane } from "../proc/index.js";
+import { ALL_COMM_NAMES, type HarnessId, harnessByComm } from "../harness/index.js";
+import { findAgentPidForPane } from "../proc/index.js";
 import { TmuxError, tmuxRun } from "./client.js";
 
 /** Prefix used for sessions we create as linked viewers. */
@@ -87,20 +88,24 @@ export interface Pane {
    *
    * Note: on macOS, tmux's pane_current_command uses libproc which
    * returns the executable basename, so a Node-based binary like
-   * `pi` is reported as `node`. The kernel-tracked `comm` (what
-   * `ps -o comm=` and `/proc/<pid>/comm` report) is correct.
-   * Don't use this field directly to decide pi-ness; use `isPi`,
-   * which falls back to a process-tree walk.
+   * `pi` or `claude` is reported as `node`. The kernel-tracked
+   * `comm` (what `ps -o comm=` and `/proc/<pid>/comm` report) is
+   * correct. Don't use this field directly to decide which agent is
+   * running; use `harness`, which falls back to a process-tree walk.
    */
   command: string;
   /**
-   * True iff this pane has a `pi` process anywhere in its descendant
-   * tree. We can't trust `command === "pi"` alone because tmux on
-   * macOS reports `node` for pi panes (libproc returns the
-   * executable basename). The tree-walk fallback finds pi via its
-   * kernel-tracked `comm` regardless of platform.
+   * Which coding agent occupies this pane, or `null` for a plain
+   * shell.
+   *
+   * We can't trust `command` alone because tmux on macOS reports
+   * `node` for both pi and Claude Code panes (libproc returns the
+   * executable basename). The tree-walk fallback identifies the
+   * agent via its kernel-tracked `comm` regardless of platform, and
+   * reports back WHICH comm matched so a single walk attributes the
+   * pane correctly no matter how many harnesses are registered.
    */
-  isPi: boolean;
+  harness: HarnessId | null;
 }
 
 /**
@@ -138,13 +143,17 @@ export function listPanes(): Pane[] {
     ) {
       continue;
     }
-    // Fast path: tmux already says this is a pi pane (Linux, where
+    // Fast path: tmux already names a known agent (Linux, where
     // pane_current_command honors comm). Skip the proc snapshot
     // lookup. Slow path: walk the process tree (cached snapshot,
     // sub-ms). The slow path is what makes macOS work \u2014 there
     // pane_current_command reports `node` and would otherwise filter
-    // every real pi pane out of the agent list.
-    const isPi = command === "pi" || findPiPidForPane(pidNum) !== null;
+    // every real agent pane out of the list.
+    let harness: HarnessId | null = harnessByComm(command)?.id ?? null;
+    if (harness === null) {
+      const found = findAgentPidForPane(pidNum, ALL_COMM_NAMES);
+      harness = found === null ? null : (harnessByComm(found.comm)?.id ?? null);
+    }
     panes.push({
       paneId,
       target: `${session}:${win}.${pidx}`,
@@ -155,15 +164,15 @@ export function listPanes(): Pane[] {
       cwd,
       title,
       command,
-      isPi,
+      harness,
     });
   }
   return panes;
 }
 
-/** Convenience: only panes whose tree contains a `pi` process. */
-export function listPiPanes(): Pane[] {
-  return listPanes().filter((p) => p.isPi);
+/** Convenience: only panes running some recognized coding agent. */
+export function listAgentPanes(): Pane[] {
+  return listPanes().filter((p) => p.harness !== null);
 }
 
 /**

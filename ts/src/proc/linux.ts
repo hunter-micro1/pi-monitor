@@ -12,6 +12,8 @@
 
 import { readFileSync, readlinkSync, statSync } from "node:fs";
 
+import type { AgentProc } from "./types.js";
+
 /**
  * Current working directory for `pid`. Reads the
  * `/proc/<pid>/cwd` symlink and returns its absolute target, or
@@ -78,10 +80,17 @@ export function procStartTime(pid: number): number | null {
  * Walks the whole reachable tree (cheap: tmux pane subtrees are
  * small) and tracks the deepest pi seen so far.
  *
- * Mirrors `find_pi_pid_for_pane` in the Python build.
+ * Generalized from the original pi-only `find_pi_pid_for_pane`:
+ * the caller passes every registered harness's comm names, and the
+ * match reports which one it found so the pane can be attributed
+ * to the right harness in a single walk.
  */
-export function findPiPidForPane(panePid: number): number | null {
-  let best: { pid: number; depth: number } | null = null;
+export function findAgentPidForPane(
+  panePid: number,
+  commNames: readonly string[],
+): AgentProc | null {
+  const wanted = new Set(commNames);
+  let best: { pid: number; depth: number; comm: string } | null = null;
   const queue: Array<{ pid: number; depth: number }> = [{ pid: panePid, depth: 0 }];
   const seen = new Set<number>();
 
@@ -99,8 +108,8 @@ export function findPiPidForPane(panePid: number): number | null {
       // Process disappeared or not readable; skip and continue.
       continue;
     }
-    if (comm === "pi" && (best === null || depth > best.depth)) {
-      best = { pid, depth };
+    if (wanted.has(comm) && (best === null || depth > best.depth)) {
+      best = { pid, depth, comm };
     }
 
     let childrenRaw: string;
@@ -117,5 +126,14 @@ export function findPiPidForPane(panePid: number): number | null {
       }
     }
   }
-  return best?.pid ?? null;
+  return best === null ? null : { pid: best.pid, comm: best.comm };
+}
+
+/**
+ * Back-compat shim: deepest `pi` descendant of a pane, pid only.
+ * Retained because the ported process-walk test corpus targets it
+ * directly, and the walk semantics it exercises are unchanged.
+ */
+export function findPiPidForPane(panePid: number): number | null {
+  return findAgentPidForPane(panePid, ["pi"])?.pid ?? null;
 }

@@ -12,6 +12,8 @@
 
 import { execFileSync } from "node:child_process";
 
+import type { AgentProc } from "./types.js";
+
 /**
  * How long a `ps -A` snapshot is reused across `procStartTime` /
  * `findPiPidForPane` calls. The resolver runs every ~500 ms and
@@ -252,7 +254,11 @@ export function procStartTime(pid: number): number | null {
  * Builds a parent-to-children index from the cached `ps` snapshot
  * and BFSes from `panePid`, walking the whole reachable tree.
  */
-export function findPiPidForPane(panePid: number): number | null {
+export function findAgentPidForPane(
+  panePid: number,
+  commNames: readonly string[],
+): AgentProc | null {
+  const wanted = new Set(commNames);
   const snap = readPsSnapshot();
 
   // Build parent -> children index from the snapshot. Cheap; the
@@ -267,7 +273,7 @@ export function findPiPidForPane(panePid: number): number | null {
     list.push(row.pid);
   }
 
-  let best: { pid: number; depth: number } | null = null;
+  let best: { pid: number; depth: number; comm: string } | null = null;
   const queue: Array<{ pid: number; depth: number }> = [{ pid: panePid, depth: 0 }];
   const seen = new Set<number>();
 
@@ -278,8 +284,8 @@ export function findPiPidForPane(panePid: number): number | null {
 
     const row = snap.get(pid);
     if (row === undefined) continue;
-    if (row.comm === "pi" && (best === null || depth > best.depth)) {
-      best = { pid, depth };
+    if (wanted.has(row.comm) && (best === null || depth > best.depth)) {
+      best = { pid, depth, comm: row.comm };
     }
 
     const kids = childrenByPpid.get(pid);
@@ -288,5 +294,14 @@ export function findPiPidForPane(panePid: number): number | null {
       if (!seen.has(kpid)) queue.push({ pid: kpid, depth: depth + 1 });
     }
   }
-  return best?.pid ?? null;
+  return best === null ? null : { pid: best.pid, comm: best.comm };
+}
+
+/**
+ * Back-compat shim: deepest `pi` descendant of a pane, pid only.
+ * Retained because the ported process-walk test corpus targets it
+ * directly, and the walk semantics it exercises are unchanged.
+ */
+export function findPiPidForPane(panePid: number): number | null {
+  return findAgentPidForPane(panePid, ["pi"])?.pid ?? null;
 }

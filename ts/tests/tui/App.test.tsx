@@ -148,7 +148,7 @@ describe("App render", () => {
     const out = lastFrame() ?? "";
     expect(out).toContain("pi-monitor");
     expect(out).toContain("+ new session");
-    expect(out).toContain("No pi sessions yet");
+    expect(out).toContain("No agent sessions yet");
   });
 
   it("renders one SessionGroup per session with its panes", async () => {
@@ -173,7 +173,7 @@ describe("App render", () => {
     expect(out).toContain("agent-b");
     expect(out).toContain("lawyer");
     // Empty-state hidden when entries exist.
-    expect(out).not.toContain("No pi sessions yet");
+    expect(out).not.toContain("No agent sessions yet");
   });
 
   it("calls onQuit when the user presses q", async () => {

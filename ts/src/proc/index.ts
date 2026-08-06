@@ -16,7 +16,12 @@ import * as macos from "./macos.js";
 
 const impl = process.platform === "darwin" ? macos : linux;
 
+export type { AgentProc } from "./types.js";
+
 export const procStartTime = impl.procStartTime;
+/** Deepest descendant of a pane matching any registered harness comm. */
+export const findAgentPidForPane = impl.findAgentPidForPane;
+/** pi-only shim retained for the ported process-walk test corpus. */
 export const findPiPidForPane = impl.findPiPidForPane;
 export const procCwd = impl.procCwd;
 export const procCwds = impl.procCwds;

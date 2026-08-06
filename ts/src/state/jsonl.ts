@@ -1,84 +1,68 @@
 /**
- * JSONL session-file parser.
+ * JSONL session-file scanner.
  *
- * Direct port of `_scan_lines` and `_first_text_preview` from
- * `src/pi_monitor/state.py`. The Python build calls these on the tail
- * bytes of `~/.pi/agent/sessions/*.jsonl` files; this TS port consumes
- * the same byte stream (or a string equivalent) and produces an
- * equivalent `JsonlSnapshot`.
+ * Originally a direct port of `_scan_lines` from
+ * `src/pi_monitor/state.py`, now split in two: the per-line *parsing*
+ * moved into `src/harness/` (each coding agent has its own record
+ * shape), while the *state machine* below — trailing role, open
+ * tool-call set, running usage totals — stays shared. Two harnesses
+ * observing the same conversational events must produce the same
+ * snapshot, and that only holds if there's one implementation of the
+ * fold.
  *
- * The line-by-line state machine semantics are preserved exactly so
- * the test corpus from `tests/test_state.py` ports straight over.
+ * `firstTextPreview` is re-exported for the existing test corpus,
+ * which was ported 1:1 from `tests/test_state.py`.
  */
 
+import { type Harness, piHarness } from "../harness/index.js";
 import type { JsonlSnapshot } from "./types.js";
 
-/**
- * Cap on the assistant-text preview captured per JSONL line. The UI
- * truncates further to fit the row width; this bound just keeps an
- * absurdly-long single-text-block message from bloating the cached
- * snapshot. Mirrors `_PREVIEW_MAX_CHARS` in the Python build.
- */
-export const PREVIEW_MAX_CHARS = 200;
+export { firstTextPreview, PREVIEW_MAX_CHARS } from "../harness/text.js";
 
-/** Shape of an assistant-message content item we care about. */
-type ContentItem = {
-  type?: unknown;
-  text?: unknown;
-  id?: unknown;
-  name?: unknown;
-};
-
-/**
- * Return the first text chunk of an assistant message's `content`,
- * lstripped, capped at `PREVIEW_MAX_CHARS`. Returns `null` when no
- * usable text is present (tool-only message, all-whitespace text,
- * malformed content shape).
- *
- * Defensive against pi sometimes emitting `content` as a plain string
- * or `null` instead of a list \u2014 the Python helper handles that and
- * we mirror it.
- */
-export function firstTextPreview(content: unknown): string | null {
-  if (!Array.isArray(content)) {
-    return null;
-  }
-  for (const item of content as ContentItem[]) {
-    if (typeof item !== "object" || item === null) continue;
-    if (item.type !== "text") continue;
-    const text = item.text;
-    if (typeof text !== "string") continue;
-    const stripped = text.replace(/^\s+/, "");
-    if (stripped.length === 0) continue;
-    return stripped.length > PREVIEW_MAX_CHARS
-      ? stripped.slice(0, PREVIEW_MAX_CHARS)
-      : stripped;
-  }
-  return null;
+function emptySnapshot(mtime: number): JsonlSnapshot {
+  return {
+    mtime,
+    lastRole: null,
+    lastStopReason: null,
+    lastError: null,
+    pendingToolCalls: 0,
+    lastAssistantPreview: null,
+    lastUserPrompt: null,
+    cumulativeTokens: 0,
+    cumulativeCostUsd: 0,
+  };
 }
 
 /**
- * Walk forward through `blob` (the tail of a JSONL session file) and
- * return a `JsonlSnapshot` reflecting the trailing meaningful entry
- * plus any open tool-use turn whose toolCalls aren't all matched yet.
+ * Walk forward through `blob` (the tail of a session file) and return
+ * a `JsonlSnapshot` reflecting the trailing meaningful entry plus any
+ * open tool-use turn whose tool calls aren't all matched yet.
  *
- * Skip rules ported from the Python:
- *   - Empty/whitespace-only lines.
- *   - JSON parse errors.
- *   - Entries whose top-level `type` isn't `"message"`.
+ * Lines the harness doesn't recognize as conversational are skipped
+ * entirely — they must not move `lastRole`. This matters most for
+ * Claude Code, whose live session files routinely END with an
+ * `attachment` record; letting that through would mask the assistant
+ * turn that actually closed the exchange and peg the pane to
+ * `unknown` forever.
  *
- * Role handling:
- *   - `assistant`: capture lastRole, lastStopReason, lastError, and
- *     the first-text preview. If `stopReason === "toolUse"`, replace
- *     `openToolCallIds` with this turn's toolCall ids; otherwise clear
- *     the open set (the assistant turn closed without invoking tools).
- *   - `toolResult`: pop matching toolCallId from `openToolCallIds`.
- *   - `user`: clear `openToolCallIds` (a new prompt supersedes any
- *     pending tool exchange).
- *   - `bashExecution` / `custom`: track lastRole only \u2014 these are
- *     activity events, not assistant/tool round trips.
+ * Role handling (unchanged from the pi-only build):
+ *   - `assistant`: capture lastRole, lastStopReason, lastError and
+ *     the text preview. If `stopReason === "toolUse"`, replace the
+ *     open tool-call set with this turn's ids; otherwise clear it
+ *     (the turn closed without invoking tools).
+ *   - `toolResult`: pop the matching id from the open set.
+ *   - `user`: clear the open set (a new prompt supersedes any pending
+ *     tool exchange).
+ *   - `bashExecution` / `custom`: track lastRole only.
+ *
+ * `harness` defaults to pi so the ported test corpus keeps calling
+ * `scanLines(blob, mtime)` unchanged.
  */
-export function scanLines(blob: string, mtime: number): JsonlSnapshot {
+export function scanLines(
+  blob: string,
+  mtime: number,
+  harness: Harness = piHarness,
+): JsonlSnapshot {
   let lastRole: JsonlSnapshot["lastRole"] = null;
   let lastStopReason: string | null = null;
   let lastError: string | null = null;
@@ -90,78 +74,42 @@ export function scanLines(blob: string, mtime: number): JsonlSnapshot {
 
   for (const line of blob.split("\n")) {
     if (line.trim().length === 0) continue;
-    let entry: Record<string, unknown>;
-    try {
-      const parsed = JSON.parse(line);
-      if (typeof parsed !== "object" || parsed === null) continue;
-      entry = parsed as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    if (entry.type !== "message") continue;
+    const record = harness.parseRecord(line);
+    if (record === null) continue;
 
-    const msg = (entry.message ?? {}) as Record<string, unknown>;
-    const role = msg.role;
+    cumulativeTokens += record.tokens;
+    cumulativeCostUsd += record.costUsd;
 
-    if (role === "assistant") {
+    if (record.role === "assistant") {
       lastRole = "assistant";
-      lastStopReason = typeof msg.stopReason === "string" ? msg.stopReason : null;
-      lastError = typeof msg.errorMessage === "string" ? msg.errorMessage : null;
+      lastStopReason = record.stopReason;
+      lastError = record.errorMessage;
+      if (record.text !== null) lastAssistantPreview = record.text;
 
-      const content = msg.content ?? [];
-      const preview = firstTextPreview(content);
-      if (preview !== null) lastAssistantPreview = preview;
-
-      // Usage / cost roll-up. Defensive: pi sometimes emits
-      // assistant turns without a usage block (e.g. a reconstructed
-      // resume), so missing/malformed fields fall through as zero.
-      const usage = msg.usage as Record<string, unknown> | undefined;
-      if (usage && typeof usage === "object") {
-        const total = usage.totalTokens;
-        if (typeof total === "number" && Number.isFinite(total)) {
-          cumulativeTokens += total;
-        }
-        const cost = usage.cost as Record<string, unknown> | undefined;
-        if (cost && typeof cost === "object") {
-          const ct = cost.total;
-          if (typeof ct === "number" && Number.isFinite(ct)) {
-            cumulativeCostUsd += ct;
-          }
-        }
-      }
-
-      const toolIds = new Set<string>();
-      if (Array.isArray(content)) {
-        for (const item of content as ContentItem[]) {
-          if (typeof item !== "object" || item === null) continue;
-          if (item.type !== "toolCall") continue;
-          if (typeof item.id === "string") toolIds.add(item.id);
-        }
-      }
       if (lastStopReason === "toolUse") {
         // New tool-use turn supersedes any pending one from earlier.
-        openToolCallIds = toolIds;
+        openToolCallIds = new Set(record.toolCallIds);
       } else {
         openToolCallIds.clear();
       }
-    } else if (role === "toolResult") {
+    } else if (record.role === "toolResult") {
       lastRole = "toolResult";
-      const tcid = msg.toolCallId;
-      if (typeof tcid === "string") openToolCallIds.delete(tcid);
-    } else if (role === "user") {
+      if (record.toolCallId !== null) openToolCallIds.delete(record.toolCallId);
+    } else if (record.role === "user") {
       lastRole = "user";
-      const prompt = firstTextPreview(msg.content ?? []);
-      if (prompt !== null) lastUserPrompt = prompt;
+      if (record.text !== null) lastUserPrompt = record.text;
       openToolCallIds.clear();
-    } else if (role === "bashExecution" || role === "custom") {
-      // Activity events; track lastRole but don't change tool / stop
-      // tracking \u2014 those belong to the assistant/tool exchange.
-      lastRole = role;
+    } else {
+      // bashExecution / custom: activity events. They move lastRole
+      // but don't touch stop/tool tracking, which belongs to the
+      // assistant/tool exchange.
+      lastRole = record.role;
     }
   }
 
+  const snapshot = emptySnapshot(mtime);
   return {
-    mtime,
+    ...snapshot,
     lastRole,
     lastStopReason,
     lastError,

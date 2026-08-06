@@ -22,7 +22,7 @@ export type AgentState =
   | "retrying"
   | "working"
   | "unknown"
-  | "no_pi";
+  | "no_agent";
 
 /**
  * Convenience constants so call sites can write `AgentState.IDLE`
@@ -35,7 +35,7 @@ export const AgentState = {
   RETRYING: "retrying",
   WORKING: "working",
   UNKNOWN: "unknown",
-  NO_PI: "no_pi",
+  NO_AGENT: "no_agent",
 } as const satisfies Record<string, AgentState>;
 
 /**

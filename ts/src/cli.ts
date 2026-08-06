@@ -102,7 +102,7 @@ async function runTui(): Promise<number> {
     { createElement },
     { App },
     { makeTmuxBridge },
-    { listPanes, listPiPanes },
+    { listPanes, listAgentPanes },
     { selectAgentPanes },
     { StateResolver },
     { createPiSession, createPiWindow, setStatusWidget, clearStatusWidget },
@@ -131,11 +131,11 @@ async function runTui(): Promise<number> {
     // new-session -t pi-9`). The third rule — dedupe by paneId
     // — is what catches that case; without it `%11` would render
     // once per sister session.
-    const panes = selectAgentPanes(listPiPanes(), ownPaneIds);
+    const panes = selectAgentPanes(listAgentPanes(), ownPaneIds);
     const refs = panes.map((p) => ({
       paneId: p.paneId,
       cwd: p.cwd,
-      isPi: p.isPi,
+      harness: p.harness,
       panePid: p.pid,
     }));
     const statuses = resolver.resolve(refs);
@@ -148,7 +148,7 @@ async function runTui(): Promise<number> {
       cwd: p.cwd,
       status: statuses.get(p.paneId) ?? {
         paneId: p.paneId,
-        state: "no_pi" as const,
+        state: "no_agent" as const,
         sessionFile: null,
         snapshot: null,
         idleSeconds: 0,

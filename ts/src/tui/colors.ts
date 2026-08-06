@@ -38,7 +38,7 @@ export const STATE_COLORS: Record<AgentState, string> = {
   waiting: "#FF9E64",
   retrying: "#7DCFFF",
   unknown: "#737AA2",
-  no_pi: "#414868",
+  no_agent: "#414868",
 };
 
 /**

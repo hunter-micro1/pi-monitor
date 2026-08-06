@@ -881,7 +881,7 @@ function topAttention(entries: readonly AppEntry[]): Attention | null {
  * their session group. Lower = more attention-worthy. Mirrors the
  * lattice that `pickSessionChip` (SessionGroup.tsx), `TitleBar`, and
  * `fmtStatusWidget` already encode: error → waiting → idle →
- * retrying → working → unknown/no_pi.
+ * retrying → working → unknown/no_agent.
  *
  * Kept inline here rather than exported because every other call
  * site iterates a literal in priority order; only `groupBySession`
@@ -894,7 +894,7 @@ const PRIORITY_RANK: Record<AgentState, number> = {
   retrying: 3,
   working: 4,
   unknown: 5,
-  no_pi: 6,
+  no_agent: 6,
 };
 
 /**
@@ -957,7 +957,7 @@ function countByState(states: readonly AgentState[]): Record<AgentState, number>
     waiting: 0,
     retrying: 0,
     unknown: 0,
-    no_pi: 0,
+    no_agent: 0,
   };
   for (const s of states) counts[s] += 1;
   return counts;

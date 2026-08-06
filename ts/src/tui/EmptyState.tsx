@@ -24,7 +24,7 @@ export function EmptyState(): ReactElement {
       paddingY={2}
     >
       <Text bold color={theme.accent}>
-        No pi sessions yet
+        No agent sessions yet
       </Text>
       <Box marginTop={1}>
         <Text color={theme.foregroundMuted}>Press </Text>

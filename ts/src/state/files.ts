@@ -1,80 +1,50 @@
 /**
- * Per-cwd JSONL discovery + the filename-timestamp claim helper.
+ * Session-file discovery + the claim algorithm.
  *
- * Direct port of `cwd_to_session_dir`, `_filename_starttime`,
- * `_list_jsonl_with_mtime`, `_claim_session_file`, and
- * `find_session_file_for_cwd` from `src/pi_monitor/state.py`.
+ * Originally a direct port of `cwd_to_session_dir`,
+ * `_filename_starttime`, `_list_jsonl_with_mtime`,
+ * `_claim_session_file` and `find_session_file_for_cwd` from
+ * `src/pi_monitor/state.py`.
  *
- * The "claim" algorithm is the heart of the resolver: it disambiguates
- * which JSONL belongs to which pi process when multiple pis share a
- * cwd. See the long-form rationale at the top of `state.py` in the
- * Python build for the full reasoning; the comments here are the
- * short version.
+ * The claim algorithm is the heart of the resolver: it disambiguates
+ * which JSONL belongs to which agent process when several share a
+ * cwd. It is harness-agnostic — the only harness-specific inputs are
+ * *where* session files live and *when* a given file's session
+ * started, both of which come from the adapter.
+ *
+ * `cwdToSessionDir` / `parseFilenameStartTime` remain exported
+ * (delegating to the pi adapter) because the ported test corpus and
+ * single-pane helpers still call them by name.
  */
 
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 
-/**
- * Pi's session directory layout:
- *   ~/.pi/agent/sessions/<cwd-encoded>/<timestamp>_<uuid>.jsonl
- *
- * Where `<cwd-encoded>` strips the leading slash and replaces every
- * `/` with `-`, then surrounds the result in `--...--`.
- */
-export const SESSIONS_ROOT = join(homedir(), ".pi", "agent", "sessions");
+import { type Harness, piHarness } from "../harness/index.js";
+
+/** pi's sessions root. Kept as a named export for existing callers. */
+export const SESSIONS_ROOT = piHarness.defaultSessionsRoot();
 
 /**
- * Translate a pane's cwd to the directory pi writes its session
- * JSONL files into. Mirrors `cwd_to_session_dir` in the Python build.
- *
- * Tests pass `sessionsRoot` to point at a tmp directory.
+ * Slack allowed when comparing a session start time to an agent
+ * process's start time. An agent stamps its session a few ticks
+ * after the kernel created the process, so session_ts > proc.start in
+ * practice; the epsilon guards against `procStartTime`'s ms-rounding
+ * and any latent clock skew. Mirrors `_FILENAME_TS_EPSILON_S`.
  */
+export const FILENAME_TS_EPSILON_S = 1.0;
+
+/** Translate a cwd to pi's session directory. */
 export function cwdToSessionDir(
   cwd: string,
   sessionsRoot: string = SESSIONS_ROOT,
 ): string {
-  const stripped = cwd.replace(/^\/+/, "");
-  const encoded = stripped.replace(/\//g, "-");
-  return join(sessionsRoot, `--${encoded}--`);
+  return piHarness.sessionDir(cwd, sessionsRoot);
 }
 
-/**
- * Session filenames pi writes look like:
- *   `2026-05-03T20-37-34-005Z_019def8f-86b5-77ac-96f5-302472f17757.jsonl`
- * The timestamp portion is ISO-8601 with `:` and `.` replaced by `-`
- * (filename-safe). We anchor at the start and stop at the `_<uuid>`
- * separator. Mirrors `_FILENAME_TS_RE` in the Python build.
- */
-const FILENAME_TS_RE = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z_/;
-
-/**
- * Slack we allow when comparing a filename timestamp to a pi
- * process's start time. Pi calls `Date.now()` a few ticks after the
- * kernel created the process, so filename_ts > pi.start in practice;
- * the epsilon just guards against `procStartTime`'s ms-rounding and
- * any latent clock skew. Mirrors `_FILENAME_TS_EPSILON_S`.
- */
-export const FILENAME_TS_EPSILON_S = 1.0;
-
-/**
- * Parse the ISO timestamp pi embeds in a session filename, returning
- * a unix-seconds timestamp. Returns `null` for filenames that don't
- * match the expected pattern (e.g. test fixtures with arbitrary
- * names) so callers can fall back to mtime-based heuristics.
- *
- * Accepts a full path or a basename; only the basename matters.
- */
+/** Parse the ISO timestamp pi embeds in a session filename. */
 export function parseFilenameStartTime(filenameOrPath: string): number | null {
-  const base = filenameOrPath.replace(/^.*\//, "");
-  const match = FILENAME_TS_RE.exec(base);
-  if (match === null) return null;
-  const [, date, h, m, s, ms] = match;
-  const iso = `${date}T${h}:${m}:${s}.${ms}Z`;
-  const parsed = Date.parse(iso);
-  if (Number.isNaN(parsed)) return null;
-  return parsed / 1000;
+  return piHarness.sessionStartTime(filenameOrPath);
 }
 
 /**
@@ -104,70 +74,76 @@ export function listJsonlWithMtime(directory: string): Array<[string, number]> {
 }
 
 /**
- * Pick the JSONL belonging to a single pi process in `cwd`.
+ * Pick the JSONL belonging to a single agent process in `cwd`.
  *
  * Selection order, highest priority first:
  *
- *   1. **Owned**: filename timestamp \u2208 [piStart - eps, nextPiStart - eps)
- *      \u2014 a file pi created during its lifetime, before any younger
- *      sibling pi in the same cwd was born. `nextPiStart=null` means
- *      "no younger pi" \u2192 unbounded above. Pick max by mtime so an
- *      active /new'd file beats its abandoned predecessor.
+ *   1. **Owned**: session start ∈ [agentStart - eps, nextAgentStart -
+ *      eps) — a file the agent created during its lifetime, before
+ *      any younger sibling in the same cwd was born.
+ *      `nextAgentStart=null` means "no younger sibling" → unbounded
+ *      above. Pick max by mtime so an active /new'd file beats its
+ *      abandoned predecessor.
  *
- *   2. **Resumed**: filename timestamp predates pi (so it's not pi's
- *      own creation) AND mtime >= piStart (pi has actually written
- *      to it, which is what `--session` does). Pick max by mtime.
+ *   2. **Resumed**: session start predates the agent (so it's not the
+ *      agent's own creation) AND mtime >= agentStart (the agent has
+ *      actually written to it, which is what `--session` /
+ *      `--resume` does). Pick max by mtime.
  *
- *   3. **No-info fallback** (only when piStart is null): max-by-mtime
- *      unclaimed file in the cwd. Used by `findSessionFileForCwd`
- *      and by panes whose pid lookup failed.
+ *   3. **No-info fallback** (only when agentStart is null): max-by-
+ *      mtime unclaimed file in the cwd.
  *
- * Returns `null` (not a guess) when we know pi's start time but no
- * file matches \u2014 e.g. a freshly-launched idle pi that hasn't
- * written yet. This is the fix for the cohabitation swap bug: the
- * previous version's "most recent file in cwd" fallback silently
- * re-bound the new pi to another pi's actively-written session.
+ * Returns `null` (not a guess) when we know the agent's start time
+ * but no file matches — e.g. a freshly-launched agent that hasn't
+ * written yet. This is the fix for the cohabitation swap bug: a
+ * "most recent file in cwd" fallback would silently re-bind the new
+ * agent to another agent's actively-written session.
  *
  * Mirrors `_claim_session_file` in the Python build.
  */
 export function claimSessionFile(args: {
   cwd: string;
-  piStart: number | null;
-  nextPiStart: number | null;
+  agentStart: number | null;
+  nextAgentStart: number | null;
   claimed: Set<string>;
   sessionsRoot?: string;
+  harness?: Harness;
 }): string | null {
-  const { cwd, piStart, nextPiStart, claimed, sessionsRoot } = args;
-  const dir = cwdToSessionDir(cwd, sessionsRoot ?? SESSIONS_ROOT);
+  const { cwd, agentStart, nextAgentStart, claimed } = args;
+  const harness = args.harness ?? piHarness;
+  const root = args.sessionsRoot ?? harness.defaultSessionsRoot();
+  const dir = harness.sessionDir(cwd, root);
   const candidates = listJsonlWithMtime(dir).filter(([p]) => !claimed.has(p));
   if (candidates.length === 0) return null;
 
-  if (piStart === null) {
+  if (agentStart === null) {
     // No-info fallback: greedy max-by-mtime.
     return maxByMtime(candidates);
   }
 
   const eps = FILENAME_TS_EPSILON_S;
-  const upper = nextPiStart !== null ? nextPiStart - eps : Number.POSITIVE_INFINITY;
-  const lower = piStart - eps;
+  const upper =
+    nextAgentStart !== null ? nextAgentStart - eps : Number.POSITIVE_INFINITY;
+  const lower = agentStart - eps;
 
   const owned: Array<[string, number]> = [];
-  const olderFilename: Array<[string, number]> = [];
+  const olderSession: Array<[string, number]> = [];
   for (const entry of candidates) {
     const [p] = entry;
-    const fts = parseFilenameStartTime(p);
-    if (fts !== null && fts >= lower && fts < upper) {
+    const sts = harness.sessionStartTime(p);
+    if (sts !== null && sts >= lower && sts < upper) {
       owned.push(entry);
-    } else if (fts === null || fts < lower) {
-      // Either a non-standard name (test fixtures) or a file created
-      // before pi was born. Eligible for the resumed-session path,
-      // which additionally requires mtime >= piStart.
-      olderFilename.push(entry);
+    } else if (sts === null || sts < lower) {
+      // Either an undatable session (test fixtures, unreadable head)
+      // or one started before this agent was born. Eligible for the
+      // resumed-session path, which additionally requires
+      // mtime >= agentStart.
+      olderSession.push(entry);
     }
   }
   if (owned.length > 0) return maxByMtime(owned);
 
-  const resumed = olderFilename.filter(([, m]) => m >= piStart);
+  const resumed = olderSession.filter(([, m]) => m >= agentStart);
   if (resumed.length > 0) return maxByMtime(resumed);
 
   return null;
@@ -190,12 +166,14 @@ function maxByMtime(entries: Array<[string, number]>): string {
 export function findSessionFileForCwd(
   cwd: string,
   sessionsRoot: string = SESSIONS_ROOT,
+  harness: Harness = piHarness,
 ): string | null {
   return claimSessionFile({
     cwd,
-    piStart: null,
-    nextPiStart: null,
+    agentStart: null,
+    nextAgentStart: null,
     claimed: new Set(),
     sessionsRoot,
+    harness,
   });
 }

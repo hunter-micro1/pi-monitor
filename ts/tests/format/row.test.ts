@@ -264,8 +264,8 @@ describe("activityTag", () => {
     expect(activityTag(status({ state: "waiting" })).verb).toBe("awaiting input");
   });
 
-  it("uses 'no pi' for no_pi", () => {
-    expect(activityTag(status({ state: "no_pi" })).verb).toBe("no pi");
+  it("uses 'no agent' for no_agent", () => {
+    expect(activityTag(status({ state: "no_agent" })).verb).toBe("no agent");
   });
 
   it("uses 'unknown' for unknown", () => {
@@ -353,8 +353,8 @@ describe("activityDescription", () => {
     expect(activityDescription(status({ state: "idle" }))).toBe("");
   });
 
-  it("no_pi pane has no description", () => {
-    expect(activityDescription(status({ state: "no_pi" }))).toBe("");
+  it("no_agent pane has no description", () => {
+    expect(activityDescription(status({ state: "no_agent" }))).toBe("");
   });
 });
 
@@ -457,8 +457,8 @@ describe("fmtStatusWidget", () => {
     expect(fmtStatusWidget([])).toBe("");
   });
 
-  it("returns empty string when only unknown / no_pi states are present", () => {
-    expect(fmtStatusWidget(["unknown", "no_pi", "unknown"])).toBe("");
+  it("returns empty string when only unknown / no_agent states are present", () => {
+    expect(fmtStatusWidget(["unknown", "no_agent", "unknown"])).toBe("");
   });
 
   it("renders a single state with its glyph + count", () => {
@@ -478,8 +478,8 @@ describe("fmtStatusWidget", () => {
     expect(fmtStatusWidget(["error", "error", "error"])).toBe(`${STATE_GLYPHS.error}3`);
   });
 
-  it("suppresses unknown / no_pi when other states are present", () => {
-    const out = fmtStatusWidget(["working", "unknown", "no_pi", "unknown"]);
+  it("suppresses unknown / no_agent when other states are present", () => {
+    const out = fmtStatusWidget(["working", "unknown", "no_agent", "unknown"]);
     expect(out).toBe(`${STATE_GLYPHS.working}1`);
   });
 });
