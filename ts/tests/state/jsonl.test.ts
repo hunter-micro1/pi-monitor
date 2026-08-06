@@ -11,6 +11,7 @@
 
 import { describe, expect, it } from "vitest";
 
+import { claudeHarness } from "../../src/harness/claude.js";
 import { firstTextPreview, scanLines } from "../../src/state/jsonl.js";
 
 // ---------------------------------------------------------------------------
@@ -339,5 +340,96 @@ describe("scanLines", () => {
     // Only the well-formed second turn contributes.
     expect(snap.cumulativeTokens).toBe(42);
     expect(snap.cumulativeCostUsd).toBeCloseTo(0.002, 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Claude Code JSONL shapes
+// ---------------------------------------------------------------------------
+
+describe("scanLines — Claude Code", () => {
+  it("captures assistant end_turn preview and token usage", () => {
+    const data = blob({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: " Claude reply" }],
+        stop_reason: "end_turn",
+        usage: {
+          input_tokens: 100,
+          cache_creation_input_tokens: 1000,
+          cache_read_input_tokens: 200,
+          output_tokens: 25,
+        },
+      },
+    });
+    const snap = scanLines(data, 100, claudeHarness);
+    expect(snap.lastRole).toBe("assistant");
+    expect(snap.lastStopReason).toBe("stop");
+    expect(snap.lastAssistantPreview).toBe("Claude reply");
+    expect(snap.cumulativeTokens).toBe(1325);
+    expect(snap.cumulativeCostUsd).toBe(0);
+  });
+
+  it("tracks Claude tool_use content as pending tool calls", () => {
+    const data = blob({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "toolu_1", name: "Bash" }],
+        stop_reason: "tool_use",
+      },
+    });
+    const snap = scanLines(data, 100, claudeHarness);
+    expect(snap.lastRole).toBe("assistant");
+    expect(snap.lastStopReason).toBe("toolUse");
+    expect(snap.pendingToolCalls).toBe(1);
+  });
+
+  it("clears Claude pending tools from user tool_result content", () => {
+    const data = blob(
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_1", name: "Bash" }],
+          stop_reason: "tool_use",
+        },
+      },
+      {
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }],
+        },
+      },
+    );
+    const snap = scanLines(data, 100, claudeHarness);
+    expect(snap.lastRole).toBe("toolResult");
+    expect(snap.pendingToolCalls).toBe(0);
+  });
+
+  it("captures Claude user prompts", () => {
+    const data = blob({
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text: " build this" }] },
+    });
+    const snap = scanLines(data, 100, claudeHarness);
+    expect(snap.lastRole).toBe("user");
+    expect(snap.lastUserPrompt).toBe("build this");
+  });
+
+  it("captures Claude top-level assistant errors", () => {
+    const data = blob({
+      type: "assistant",
+      error: "rate limit",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "failed" }],
+        stop_reason: "end_turn",
+      },
+    });
+    const snap = scanLines(data, 100, claudeHarness);
+    expect(snap.lastError).toBe("rate limit");
   });
 });

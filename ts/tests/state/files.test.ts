@@ -20,6 +20,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { claudeHarness } from "../../src/harness/claude.js";
 import {
   claimSessionFile,
   cwdToSessionDir,
@@ -32,13 +33,16 @@ import {
 // ---------------------------------------------------------------------------
 
 let sessionsRoot: string;
+let projectsRoot: string;
 
 beforeEach(() => {
   sessionsRoot = mkdtempSync(join(tmpdir(), "pi-mon-sess-"));
+  projectsRoot = mkdtempSync(join(tmpdir(), "pi-mon-claude-"));
 });
 
 afterEach(() => {
   rmSync(sessionsRoot, { recursive: true, force: true });
+  rmSync(projectsRoot, { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -55,6 +59,27 @@ function writeJsonl(args: {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, args.filename);
   writeFileSync(path, args.body ?? "");
+  utimesSync(path, args.mtime, args.mtime);
+  return path;
+}
+
+function writeClaudeJsonl(args: {
+  cwd: string;
+  filename: string;
+  mtime: number;
+  body?: string;
+}): string {
+  const dir = claudeHarness.sessionDir(args.cwd, projectsRoot);
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, args.filename);
+  const body =
+    args.body ??
+    `${JSON.stringify({
+      type: "user",
+      timestamp: new Date(args.mtime * 1000).toISOString(),
+      message: { role: "user", content: [] },
+    })}\n`;
+  writeFileSync(path, body);
   utimesSync(path, args.mtime, args.mtime);
   return path;
 }
@@ -82,6 +107,13 @@ describe("cwdToSessionDir", () => {
   it("strips multiple leading slashes (defensive)", () => {
     const got = cwdToSessionDir("///nested", sessionsRoot);
     expect(got).toBe(join(sessionsRoot, "--nested--"));
+  });
+});
+
+describe("claudeHarness.sessionDir", () => {
+  it("encodes a normal cwd using Claude Code's project-dir pattern", () => {
+    const got = claudeHarness.sessionDir("/Users/foo/project", projectsRoot);
+    expect(got).toBe(join(projectsRoot, "-Users-foo-project"));
   });
 });
 
@@ -251,6 +283,91 @@ describe("claimSessionFile", () => {
       sessionsRoot,
     });
     expect(got).toBe(a);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// claimSessionFile driven by the Claude adapter
+//
+// The claim algorithm is shared across harnesses; what changes is
+// where files live and how a session's start time is recovered. These
+// cases pin the Claude side of that: project-dir layout, and start
+// times read from the first record rather than the filename.
+// ---------------------------------------------------------------------------
+
+function claimClaude(args: {
+  cwd: string;
+  agentStart: number | null;
+  nextAgentStart?: number | null;
+  claimed: Set<string>;
+}): string | null {
+  return claimSessionFile({
+    cwd: args.cwd,
+    agentStart: args.agentStart,
+    nextAgentStart: args.nextAgentStart ?? null,
+    claimed: args.claimed,
+    sessionsRoot: projectsRoot,
+    harness: claudeHarness,
+  });
+}
+
+describe("claimSessionFile (claude harness)", () => {
+  it("returns null when the Claude project directory doesn't exist", () => {
+    const got = claimClaude({
+      cwd: "/no/such/cwd",
+      agentStart: 1000,
+      claimed: new Set(),
+    });
+    expect(got).toBeNull();
+  });
+
+  it("claims the newest unclaimed Claude JSONL by mtime", () => {
+    const cwd = "/Users/foo/project";
+    writeClaudeJsonl({ cwd, filename: "old.jsonl", mtime: 1000 });
+    const newest = writeClaudeJsonl({ cwd, filename: "new.jsonl", mtime: 2000 });
+    const got = claimClaude({ cwd, agentStart: null, claimed: new Set() });
+    expect(got).toBe(newest);
+  });
+
+  it("respects the claimed set", () => {
+    const cwd = "/Users/foo/project";
+    const a = writeClaudeJsonl({ cwd, filename: "a.jsonl", mtime: 1000 });
+    const b = writeClaudeJsonl({ cwd, filename: "b.jsonl", mtime: 2000 });
+    const got = claimClaude({ cwd, agentStart: null, claimed: new Set([b]) });
+    expect(got).toBe(a);
+  });
+
+  it("filters out files not modified after a known agent start", () => {
+    const cwd = "/Users/foo/project";
+    writeClaudeJsonl({ cwd, filename: "old.jsonl", mtime: 1000 });
+    const active = writeClaudeJsonl({ cwd, filename: "active.jsonl", mtime: 1105 });
+    const got = claimClaude({ cwd, agentStart: 1100, claimed: new Set() });
+    expect(got).toBe(active);
+  });
+
+  it("uses Claude entry timestamps to bound sibling ownership windows", () => {
+    // The regression this guards: Claude names files by bare UUID, so
+    // without reading the first record's timestamp the window collapses
+    // to "newest mtime wins" and the younger agent steals the older
+    // sibling's actively-written file.
+    const cwd = "/Users/foo/project";
+    const older = writeClaudeJsonl({ cwd, filename: "older.jsonl", mtime: 1005 });
+    const younger = writeClaudeJsonl({ cwd, filename: "younger.jsonl", mtime: 1110 });
+
+    const first = claimClaude({
+      cwd,
+      agentStart: 1000,
+      nextAgentStart: 1100,
+      claimed: new Set(),
+    });
+    const second = claimClaude({
+      cwd,
+      agentStart: 1100,
+      claimed: new Set([older]),
+    });
+
+    expect(first).toBe(older);
+    expect(second).toBe(younger);
   });
 });
 

@@ -23,6 +23,7 @@ import { execFileSync } from "node:child_process";
 
 import {
   _resetPsCacheForTests,
+  findAgentPidForPane,
   findPiPidForPane,
   parseEtime,
   procCwd,
@@ -234,6 +235,52 @@ describe("macos.findPiPidForPane", () => {
       [101, 100, "pi", 100],
     ]);
     expect(findPiPidForPane(100)).toBe(101);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findAgentPidForPane: multi-harness priority
+// ---------------------------------------------------------------------------
+
+describe("macos.findAgentPidForPane (multi-harness)", () => {
+  it("finds claude descendants", () => {
+    fakePsRows([
+      [100, 1, "zsh", 200],
+      [101, 100, "node", 150],
+      [102, 101, "claude", 100],
+    ]);
+    expect(findAgentPidForPane(100, ["pi", "claude"])).toEqual({
+      pid: 102,
+      comm: "claude",
+    });
+    expect(findPiPidForPane(100)).toBeNull();
+  });
+
+  it("keeps the first supported kind as primary when a different agent is nested", () => {
+    // See the linux twin: pi outranks a claude it launched.
+    fakePsRows([
+      [100, 1, "zsh", 200],
+      [101, 100, "pi", 150],
+      [102, 101, "claude", 100],
+    ]);
+    expect(findAgentPidForPane(100, ["pi", "claude"])).toEqual({
+      pid: 101,
+      comm: "pi",
+    });
+    expect(findPiPidForPane(100)).toBe(101);
+  });
+
+  it("returns the deepest process of the primary supported kind", () => {
+    fakePsRows([
+      [100, 1, "zsh", 200],
+      [101, 100, "claude", 150],
+      [102, 101, "node", 125],
+      [103, 102, "claude", 100],
+    ]);
+    expect(findAgentPidForPane(100, ["pi", "claude"])).toEqual({
+      pid: 103,
+      comm: "claude",
+    });
   });
 });
 

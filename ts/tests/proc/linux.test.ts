@@ -10,6 +10,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  findAgentPidForPane,
   findPiPidForPane,
   procCwd,
   procCwds,
@@ -263,5 +264,50 @@ describe("linux.findPiPidForPane", () => {
       children: { 100: [101], 101: [] },
     });
     expect(findPiPidForPane(100)).toBe(101);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findAgentPidForPane: multi-harness priority
+// ---------------------------------------------------------------------------
+
+describe("linux.findAgentPidForPane (multi-harness)", () => {
+  it("finds claude descendants", () => {
+    withProcLayout({
+      comms: { 100: "zsh", 101: "node", 102: "claude" },
+      children: { 100: [101], 101: [102], 102: [] },
+    });
+    expect(findAgentPidForPane(100, ["pi", "claude"])).toEqual({
+      pid: 102,
+      comm: "claude",
+    });
+    expect(findPiPidForPane(100)).toBeNull();
+  });
+
+  it("keeps the first supported kind as primary when a different agent is nested", () => {
+    // pi can launch claude as a subagent, so a subtree containing both
+    // is a PI pane. Priority comes from commNames order, which the
+    // registry supplies in harness-registration order — taking the
+    // deepest match of any kind would mislabel this pane claude.
+    withProcLayout({
+      comms: { 100: "zsh", 101: "pi", 102: "claude" },
+      children: { 100: [101], 101: [102], 102: [] },
+    });
+    expect(findAgentPidForPane(100, ["pi", "claude"])).toEqual({
+      pid: 101,
+      comm: "pi",
+    });
+    expect(findPiPidForPane(100)).toBe(101);
+  });
+
+  it("returns the deepest process of the primary supported kind", () => {
+    withProcLayout({
+      comms: { 100: "zsh", 101: "claude", 102: "node", 103: "claude" },
+      children: { 100: [101], 101: [102], 102: [103], 103: [] },
+    });
+    expect(findAgentPidForPane(100, ["pi", "claude"])).toEqual({
+      pid: 103,
+      comm: "claude",
+    });
   });
 });

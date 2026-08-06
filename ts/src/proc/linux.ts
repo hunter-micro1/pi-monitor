@@ -90,7 +90,11 @@ export function findAgentPidForPane(
   commNames: readonly string[],
 ): AgentProc | null {
   const wanted = new Set(commNames);
-  let best: { pid: number; depth: number; comm: string } | null = null;
+  // Deepest match per comm, resolved against `commNames` order at the
+  // end. Tracking per-comm rather than one global best is what lets a
+  // pi that launched a claude subagent stay a PI pane: taking the
+  // deepest match of any kind would re-label it claude.
+  const bestByComm = new Map<string, { pid: number; depth: number }>();
   const queue: Array<{ pid: number; depth: number }> = [{ pid: panePid, depth: 0 }];
   const seen = new Set<number>();
 
@@ -108,8 +112,11 @@ export function findAgentPidForPane(
       // Process disappeared or not readable; skip and continue.
       continue;
     }
-    if (wanted.has(comm) && (best === null || depth > best.depth)) {
-      best = { pid, depth, comm };
+    if (wanted.has(comm)) {
+      const prev = bestByComm.get(comm);
+      if (prev === undefined || depth > prev.depth) {
+        bestByComm.set(comm, { pid, depth });
+      }
     }
 
     let childrenRaw: string;
@@ -126,7 +133,26 @@ export function findAgentPidForPane(
       }
     }
   }
-  return best === null ? null : { pid: best.pid, comm: best.comm };
+  return pickByCommPriority(bestByComm, commNames);
+}
+
+/**
+ * Resolve per-comm matches against caller-supplied priority order.
+ *
+ * `commNames` arrives in harness-registration order, so the first
+ * entry with a match wins the pane. Within a comm we already kept the
+ * deepest process, which is what makes pi's auto-worktree re-exec
+ * chain resolve to the leaf pi.
+ */
+export function pickByCommPriority(
+  bestByComm: Map<string, { pid: number; depth: number }>,
+  commNames: readonly string[],
+): AgentProc | null {
+  for (const comm of commNames) {
+    const hit = bestByComm.get(comm);
+    if (hit !== undefined) return { pid: hit.pid, comm };
+  }
+  return null;
 }
 
 /**

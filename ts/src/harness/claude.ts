@@ -198,13 +198,21 @@ export const claudeHarness: Harness = {
         }
       }
 
-      // Claude flags API failures with `isApiErrorMessage` and puts
-      // the human-readable reason in the text body. Surfacing it as
-      // `errorMessage` gives us pi's ERROR state *and* lets the
-      // notifier's retryable-error suppression work unchanged.
+      // Claude signals a failed turn two different ways, and both
+      // occur in the wild:
+      //
+      //   - a top-level `error` string on the record, and
+      //   - `isApiErrorMessage: true` with the human-readable reason
+      //     in the text body (e.g. "API Error: 503 overloaded").
+      //
+      // Surfacing either as `errorMessage` gives us pi's ERROR state
+      // *and* lets the notifier's retryable-error suppression work
+      // unchanged, since it matches on the message text.
       const text = textPreview(content);
+      const topLevelError = typeof entry.error === "string" ? entry.error : null;
       const errorMessage =
-        entry.isApiErrorMessage === true ? (text ?? "API error") : null;
+        topLevelError ??
+        (entry.isApiErrorMessage === true ? (text ?? "API error") : null);
 
       return normalizedRecord("assistant", {
         stopReason: errorMessage !== null ? "error" : stopReason,

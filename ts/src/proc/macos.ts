@@ -12,6 +12,7 @@
 
 import { execFileSync } from "node:child_process";
 
+import { pickByCommPriority } from "./linux.js";
 import type { AgentProc } from "./types.js";
 
 /**
@@ -259,6 +260,10 @@ export function findAgentPidForPane(
   commNames: readonly string[],
 ): AgentProc | null {
   const wanted = new Set(commNames);
+  // Deepest match per comm, resolved against `commNames` order at the
+  // end — see the note in proc/linux.ts. Keeps a pi that launched a
+  // claude subagent labelled as a pi pane.
+  const bestByComm = new Map<string, { pid: number; depth: number }>();
   const snap = readPsSnapshot();
 
   // Build parent -> children index from the snapshot. Cheap; the
@@ -273,7 +278,6 @@ export function findAgentPidForPane(
     list.push(row.pid);
   }
 
-  let best: { pid: number; depth: number; comm: string } | null = null;
   const queue: Array<{ pid: number; depth: number }> = [{ pid: panePid, depth: 0 }];
   const seen = new Set<number>();
 
@@ -284,8 +288,11 @@ export function findAgentPidForPane(
 
     const row = snap.get(pid);
     if (row === undefined) continue;
-    if (wanted.has(row.comm) && (best === null || depth > best.depth)) {
-      best = { pid, depth, comm: row.comm };
+    if (wanted.has(row.comm)) {
+      const prev = bestByComm.get(row.comm);
+      if (prev === undefined || depth > prev.depth) {
+        bestByComm.set(row.comm, { pid, depth });
+      }
     }
 
     const kids = childrenByPpid.get(pid);
@@ -294,7 +301,7 @@ export function findAgentPidForPane(
       if (!seen.has(kpid)) queue.push({ pid: kpid, depth: depth + 1 });
     }
   }
-  return best === null ? null : { pid: best.pid, comm: best.comm };
+  return pickByCommPriority(bestByComm, commNames);
 }
 
 /**

@@ -1,8 +1,8 @@
 # pi-monitor (TypeScript build)
 
 Live, tmux-aware status monitor for [pi](https://github.com/badlogic/pi-mono)
-coding agents. Same product as the Python build (`../src/pi_monitor/`);
-this directory is the canonical install starting at 0.4.0.
+and Claude Code coding agents. Same product as the Python build
+(`../src/pi_monitor/`); this directory is the canonical install starting at 0.4.0.
 
 The Python build at the repo root continues to work and is published
 to PyPI separately; the project README at `../README.md` covers the
@@ -32,13 +32,20 @@ pi-monitor --help         # usage
 pi-monitor --version      # print version + exit
 ```
 
+## Agent data sources
+
+`pi-monitor` observes tmux panes with descendant `pi` or `claude`
+processes. Pi panes use `~/.pi/agent/sessions`; Claude Code panes use
+`~/.claude/projects`. Claude Code support is observe-only and currently
+uses JSONL inference only (no heartbeat integration or Claude launcher).
+
 ## Dev
 
 ```bash
 cd ts
 pnpm install
 pnpm dev          # run the cli without bundling (tsx)
-pnpm test         # vitest (350 tests)
+pnpm test         # vitest
 pnpm test:watch   # vitest in watch mode
 pnpm typecheck    # tsc --noEmit
 pnpm check        # biome lint + format check
