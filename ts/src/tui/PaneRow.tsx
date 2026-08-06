@@ -35,6 +35,8 @@ import {
 } from "../format/row.js";
 import type { PaneStatus } from "../state/types.js";
 import { useTheme } from "./ThemeContext.js";
+import { ensureReadable } from "./contrast.js";
+import type { Theme } from "./themes.js";
 
 /**
  * Default inner-card width used when the App doesn't thread one in
@@ -42,6 +44,41 @@ import { useTheme } from "./ThemeContext.js";
  * truncation kicks in for typical fixture content.
  */
 const DEFAULT_ROW_WIDTH = 96;
+
+/**
+ * Text colours for a row, given whether it's the cursor row.
+ *
+ * Split out as a pure function because the selection highlight is
+ * where row colours go wrong and ANSI output is awkward to assert
+ * against. Two distinct problems live here:
+ *
+ *   - **Dim on the highlight.** Unselected rows deliberately recede
+ *     via `foregroundMuted` + `dimColor`. On `selectionBg` that
+ *     combination (an already-muted colour plus ANSI SGR 2) renders
+ *     as unreadable near-black, so the cursor row drops the dim and
+ *     uses full `foreground`.
+ *
+ *   - **Dark state tints.** Colours like `no_agent` (`#414868`) are
+ *     chosen against a transparent background and sit at ~1.2:1 on
+ *     the highlight. `lift` substitutes `foreground` for exactly the
+ *     tints that fail, preserving the colour coding everywhere it
+ *     still reads.
+ */
+export function rowTextStyles(
+  selected: boolean,
+  theme: Theme,
+): {
+  descColor: string;
+  descDim: boolean;
+  lift: (color: string) => string;
+} {
+  return {
+    descColor: selected ? theme.foreground : theme.foregroundMuted,
+    descDim: !selected,
+    lift: (color: string) =>
+      selected ? ensureReadable(color, theme.selectionBg, theme.foreground) : color,
+  };
+}
 
 export interface PaneRowProps {
   status: PaneStatus;
@@ -91,15 +128,23 @@ function PaneRowImpl({
   const tag: ActivityTag = activityTag(status, workingColor, theme.state);
   const description = activityDescription(status);
 
-  const titleColor =
-    main.nameColor !== null ? main.nameColor : (sessionColor ?? theme.foregroundMuted);
-  const stateDotColor =
+  const { descColor, descDim, lift: readable } = rowTextStyles(selected, theme);
+
+  const titleColor = readable(
+    main.nameColor !== null ? main.nameColor : (sessionColor ?? theme.foregroundMuted),
+  );
+  const stateDotColor = readable(
     workingColor && status.state === "working"
       ? workingColor
-      : (theme.state[status.state] ?? theme.foregroundMuted);
+      : (theme.state[status.state] ?? theme.foregroundMuted),
+  );
+  const tagColor = readable(tag.color);
+  const branchColor = readable(theme.foregroundMuted);
   const showSpinner =
     status.state === "working" && spinnerGlyph !== undefined && spinnerGlyph !== "";
-  const spinnerColor = selected ? (cursorBarColor ?? theme.accent) : tag.color;
+  const spinnerColor = readable(
+    selected ? (cursorBarColor ?? theme.accent) : tag.color,
+  );
 
   // -------------------------------------------------------------------
   // One fixed-width, padded-segment layout for every row. A computed
@@ -146,7 +191,7 @@ function PaneRowImpl({
           {nameStr}
         </Text>
         {branchStr !== "" && (
-          <Text backgroundColor={bg} color={theme.foregroundMuted} wrap="truncate">
+          <Text backgroundColor={bg} color={branchColor} wrap="truncate">
             {branchStr}
           </Text>
         )}
@@ -156,7 +201,7 @@ function PaneRowImpl({
             {spinnerStr}
           </Text>
         )}
-        <Text backgroundColor={bg} color={tag.color} wrap="truncate">
+        <Text backgroundColor={bg} color={tagColor} wrap="truncate">
           {tag.verb}
         </Text>
         <Text backgroundColor={bg}>{trailing}</Text>
@@ -169,8 +214,8 @@ function PaneRowImpl({
           </Text>
           <Text
             backgroundColor={bg}
-            dimColor
-            color={theme.foregroundMuted}
+            dimColor={descDim}
+            color={descColor}
             wrap="truncate"
           >
             {desc}
