@@ -1,5 +1,5 @@
 /**
- * Monitor-session management + spawning new pi agents +
+ * Monitor-session management + spawning coding agents +
  * status-line widget push.
  *
  * Direct port of the corresponding helpers from
@@ -11,6 +11,7 @@
 
 import { existsSync, statSync } from "node:fs";
 
+import type { HarnessId } from "../harness/index.js";
 import { TmuxError, sessionExists, tmuxRun } from "./client.js";
 import { listPanes } from "./panes.js";
 import { cleanupOrphanViewers } from "./viewer.js";
@@ -209,16 +210,16 @@ export function focusLeftSlot(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Spawning new pi agents
+// Spawning coding agents
 // ---------------------------------------------------------------------------
 
 /**
  * Basename of `cwd`, with `-2` / `-3` ... appended if a session of
- * that name already exists. `pi` is the fallback for empty/root
- * paths. Mirrors `_suggest_session_name`.
+ * that name already exists. The harness id is the fallback for
+ * empty/root paths.
  */
-function suggestSessionName(cwd: string): string {
-  const base = cwd.replace(/\/+$/, "").split("/").pop() || "pi";
+function suggestSessionName(cwd: string, harness: HarnessId): string {
+  const base = cwd.replace(/\/+$/, "").split("/").pop() || harness;
   let candidate = base;
   let n = 2;
   while (sessionExists(candidate)) {
@@ -229,21 +230,19 @@ function suggestSessionName(cwd: string): string {
 }
 
 /**
- * Create a new detached tmux session running `pi` in `cwd`. Returns
- * the final session name (which may differ from the requested one
- * if a collision suffix was appended).
+ * Create a detached tmux session running the requested coding-agent
+ * harness in `cwd`. Returns the final session name.
  *
  * When `worktree` is true, pi-monitor creates a fresh git worktree
  * (`<repo_parent>/<repo>-<base>-<ts>` on branch `agent/<base>-<ts>`)
- * via `createAgentWorktree` and pi is launched inside the new
- * worktree path, NOT `cwd`. This was previously delegated to the
- * `pi -w` flag handled by the auto-worktree extension; pi v0.76
- * hard-rejects unknown CLI flags before extensions load, so
- * pi-monitor now owns the worktree creation directly.
- *
- * Mirrors `create_pi_session`.
+ * and launches the agent inside that worktree instead of `cwd`.
  */
-export function createPiSession(cwd: string, name?: string, worktree = false): string {
+export function createAgentSession(
+  harness: HarnessId,
+  cwd: string,
+  name?: string,
+  worktree = false,
+): string {
   if (!isDirectory(cwd)) {
     throw new TmuxError(`directory not found: ${cwd}`);
   }
@@ -251,22 +250,25 @@ export function createPiSession(cwd: string, name?: string, worktree = false): s
   // Session-name collision check uses the user-typed name (or the
   // basename of the original cwd); the worktree path's basename
   // is a noisy `<repo>-<base>-<ts>` so we keep the friendlier name.
-  const finalName = name ?? suggestSessionName(cwd);
+  const finalName = name ?? suggestSessionName(cwd, harness);
   if (name !== undefined && sessionExists(name)) {
     throw new TmuxError(`session ${JSON.stringify(name)} already exists`);
   }
-  tmuxRun(["new-session", "-d", "-s", finalName, "-c", launchCwd, "pi"]);
+  tmuxRun(["new-session", "-d", "-s", finalName, "-c", launchCwd, harness]);
   return finalName;
 }
 
+/** Backward-compatible helper for callers that always launch pi. */
+export function createPiSession(cwd: string, name?: string, worktree = false): string {
+  return createAgentSession("pi", cwd, name, worktree);
+}
+
 /**
- * Create a new window in `targetSession` running `pi` in `cwd`.
- * Each pi agent gets its own window (tab) inside the session.
- * `worktree` semantics match `createPiSession`.
- *
- * Mirrors `create_pi_window`.
+ * Create a new window in `targetSession` running the requested
+ * coding-agent harness. Worktree semantics match `createAgentSession`.
  */
-export function createPiWindow(
+export function createAgentWindow(
+  harness: HarnessId,
   targetSession: string,
   cwd: string,
   worktree = false,
@@ -275,7 +277,16 @@ export function createPiWindow(
     throw new TmuxError(`directory not found: ${cwd}`);
   }
   const launchCwd = worktree ? createAgentWorktree(cwd).path : cwd;
-  tmuxRun(["new-window", "-t", targetSession, "-c", launchCwd, "pi"]);
+  tmuxRun(["new-window", "-t", targetSession, "-c", launchCwd, harness]);
+}
+
+/** Backward-compatible helper for callers that always launch pi. */
+export function createPiWindow(
+  targetSession: string,
+  cwd: string,
+  worktree = false,
+): void {
+  createAgentWindow("pi", targetSession, cwd, worktree);
 }
 
 // ---------------------------------------------------------------------------

@@ -38,6 +38,21 @@ describe("NewPiScreen render", () => {
     expect(lastFrame() ?? "").toContain("Launch pi in a new window (current session)");
   });
 
+  it("shows Claude Code when the selected harness is Claude", () => {
+    const { lastFrame } = render(
+      <NewPiScreen
+        mode="window"
+        harness="claude"
+        defaultCwd="/home/u"
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(lastFrame() ?? "").toContain(
+      "Launch Claude Code in a new window (current session)",
+    );
+  });
+
   it("pre-fills the input with defaultCwd", () => {
     const { lastFrame } = render(
       <NewPiScreen
@@ -84,7 +99,7 @@ describe("NewPiScreen behavior", () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
-  it("calls onSubmit({ mode, cwd, name, worktree }) on Enter with non-empty input", async () => {
+  it("calls onSubmit with the launcher details on Enter", async () => {
     const onSubmit = vi.fn();
     const { stdin } = render(
       <NewPiScreen
@@ -100,6 +115,7 @@ describe("NewPiScreen behavior", () => {
     stdin.write("\r");
     await wait();
     expect(onSubmit).toHaveBeenCalledWith({
+      harness: "pi",
       mode: "session",
       cwd: "/home/u",
       // 0.4.19: Session-name field auto-pre-filled from cwd
@@ -218,6 +234,7 @@ describe("NewPiScreen session-name field", () => {
     stdin.write("\r");
     await wait();
     expect(onSubmit).toHaveBeenCalledWith({
+      harness: "pi",
       mode: "session",
       cwd: "/home/u/Projects/contracts",
       name: "contracts",
@@ -250,6 +267,7 @@ describe("NewPiScreen session-name field", () => {
     stdin.write("\r");
     await wait();
     expect(onSubmit).toHaveBeenCalledWith({
+      harness: "pi",
       mode: "session",
       cwd: "/home/u/Projects/foo",
       // Original auto-derived name is "foo"; user appended
@@ -274,6 +292,7 @@ describe("NewPiScreen session-name field", () => {
     stdin.write("\r");
     await wait();
     expect(onSubmit).toHaveBeenCalledWith({
+      harness: "pi",
       mode: "window",
       cwd: "/home/u/Projects/foo",
       name: "",
@@ -324,9 +343,7 @@ describe("NewPiScreen worktree toggle", () => {
     expect(lastFrame() ?? "").toContain("ON");
     stdin.write("\r");
     await wait();
-    expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({ worktree: true }),
-    );
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ worktree: true }));
   });
 
   it("defaults worktree OFF when cwd is not a git checkout", async () => {
@@ -344,9 +361,7 @@ describe("NewPiScreen worktree toggle", () => {
     expect(lastFrame() ?? "").toContain("OFF");
     stdin.write("\r");
     await wait();
-    expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({ worktree: false }),
-    );
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ worktree: false }));
   });
 
   it("Tab to worktree row, then w flips OFF -> ON in session mode", async () => {
@@ -373,9 +388,7 @@ describe("NewPiScreen worktree toggle", () => {
     await wait();
     stdin.write("\r");
     await wait();
-    expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({ worktree: true }),
-    );
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ worktree: true }));
   });
 
   it("Space also toggles when the worktree row is focused", async () => {
@@ -400,9 +413,7 @@ describe("NewPiScreen worktree toggle", () => {
     await wait();
     stdin.write("\r");
     await wait();
-    expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({ worktree: false }),
-    );
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ worktree: false }));
   });
 
   it("`w` keystroke flows into the cwd field while cwd is focused (no global toggle)", async () => {
@@ -446,9 +457,10 @@ describe("deriveSessionName", () => {
     expect(deriveSessionName("/home/u/Projects/foo///")).toBe("foo");
   });
 
-  it("falls back to 'pi' for empty / root cwds", async () => {
+  it("falls back to the harness name for empty / root cwds", async () => {
     const { deriveSessionName } = await import("../../src/tui/NewPiScreen.js");
     expect(deriveSessionName("")).toBe("pi");
     expect(deriveSessionName("/")).toBe("pi");
+    expect(deriveSessionName("/", "claude")).toBe("claude");
   });
 });

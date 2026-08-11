@@ -27,6 +27,7 @@ import {
 
 import type { PiMonitorConfig } from "../config.js";
 import { fmtIdle, fmtStatusWidget } from "../format/row.js";
+import type { HarnessId } from "../harness/index.js";
 import { Notifier } from "../notify/notifier.js";
 import type { AgentState, PaneStatus } from "../state/types.js";
 import { EmptyState } from "./EmptyState.js";
@@ -66,13 +67,15 @@ export interface AppEntry {
   readonly paneTitle: string | null;
   /** Pane current path. Used by the branch resolver. */
   readonly cwd: string;
+  /** Coding-agent launcher detected in this pane. */
+  readonly harness: HarnessId;
   /** Resolved live status. */
   readonly status: PaneStatus;
 }
 
 export interface AppProps {
   /**
-   * Returns the current set of pi panes + their statuses. Called
+   * Returns the current set of coding-agent panes + their statuses. Called
    * synchronously on first render and then on every tick. Async
    * implementations are awaited; data races are guarded with a
    * `mounted` flag.
@@ -90,7 +93,7 @@ export interface AppProps {
    */
   readonly branchForCwd?: (cwd: string) => string | null;
   /**
-   * Called when the user submits the new-pi modal. The App returns
+   * Called when the user submits the new-agent modal. The App returns
    * to list mode immediately after; the caller is responsible for
    * the actual tmux invocation. Defaults to a no-op.
    *
@@ -100,6 +103,7 @@ export interface AppProps {
    * full-screen rendering, which is why silent `nothing happens`
    * was the failure mode before this signature change.
    */
+  // biome-ignore lint/suspicious/noConfusingVoidType: launch handlers may intentionally return nothing.
   readonly onLaunchPi?: (result: NewPiResult) => string | null | undefined | void;
   /** Initial cwd for the new-pi modal. Defaults to `process.cwd()`. */
   readonly defaultCwd?: string;
@@ -215,6 +219,7 @@ export function App(props: AppProps): ReactElement {
   const [windowTarget, setWindowTarget] = useState<{
     session: string;
     cwd: string;
+    harness: HarnessId;
   } | null>(null);
 
   const tmux = props.tmux ?? null;
@@ -499,7 +504,11 @@ export function App(props: AppProps): ReactElement {
         if (pos !== null && pos.kind === "pane") {
           const e = entries.find((x) => x.paneId === pos.paneId);
           if (e !== undefined) {
-            setWindowTarget({ session: e.session, cwd: e.cwd });
+            setWindowTarget({
+              session: e.session,
+              cwd: e.cwd,
+              harness: e.harness,
+            });
             setMode("newWindow");
             return;
           }
@@ -550,6 +559,8 @@ export function App(props: AppProps): ReactElement {
     mode === "newSession" ? "session" : "window";
   const popupCwdHint =
     mode === "newWindow" && windowTarget !== null ? windowTarget.cwd : defaultCwd;
+  const popupHarness: HarnessId =
+    mode === "newWindow" && windowTarget !== null ? windowTarget.harness : "pi";
   const closePopup = (): void => {
     setMode("list");
     setWindowTarget(null);
@@ -683,6 +694,7 @@ export function App(props: AppProps): ReactElement {
             <Box marginTop={1}>
               <NewPiScreen
                 mode={popupNewPiMode}
+                harness={popupHarness}
                 defaultCwd={popupCwdHint}
                 onCancel={closePopup}
                 onSubmit={submitPopup}

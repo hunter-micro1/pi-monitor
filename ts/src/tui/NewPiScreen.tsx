@@ -1,6 +1,6 @@
 /**
- * Prompt for a directory + session name to launch a new pi agent
- * in. Returns `{ mode, cwd, name }` on Enter via onSubmit; null
+ * Prompt for a directory + session name to launch a coding agent.
+ * Returns `{ harness, mode, cwd, name }` on Enter via onSubmit; null
  * via onCancel on Esc.
  *
  * Two stacked text inputs (`Directory` + `Session name`). Tab
@@ -25,6 +25,7 @@ import { Box, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { type ReactElement, useState } from "react";
 
+import type { HarnessId } from "../harness/index.js";
 import { useTheme } from "./ThemeContext.js";
 import { type ListDir, completeDirPath } from "./dirComplete.js";
 import { branchForCwd as defaultBranchForCwd } from "./git.js";
@@ -32,6 +33,8 @@ import { branchForCwd as defaultBranchForCwd } from "./git.js";
 export type NewPiMode = "session" | "window";
 
 export interface NewPiResult {
+  /** Agent CLI to launch in the new tmux session or window. */
+  readonly harness: HarnessId;
   readonly mode: NewPiMode;
   /**
    * For window mode: the tmux session the new window should be
@@ -49,11 +52,10 @@ export interface NewPiResult {
    */
   readonly name?: string;
   /**
-   * True iff pi should be launched with `-w`, so the bundled
-   * auto-worktree extension creates a fresh `agent/<base>-<ts>`
-   * worktree and re-execs pi inside it. False to run pi in place
-   * on the cwd's current branch. Default in the UI is true when
-   * the cwd resolves to a git checkout on a named branch; the
+   * Whether pi-monitor should create a fresh `agent/<base>-<ts>`
+   * worktree before launching the selected agent. False launches
+   * in place on the cwd's current branch. Default in the UI is true
+   * when the cwd resolves to a git checkout on a named branch; the
    * user can toggle with `w`.
    */
   readonly worktree: boolean;
@@ -62,6 +64,8 @@ export interface NewPiResult {
 export interface NewPiScreenProps {
   /** "session" = `tmux new-session`, "window" = `tmux new-window`. */
   readonly mode: NewPiMode;
+  /** Agent CLI this popup will launch. Defaults to pi. */
+  readonly harness?: HarnessId;
   /** Pre-filled cwd. Cursor lands at end of value. */
   readonly defaultCwd: string;
   /** Called with the result on Enter. */
@@ -88,15 +92,15 @@ export interface NewPiScreenProps {
 
 /**
  * Default for the Session-name field, derived from a cwd. Strips
- * trailing slashes and takes the basename; `pi` for empty / root
- * cwds. Mirrors the heuristic in `tmux/monitor.ts:suggestSessionName`,
+ * trailing slashes and takes the basename; the harness id is used
+ * for empty/root cwds. Mirrors `tmux/monitor.ts:suggestSessionName`,
  * minus the collision-suffix step (the user can override here).
  *
  * Exported for unit tests; production callers go through the
  * component's render path.
  */
-export function deriveSessionName(cwd: string): string {
-  const base = cwd.replace(/\/+$/, "").split("/").pop() || "pi";
+export function deriveSessionName(cwd: string, harness: HarnessId = "pi"): string {
+  const base = cwd.replace(/\/+$/, "").split("/").pop() || harness;
   return base;
 }
 
@@ -112,7 +116,15 @@ const LABEL_COL = 14;
 type FocusedField = "cwd" | "name" | "worktree";
 
 export function NewPiScreen(props: NewPiScreenProps): ReactElement {
-  const { mode, defaultCwd, onSubmit, onCancel, listDir, width } = props;
+  const {
+    mode,
+    harness = "pi",
+    defaultCwd,
+    onSubmit,
+    onCancel,
+    listDir,
+    width,
+  } = props;
 
   // Theme palette aliased to the historical color-constant names so
   // the JSX below stays unchanged while still tracking `t` cycles.
@@ -128,7 +140,9 @@ export function NewPiScreen(props: NewPiScreenProps): ReactElement {
   // until the user edits it manually (then we stop syncing so we
   // don't overwrite their choice on every keystroke in the cwd
   // field).
-  const [nameValue, setNameValue] = useState(() => deriveSessionName(defaultCwd));
+  const [nameValue, setNameValue] = useState(() =>
+    deriveSessionName(defaultCwd, harness),
+  );
   const [nameTouched, setNameTouched] = useState(false);
   const [focused, setFocused] = useState<FocusedField>("cwd");
   // Worktree toggle. Default: on when the cwd appears to be a git
@@ -158,10 +172,11 @@ export function NewPiScreen(props: NewPiScreenProps): ReactElement {
     return "cwd";
   };
 
+  const agentLabel = harness === "claude" ? "Claude Code" : "pi";
   const title =
     mode === "session"
-      ? "Launch pi in a new tmux session"
-      : "Launch pi in a new window (current session)";
+      ? `Launch ${agentLabel} in a new tmux session`
+      : `Launch ${agentLabel} in a new window (current session)`;
 
   // ---------------------------------------------------------------------
   // Key handler. We intercept Tab + Esc + Enter at the App layer so
@@ -207,6 +222,7 @@ export function NewPiScreen(props: NewPiScreenProps): ReactElement {
       }
       const trimmedName = nameValue.trim();
       onSubmit({
+        harness,
         mode,
         cwd: trimmedCwd,
         // Empty name signals 'use the caller's auto-naming
@@ -247,7 +263,7 @@ export function NewPiScreen(props: NewPiScreenProps): ReactElement {
   const handleCwdChange = (next: string): void => {
     setCwdValue(next);
     if (!nameTouched) {
-      setNameValue(deriveSessionName(next));
+      setNameValue(deriveSessionName(next, harness));
     }
     if (!worktreeTouched) {
       setWorktree(branchResolver(next) !== null);
@@ -281,7 +297,7 @@ export function NewPiScreen(props: NewPiScreenProps): ReactElement {
           <TextInput
             value={cwdValue}
             onChange={handleCwdChange}
-            placeholder="directory to start pi in"
+            placeholder={`directory to start ${harness} in`}
             focus={focused === "cwd"}
             // showCursor is true by default; explicit for clarity.
             showCursor

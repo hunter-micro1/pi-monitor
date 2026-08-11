@@ -36,6 +36,8 @@ import { TmuxError, sessionExists, tmuxRun } from "../../src/tmux/client.js";
 import {
   attachRightSlotToViewer,
   clearStatusWidget,
+  createAgentSession,
+  createAgentWindow,
   createPiSession,
   createPiWindow,
   ensureMonitorSession,
@@ -252,7 +254,7 @@ describe("resetRightSlotToPlaceholder", () => {
 });
 
 // ---------------------------------------------------------------------------
-// createPiSession / createPiWindow
+// createAgentSession / createAgentWindow compatibility helpers
 // ---------------------------------------------------------------------------
 
 describe("createPiSession", () => {
@@ -278,6 +280,26 @@ describe("createPiSession", () => {
       "-c",
       "/home/u/project",
       "pi",
+    ]);
+  });
+
+  it("launches Claude when createAgentSession receives the Claude harness", () => {
+    existsSyncMock.mockReturnValue(true);
+    statSyncMock.mockReturnValue({
+      isDirectory: () => true,
+    } as ReturnType<typeof statSync>);
+    sessionExistsMock.mockReturnValue(false);
+
+    const name = createAgentSession("claude", "/home/u/project", "myname");
+    expect(name).toBe("myname");
+    expect(tmuxRunMock).toHaveBeenCalledWith([
+      "new-session",
+      "-d",
+      "-s",
+      "myname",
+      "-c",
+      "/home/u/project",
+      "claude",
     ]);
   });
 
@@ -387,6 +409,23 @@ describe("createPiWindow", () => {
       "-c",
       "/home/u/c",
       "pi",
+    ]);
+  });
+
+  it("launches Claude when createAgentWindow receives the Claude harness", () => {
+    existsSyncMock.mockReturnValue(true);
+    statSyncMock.mockReturnValue({
+      isDirectory: () => true,
+    } as ReturnType<typeof statSync>);
+
+    createAgentWindow("claude", "contracts", "/home/u/c");
+    expect(tmuxRunMock).toHaveBeenCalledWith([
+      "new-window",
+      "-t",
+      "contracts",
+      "-c",
+      "/home/u/c",
+      "claude",
     ]);
   });
 
