@@ -24,7 +24,10 @@ interface ExpectedCall {
  * doesn't silently pass the wrong assertion.
  */
 function scriptedGit(expectations: ExpectedCall[]): {
-  exec: (args: readonly string[], cwd: string) => {
+  exec: (
+    args: readonly string[],
+    cwd: string,
+  ) => {
     stdout: string;
     stderr: string;
     status: number;
@@ -68,7 +71,10 @@ const FIXED_TS = "20260115-123456";
 describe("createAgentWorktree", () => {
   it("creates a worktree from a normal branch (uses current branch as base)", () => {
     const git = scriptedGit([
-      { match: (a) => a[0] === "rev-parse" && a[1] === "--show-toplevel", result: ok("/repos/myrepo") },
+      {
+        match: (a) => a[0] === "rev-parse" && a[1] === "--show-toplevel",
+        result: ok("/repos/myrepo"),
+      },
       { match: (a) => a[0] === "symbolic-ref", result: ok("main") },
       // worktree add
       {
@@ -105,13 +111,18 @@ describe("createAgentWorktree", () => {
 
   it("resolves base from `branch.<current>.piBase` config when inside an agent worktree", () => {
     const git = scriptedGit([
-      { match: (a) => a[0] === "rev-parse", result: ok("/repos/myrepo-main-20251231-000000") },
-      { match: (a) => a[0] === "symbolic-ref", result: ok("agent/main-20251231-000000") },
+      {
+        match: (a) => a[0] === "rev-parse",
+        result: ok("/repos/myrepo-main-20251231-000000"),
+      },
+      {
+        match: (a) => a[0] === "symbolic-ref",
+        result: ok("agent/main-20251231-000000"),
+      },
       // config lookup returns recorded base
       {
         match: (a) =>
-          a[0] === "config" &&
-          a[1] === "branch.agent/main-20251231-000000.piBase",
+          a[0] === "config" && a[1] === "branch.agent/main-20251231-000000.piBase",
         result: ok("main"),
       },
       // worktree add — new agent branch is suffix-of-base, NOT suffix-of-current
@@ -142,14 +153,19 @@ describe("createAgentWorktree", () => {
 
   it("falls back to parsing the branch name when piBase isn't recorded", () => {
     const git = scriptedGit([
-      { match: (a) => a[0] === "rev-parse" && a[1] === "--show-toplevel", result: ok("/repos/myrepo-feature-20251231-000000") },
-      { match: (a) => a[0] === "symbolic-ref", result: ok("agent/feature-20251231-000000") },
+      {
+        match: (a) => a[0] === "rev-parse" && a[1] === "--show-toplevel",
+        result: ok("/repos/myrepo-feature-20251231-000000"),
+      },
+      {
+        match: (a) => a[0] === "symbolic-ref",
+        result: ok("agent/feature-20251231-000000"),
+      },
       // config lookup misses
       { match: (a) => a[0] === "config", result: fail("") },
       // verify the parsed candidate `feature` is a real ref
       {
-        match: (a) =>
-          a[0] === "rev-parse" && a[1] === "--verify" && a[3] === "feature",
+        match: (a) => a[0] === "rev-parse" && a[1] === "--verify" && a[3] === "feature",
         result: ok("abcdef"),
       },
       {
@@ -172,7 +188,10 @@ describe("createAgentWorktree", () => {
 
   it("throws when the cwd isn't a git checkout", () => {
     const git = scriptedGit([
-      { match: (a) => a[0] === "rev-parse", result: fail("fatal: not a git repository") },
+      {
+        match: (a) => a[0] === "rev-parse",
+        result: fail("fatal: not a git repository"),
+      },
     ]);
     expect(() =>
       createAgentWorktree("/tmp", { gitExec: git.exec, now: () => FIXED_DATE }),
@@ -194,13 +213,18 @@ describe("createAgentWorktree", () => {
 
   it("throws when inside an agent worktree with no recorded base and the parsed candidate doesn't resolve", () => {
     const git = scriptedGit([
-      { match: (a) => a[0] === "rev-parse" && a[1] === "--show-toplevel", result: ok("/repos/x") },
-      { match: (a) => a[0] === "symbolic-ref", result: ok("agent/missing-20251231-000000") },
+      {
+        match: (a) => a[0] === "rev-parse" && a[1] === "--show-toplevel",
+        result: ok("/repos/x"),
+      },
+      {
+        match: (a) => a[0] === "symbolic-ref",
+        result: ok("agent/missing-20251231-000000"),
+      },
       { match: (a) => a[0] === "config", result: fail("") },
       // candidate `missing` doesn't resolve.
       {
-        match: (a) =>
-          a[0] === "rev-parse" && a[1] === "--verify" && a[3] === "missing",
+        match: (a) => a[0] === "rev-parse" && a[1] === "--verify" && a[3] === "missing",
         result: fail(""),
       },
     ]);
@@ -214,7 +238,10 @@ describe("createAgentWorktree", () => {
 
   it("propagates the git worktree-add stderr in the TmuxError message", () => {
     const git = scriptedGit([
-      { match: (a) => a[0] === "rev-parse" && a[1] === "--show-toplevel", result: ok("/repos/x") },
+      {
+        match: (a) => a[0] === "rev-parse" && a[1] === "--show-toplevel",
+        result: ok("/repos/x"),
+      },
       { match: (a) => a[0] === "symbolic-ref", result: ok("main") },
       {
         match: (a) => a[0] === "worktree" && a[1] === "add",
@@ -231,7 +258,10 @@ describe("createAgentWorktree", () => {
 
   it("doesn't fail when the piBase config write fails (it's nice-to-have)", () => {
     const git = scriptedGit([
-      { match: (a) => a[0] === "rev-parse" && a[1] === "--show-toplevel", result: ok("/repos/x") },
+      {
+        match: (a) => a[0] === "rev-parse" && a[1] === "--show-toplevel",
+        result: ok("/repos/x"),
+      },
       { match: (a) => a[0] === "symbolic-ref", result: ok("main") },
       { match: (a) => a[0] === "worktree" && a[1] === "add", result: ok("") },
       { match: (a) => a[0] === "config", result: fail("readonly config") },

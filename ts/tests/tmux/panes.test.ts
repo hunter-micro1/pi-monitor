@@ -25,8 +25,8 @@ import { findAgentPidForPane } from "../../src/proc/index.js";
 import { TmuxError, tmuxRun } from "../../src/tmux/client.js";
 import {
   isViewerSession,
-  listPanes,
   listAgentPanes,
+  listPanes,
   sanitizePaneTitle,
 } from "../../src/tmux/panes.js";
 
