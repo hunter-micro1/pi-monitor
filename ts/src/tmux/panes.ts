@@ -170,9 +170,12 @@ export function listPanes(): Pane[] {
   return panes;
 }
 
+/** A pane whose coding-agent harness has been positively identified. */
+export type AgentPane = Pane & { harness: HarnessId };
+
 /** Convenience: only panes running some recognized coding agent. */
-export function listAgentPanes(): Pane[] {
-  return listPanes().filter((p) => p.harness !== null);
+export function listAgentPanes(): AgentPane[] {
+  return listPanes().filter((p): p is AgentPane => p.harness !== null);
 }
 
 /**

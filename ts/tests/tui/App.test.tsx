@@ -38,6 +38,7 @@ function entry(fields: Partial<AppEntry> = {}): AppEntry {
     paneIndex: fields.paneIndex ?? 0,
     paneTitle: fields.paneTitle ?? "agent",
     cwd: fields.cwd ?? "/x",
+    harness: fields.harness ?? "pi",
     status: fields.status ?? status(),
   };
 }
@@ -387,7 +388,9 @@ describe("App modal mode", () => {
     await wait();
     stdin.write("o");
     await wait();
-    expect(lastFrame() ?? "").toContain("Launch pi in a new tmux session");
+    const out = lastFrame() ?? "";
+    expect(out).toContain("Launch pi in a new tmux session");
+    expect(out).toContain("p/c to choose");
   });
 
   it("opens NewPiScreen when Enter is pressed on the `+ new session` row", async () => {
@@ -445,6 +448,7 @@ describe("App modal mode", () => {
     stdin.write("\r");
     await wait();
     expect(onLaunchPi).toHaveBeenCalledWith({
+      harness: "pi",
       mode: "session",
       cwd: "/home/u",
       // 0.4.19: name field auto-derived from cwd basename.
@@ -455,6 +459,37 @@ describe("App modal mode", () => {
     });
     // Back on the list.
     expect(lastFrame() ?? "").not.toContain("Launch pi in a new");
+  });
+
+  it("lets a new session choose Claude", async () => {
+    const onLaunchPi = vi.fn();
+    const { stdin, lastFrame } = render(
+      <App
+        getEntries={() => []}
+        branchForCwd={() => null}
+        defaultCwd="/home/u"
+        listDir={() => []}
+        onLaunchPi={onLaunchPi}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    stdin.write("o");
+    await wait();
+    // cwd → name → agent, then choose Claude.
+    stdin.write("\t");
+    await wait();
+    stdin.write("\t");
+    await wait();
+    stdin.write("c");
+    await wait();
+    expect(lastFrame() ?? "").toContain("Launch Claude Code in a new tmux session");
+    stdin.write("\r");
+    await wait();
+    expect(onLaunchPi).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: "claude", mode: "session" }),
+    );
   });
 
   it("returns to list mode without calling onLaunchPi when NewPiScreen is cancelled", async () => {
@@ -718,6 +753,7 @@ describe("App new-pi targetSession", () => {
     stdin.write("\r");
     await wait();
     expect(onLaunchPi).toHaveBeenCalledWith({
+      harness: "pi",
       mode: "session",
       cwd: "/home/u",
       // 0.4.19: name field auto-derived from cwd basename.
@@ -754,6 +790,7 @@ describe("App new-pi targetSession", () => {
     stdin.write("\r");
     await wait();
     expect(onLaunchPi).toHaveBeenCalledWith({
+      harness: "pi",
       mode: "window",
       cwd: "/home/u/proj",
       targetSession: "alpha",
@@ -762,6 +799,43 @@ describe("App new-pi targetSession", () => {
       name: "",
       worktree: false,
     });
+  });
+
+  it("window mode preserves the Claude launcher from the cursored pane", async () => {
+    const onLaunchPi = vi.fn();
+    const entries = [
+      entry({
+        paneId: "%1",
+        session: "alpha",
+        cwd: "/home/u/proj",
+        harness: "claude",
+      }),
+    ];
+    const { stdin, lastFrame } = render(
+      <App
+        getEntries={() => entries}
+        branchForCwd={() => null}
+        defaultCwd="/home/u"
+        onLaunchPi={onLaunchPi}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    stdin.write("o");
+    await wait();
+    expect(lastFrame() ?? "").toContain(
+      "Launch Claude Code in a new window (current session)",
+    );
+    stdin.write("\r");
+    await wait();
+    expect(onLaunchPi).toHaveBeenCalledWith(
+      expect.objectContaining({
+        harness: "claude",
+        mode: "window",
+        targetSession: "alpha",
+      }),
+    );
   });
 
   it("window mode pre-fills the modal with the pane's cwd, not defaultCwd", async () => {

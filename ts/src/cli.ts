@@ -105,7 +105,7 @@ async function runTui(): Promise<number> {
     { listPanes, listAgentPanes },
     { selectAgentPanes },
     { StateResolver },
-    { createPiSession, createPiWindow, setStatusWidget, clearStatusWidget },
+    { createAgentSession, createAgentWindow, setStatusWidget, clearStatusWidget },
   ] = await Promise.all([
     import("ink"),
     import("react"),
@@ -146,6 +146,7 @@ async function runTui(): Promise<number> {
       paneIndex: p.paneIndex,
       paneTitle: p.title === "" ? null : p.title,
       cwd: p.cwd,
+      harness: p.harness,
       status: statuses.get(p.paneId) ?? {
         paneId: p.paneId,
         state: "no_agent" as const,
@@ -160,6 +161,7 @@ async function runTui(): Promise<number> {
   };
 
   const onLaunchPi = (result: {
+    harness: "pi" | "claude";
     mode: "session" | "window";
     cwd: string;
     targetSession?: string;
@@ -171,18 +173,18 @@ async function runTui(): Promise<number> {
       if (result.mode === "session") {
         // Empty `name` from the popup means 'use the
         // basename + collision-suffix heuristic'. Pass undefined
-        // through to createPiSession so its existing
+        // through to createAgentSession so its existing
         // suggestSessionName path runs.
         const sessionName =
           result.name !== undefined && result.name !== "" ? result.name : undefined;
-        createPiSession(result.cwd, sessionName, worktree);
+        createAgentSession(result.harness, result.cwd, sessionName, worktree);
       } else if (result.targetSession !== undefined) {
-        createPiWindow(result.targetSession, result.cwd, worktree);
+        createAgentWindow(result.harness, result.targetSession, result.cwd, worktree);
       } else {
         // Defensive: window mode without target falls back to a
         // new session so we don't silently swallow the user's
         // intent.
-        createPiSession(result.cwd, undefined, worktree);
+        createAgentSession(result.harness, result.cwd, undefined, worktree);
       }
       return null;
     } catch (err) {

@@ -1,6 +1,6 @@
 /**
- * NewPiScreen tests. Covers Tab completion, Enter submission, Esc
- * cancellation, and the title swap between session/window modes.
+ * NewPiScreen tests. Covers agent selection, Tab completion, Enter
+ * submission, Esc cancellation, and session/window mode differences.
  */
 
 import { render } from "ink-testing-library";
@@ -26,6 +26,22 @@ describe("NewPiScreen render", () => {
     expect(lastFrame() ?? "").toContain("Launch pi in a new tmux session");
   });
 
+  it("asks new sessions to choose Pi or Claude Code", () => {
+    const { lastFrame } = render(
+      <NewPiScreen
+        mode="session"
+        defaultCwd="/home/u"
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    const out = lastFrame() ?? "";
+    expect(out).toContain("Agent");
+    expect(out).toContain("[\u25cf] pi");
+    expect(out).toContain("[ ] Claude Code");
+    expect(out).toContain("p/c to choose");
+  });
+
   it("shows the window-mode title", () => {
     const { lastFrame } = render(
       <NewPiScreen
@@ -36,6 +52,21 @@ describe("NewPiScreen render", () => {
       />,
     );
     expect(lastFrame() ?? "").toContain("Launch pi in a new window (current session)");
+  });
+
+  it("shows Claude Code when the selected harness is Claude", () => {
+    const { lastFrame } = render(
+      <NewPiScreen
+        mode="window"
+        harness="claude"
+        defaultCwd="/home/u"
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(lastFrame() ?? "").toContain(
+      "Launch Claude Code in a new window (current session)",
+    );
   });
 
   it("pre-fills the input with defaultCwd", () => {
@@ -84,7 +115,7 @@ describe("NewPiScreen behavior", () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
-  it("calls onSubmit({ mode, cwd, name, worktree }) on Enter with non-empty input", async () => {
+  it("calls onSubmit with the launcher details on Enter", async () => {
     const onSubmit = vi.fn();
     const { stdin } = render(
       <NewPiScreen
@@ -100,6 +131,7 @@ describe("NewPiScreen behavior", () => {
     stdin.write("\r");
     await wait();
     expect(onSubmit).toHaveBeenCalledWith({
+      harness: "pi",
       mode: "session",
       cwd: "/home/u",
       // 0.4.19: Session-name field auto-pre-filled from cwd
@@ -108,6 +140,34 @@ describe("NewPiScreen behavior", () => {
       name: "u",
       worktree: false,
     });
+  });
+
+  it("lets session mode select Claude before launch", async () => {
+    const onSubmit = vi.fn();
+    const { stdin, lastFrame } = render(
+      <NewPiScreen
+        mode="session"
+        defaultCwd="/home/u"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+        listDir={() => []}
+        branchForCwd={() => null}
+      />,
+    );
+    await wait();
+    // cwd → name → agent
+    stdin.write("\t");
+    await wait();
+    stdin.write("\t");
+    await wait();
+    stdin.write("c");
+    await wait();
+    expect(lastFrame() ?? "").toContain("Launch Claude Code in a new tmux session");
+    stdin.write("\r");
+    await wait();
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: "claude", mode: "session" }),
+    );
   });
 
   it("calls onCancel (not onSubmit) on Enter when input is whitespace-only", async () => {
@@ -191,7 +251,7 @@ describe("NewPiScreen session-name field", () => {
     expect(out).toContain("foo");
   });
 
-  it("hides the Session-name field in window mode", () => {
+  it("hides session-only fields in window mode", () => {
     const { lastFrame } = render(
       <NewPiScreen
         mode="window"
@@ -200,7 +260,9 @@ describe("NewPiScreen session-name field", () => {
         onCancel={() => {}}
       />,
     );
-    expect(lastFrame() ?? "").not.toContain("Session name");
+    const out = lastFrame() ?? "";
+    expect(out).not.toContain("Session name");
+    expect(out).not.toContain("p/c to choose");
   });
 
   it("submits the auto-derived name when the user doesn't touch the name field", async () => {
@@ -218,6 +280,7 @@ describe("NewPiScreen session-name field", () => {
     stdin.write("\r");
     await wait();
     expect(onSubmit).toHaveBeenCalledWith({
+      harness: "pi",
       mode: "session",
       cwd: "/home/u/Projects/contracts",
       name: "contracts",
@@ -250,6 +313,7 @@ describe("NewPiScreen session-name field", () => {
     stdin.write("\r");
     await wait();
     expect(onSubmit).toHaveBeenCalledWith({
+      harness: "pi",
       mode: "session",
       cwd: "/home/u/Projects/foo",
       // Original auto-derived name is "foo"; user appended
@@ -274,6 +338,7 @@ describe("NewPiScreen session-name field", () => {
     stdin.write("\r");
     await wait();
     expect(onSubmit).toHaveBeenCalledWith({
+      harness: "pi",
       mode: "window",
       cwd: "/home/u/Projects/foo",
       name: "",
@@ -287,7 +352,7 @@ describe("NewPiScreen session-name field", () => {
 // ---------------------------------------------------------------------------
 
 describe("NewPiScreen worktree toggle", () => {
-  // Tab cycle in session mode: cwd → name → worktree.
+  // Tab cycle in session mode: cwd → name → agent → worktree.
   // Tab cycle in window mode: cwd → worktree.
   // The cwd-field Tab first attempts completion; with listDir = () => []
   // there are no candidates so the Tab actually cycles focus.
@@ -324,9 +389,7 @@ describe("NewPiScreen worktree toggle", () => {
     expect(lastFrame() ?? "").toContain("ON");
     stdin.write("\r");
     await wait();
-    expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({ worktree: true }),
-    );
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ worktree: true }));
   });
 
   it("defaults worktree OFF when cwd is not a git checkout", async () => {
@@ -344,9 +407,7 @@ describe("NewPiScreen worktree toggle", () => {
     expect(lastFrame() ?? "").toContain("OFF");
     stdin.write("\r");
     await wait();
-    expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({ worktree: false }),
-    );
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ worktree: false }));
   });
 
   it("Tab to worktree row, then w flips OFF -> ON in session mode", async () => {
@@ -365,7 +426,9 @@ describe("NewPiScreen worktree toggle", () => {
     // Tab from cwd → name (session mode has the name field).
     stdin.write("\t");
     await wait();
-    // Tab from name → worktree.
+    // Tab from name → agent → worktree.
+    stdin.write("\t");
+    await wait();
     stdin.write("\t");
     await wait();
     // Now `w` toggles (was OFF → ON).
@@ -373,9 +436,7 @@ describe("NewPiScreen worktree toggle", () => {
     await wait();
     stdin.write("\r");
     await wait();
-    expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({ worktree: true }),
-    );
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ worktree: true }));
   });
 
   it("Space also toggles when the worktree row is focused", async () => {
@@ -400,9 +461,7 @@ describe("NewPiScreen worktree toggle", () => {
     await wait();
     stdin.write("\r");
     await wait();
-    expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({ worktree: false }),
-    );
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ worktree: false }));
   });
 
   it("`w` keystroke flows into the cwd field while cwd is focused (no global toggle)", async () => {
@@ -446,9 +505,10 @@ describe("deriveSessionName", () => {
     expect(deriveSessionName("/home/u/Projects/foo///")).toBe("foo");
   });
 
-  it("falls back to 'pi' for empty / root cwds", async () => {
+  it("falls back to the harness name for empty / root cwds", async () => {
     const { deriveSessionName } = await import("../../src/tui/NewPiScreen.js");
     expect(deriveSessionName("")).toBe("pi");
     expect(deriveSessionName("/")).toBe("pi");
+    expect(deriveSessionName("/", "claude")).toBe("claude");
   });
 });
