@@ -388,7 +388,9 @@ describe("App modal mode", () => {
     await wait();
     stdin.write("o");
     await wait();
-    expect(lastFrame() ?? "").toContain("Launch pi in a new tmux session");
+    const out = lastFrame() ?? "";
+    expect(out).toContain("Launch pi in a new tmux session");
+    expect(out).toContain("p/c to choose");
   });
 
   it("opens NewPiScreen when Enter is pressed on the `+ new session` row", async () => {
@@ -457,6 +459,37 @@ describe("App modal mode", () => {
     });
     // Back on the list.
     expect(lastFrame() ?? "").not.toContain("Launch pi in a new");
+  });
+
+  it("lets a new session choose Claude", async () => {
+    const onLaunchPi = vi.fn();
+    const { stdin, lastFrame } = render(
+      <App
+        getEntries={() => []}
+        branchForCwd={() => null}
+        defaultCwd="/home/u"
+        listDir={() => []}
+        onLaunchPi={onLaunchPi}
+        pollIntervalMs={9999}
+        pulseIntervalMs={9999}
+      />,
+    );
+    await wait();
+    stdin.write("o");
+    await wait();
+    // cwd → name → agent, then choose Claude.
+    stdin.write("\t");
+    await wait();
+    stdin.write("\t");
+    await wait();
+    stdin.write("c");
+    await wait();
+    expect(lastFrame() ?? "").toContain("Launch Claude Code in a new tmux session");
+    stdin.write("\r");
+    await wait();
+    expect(onLaunchPi).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: "claude", mode: "session" }),
+    );
   });
 
   it("returns to list mode without calling onLaunchPi when NewPiScreen is cancelled", async () => {

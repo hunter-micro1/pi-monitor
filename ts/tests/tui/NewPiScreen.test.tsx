@@ -1,6 +1,6 @@
 /**
- * NewPiScreen tests. Covers Tab completion, Enter submission, Esc
- * cancellation, and the title swap between session/window modes.
+ * NewPiScreen tests. Covers agent selection, Tab completion, Enter
+ * submission, Esc cancellation, and session/window mode differences.
  */
 
 import { render } from "ink-testing-library";
@@ -24,6 +24,22 @@ describe("NewPiScreen render", () => {
       />,
     );
     expect(lastFrame() ?? "").toContain("Launch pi in a new tmux session");
+  });
+
+  it("asks new sessions to choose Pi or Claude Code", () => {
+    const { lastFrame } = render(
+      <NewPiScreen
+        mode="session"
+        defaultCwd="/home/u"
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    const out = lastFrame() ?? "";
+    expect(out).toContain("Agent");
+    expect(out).toContain("[\u25cf] pi");
+    expect(out).toContain("[ ] Claude Code");
+    expect(out).toContain("p/c to choose");
   });
 
   it("shows the window-mode title", () => {
@@ -126,6 +142,34 @@ describe("NewPiScreen behavior", () => {
     });
   });
 
+  it("lets session mode select Claude before launch", async () => {
+    const onSubmit = vi.fn();
+    const { stdin, lastFrame } = render(
+      <NewPiScreen
+        mode="session"
+        defaultCwd="/home/u"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+        listDir={() => []}
+        branchForCwd={() => null}
+      />,
+    );
+    await wait();
+    // cwd → name → agent
+    stdin.write("\t");
+    await wait();
+    stdin.write("\t");
+    await wait();
+    stdin.write("c");
+    await wait();
+    expect(lastFrame() ?? "").toContain("Launch Claude Code in a new tmux session");
+    stdin.write("\r");
+    await wait();
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: "claude", mode: "session" }),
+    );
+  });
+
   it("calls onCancel (not onSubmit) on Enter when input is whitespace-only", async () => {
     const onSubmit = vi.fn();
     const onCancel = vi.fn();
@@ -207,7 +251,7 @@ describe("NewPiScreen session-name field", () => {
     expect(out).toContain("foo");
   });
 
-  it("hides the Session-name field in window mode", () => {
+  it("hides session-only fields in window mode", () => {
     const { lastFrame } = render(
       <NewPiScreen
         mode="window"
@@ -216,7 +260,9 @@ describe("NewPiScreen session-name field", () => {
         onCancel={() => {}}
       />,
     );
-    expect(lastFrame() ?? "").not.toContain("Session name");
+    const out = lastFrame() ?? "";
+    expect(out).not.toContain("Session name");
+    expect(out).not.toContain("p/c to choose");
   });
 
   it("submits the auto-derived name when the user doesn't touch the name field", async () => {
@@ -306,7 +352,7 @@ describe("NewPiScreen session-name field", () => {
 // ---------------------------------------------------------------------------
 
 describe("NewPiScreen worktree toggle", () => {
-  // Tab cycle in session mode: cwd → name → worktree.
+  // Tab cycle in session mode: cwd → name → agent → worktree.
   // Tab cycle in window mode: cwd → worktree.
   // The cwd-field Tab first attempts completion; with listDir = () => []
   // there are no candidates so the Tab actually cycles focus.
@@ -380,7 +426,9 @@ describe("NewPiScreen worktree toggle", () => {
     // Tab from cwd → name (session mode has the name field).
     stdin.write("\t");
     await wait();
-    // Tab from name → worktree.
+    // Tab from name → agent → worktree.
+    stdin.write("\t");
+    await wait();
     stdin.write("\t");
     await wait();
     // Now `w` toggles (was OFF → ON).
