@@ -214,8 +214,8 @@ export function App(props: AppProps): ReactElement {
   // prop so the notifier + titlebar suffix agree on first paint.
   const [muted, setMuted] = useState<boolean>(!notificationsEnabled);
   // Captured at the moment the user presses 'o' on a pane row, so
-  // the new-pi modal can carry the target session through to
-  // onLaunchPi when the cursor moves before submission.
+  // the new-pi modal keeps the target session/cwd and uses the pane's
+  // harness as the initial (still user-changeable) agent choice.
   const [windowTarget, setWindowTarget] = useState<{
     session: string;
     cwd: string;

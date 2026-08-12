@@ -170,6 +170,34 @@ describe("NewPiScreen behavior", () => {
     );
   });
 
+  it("lets window mode select Claude before launch", async () => {
+    const onSubmit = vi.fn();
+    const { stdin, lastFrame } = render(
+      <NewPiScreen
+        mode="window"
+        defaultCwd="/home/u"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+        listDir={() => []}
+        branchForCwd={() => null}
+      />,
+    );
+    await wait();
+    // cwd → agent
+    stdin.write("\t");
+    await wait();
+    stdin.write("c");
+    await wait();
+    expect(lastFrame() ?? "").toContain(
+      "Launch Claude Code in a new window (current session)",
+    );
+    stdin.write("\r");
+    await wait();
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: "claude", mode: "window" }),
+    );
+  });
+
   it("calls onCancel (not onSubmit) on Enter when input is whitespace-only", async () => {
     const onSubmit = vi.fn();
     const onCancel = vi.fn();
@@ -251,7 +279,7 @@ describe("NewPiScreen session-name field", () => {
     expect(out).toContain("foo");
   });
 
-  it("hides session-only fields in window mode", () => {
+  it("hides the session name but keeps the agent choice in window mode", () => {
     const { lastFrame } = render(
       <NewPiScreen
         mode="window"
@@ -262,7 +290,8 @@ describe("NewPiScreen session-name field", () => {
     );
     const out = lastFrame() ?? "";
     expect(out).not.toContain("Session name");
-    expect(out).not.toContain("p/c to choose");
+    expect(out).toContain("Agent");
+    expect(out).toContain("p/c to choose");
   });
 
   it("submits the auto-derived name when the user doesn't touch the name field", async () => {
@@ -353,7 +382,7 @@ describe("NewPiScreen session-name field", () => {
 
 describe("NewPiScreen worktree toggle", () => {
   // Tab cycle in session mode: cwd → name → agent → worktree.
-  // Tab cycle in window mode: cwd → worktree.
+  // Tab cycle in window mode: cwd → agent → worktree.
   // The cwd-field Tab first attempts completion; with listDir = () => []
   // there are no candidates so the Tab actually cycles focus.
   const noListDir: ListDir = () => [];
@@ -453,7 +482,9 @@ describe("NewPiScreen worktree toggle", () => {
       />,
     );
     await wait();
-    // Window mode skips the name field: cwd → worktree in one Tab.
+    // Window mode skips the name field: cwd → agent → worktree.
+    stdin.write("\t");
+    await wait();
     stdin.write("\t");
     await wait();
     // Space flips ON → OFF.

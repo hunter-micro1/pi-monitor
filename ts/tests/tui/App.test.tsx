@@ -801,7 +801,7 @@ describe("App new-pi targetSession", () => {
     });
   });
 
-  it("window mode preserves the Claude launcher from the cursored pane", async () => {
+  it("window mode defaults to the pane's harness but lets the user change it", async () => {
     const onLaunchPi = vi.fn();
     const entries = [
       entry({
@@ -816,6 +816,7 @@ describe("App new-pi targetSession", () => {
         getEntries={() => entries}
         branchForCwd={() => null}
         defaultCwd="/home/u"
+        listDir={() => []}
         onLaunchPi={onLaunchPi}
         pollIntervalMs={9999}
         pulseIntervalMs={9999}
@@ -827,11 +828,19 @@ describe("App new-pi targetSession", () => {
     expect(lastFrame() ?? "").toContain(
       "Launch Claude Code in a new window (current session)",
     );
+    expect(lastFrame() ?? "").toContain("p/c to choose");
+    // Window mode focus cycle: cwd → agent. Switch from the pane's
+    // Claude default to pi before launching.
+    stdin.write("\t");
+    await wait();
+    stdin.write("p");
+    await wait();
+    expect(lastFrame() ?? "").toContain("Launch pi in a new window (current session)");
     stdin.write("\r");
     await wait();
     expect(onLaunchPi).toHaveBeenCalledWith(
       expect.objectContaining({
-        harness: "claude",
+        harness: "pi",
         mode: "window",
         targetSession: "alpha",
       }),

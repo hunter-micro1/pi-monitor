@@ -64,7 +64,7 @@ export interface NewPiResult {
 export interface NewPiScreenProps {
   /** "session" = `tmux new-session`, "window" = `tmux new-window`. */
   readonly mode: NewPiMode;
-  /** Initial agent selection. Session mode lets the user change it. */
+  /** Initial agent selection. The user can change it in either mode. */
   readonly harness?: HarnessId;
   /** Pre-filled cwd. Cursor lands at end of value. */
   readonly defaultCwd: string;
@@ -159,18 +159,17 @@ export function NewPiScreen(props: NewPiScreenProps): ReactElement {
   // checkout and a non-checkout updates the toggle.
   const [worktreeTouched, setWorktreeTouched] = useState<boolean>(false);
 
-  // Window mode inherits the selected pane's harness and hides both
-  // session-only fields. Session mode asks which agent to launch.
+  // Window mode hides only the session-name field. Both modes let the
+  // user choose an agent; App seeds window mode from the selected pane.
   const showNameField = mode === "session";
-  const showHarnessField = mode === "session";
 
   /**
    * Next focus target in the Tab cycle. Cwd → name → agent → worktree
-   * → cwd in session mode; cwd → worktree → cwd in window mode.
+   * → cwd in session mode; cwd → agent → worktree → cwd in window mode.
    */
   const nextFocus = (current: FocusedField): FocusedField => {
-    if (current === "cwd") return showNameField ? "name" : "worktree";
-    if (current === "name") return showHarnessField ? "harness" : "worktree";
+    if (current === "cwd") return showNameField ? "name" : "harness";
+    if (current === "name") return "harness";
     if (current === "harness") return "worktree";
     return "cwd";
   };
@@ -243,9 +242,8 @@ export function NewPiScreen(props: NewPiScreenProps): ReactElement {
       });
       return;
     }
-    // Agent row is session-only. Direct keys make the choice explicit;
-    // arrows and Space support the same compact toggle interaction as
-    // the worktree row.
+    // Direct keys make the agent choice explicit; arrows and Space
+    // support the same compact toggle interaction as the worktree row.
     if (focused === "harness") {
       if (input === "p" || key.leftArrow) {
         chooseHarness("pi");
@@ -353,26 +351,24 @@ export function NewPiScreen(props: NewPiScreenProps): ReactElement {
         </Box>
       )}
 
-      {/* Agent choice. New sessions ask; new windows inherit the
-          selected pane's harness and keep this row hidden. */}
-      {showHarnessField && (
-        <Box marginTop={1} flexDirection="row">
-          <Box width={LABEL_COL}>
-            <Text color={FOREGROUND_MUTED}>Agent</Text>
-          </Box>
-          <Text color={focused === "harness" ? ACCENT : FOREGROUND_MUTED}>
-            {"\u203a "}
-          </Text>
-          <Text bold color={harness === "pi" ? ACCENT : FOREGROUND_MUTED}>
-            {harness === "pi" ? "[\u25cf] pi" : "[ ] pi"}
-          </Text>
-          <Text color={FOREGROUND_MUTED}>{"  "}</Text>
-          <Text bold color={harness === "claude" ? ACCENT : FOREGROUND_MUTED}>
-            {harness === "claude" ? "[\u25cf] Claude Code" : "[ ] Claude Code"}
-          </Text>
-          <Text color={FOREGROUND_MUTED}>{"  p/c to choose"}</Text>
+      {/* Agent choice. The selected pane seeds window mode, but the
+          user can switch launchers before opening the new window. */}
+      <Box marginTop={1} flexDirection="row">
+        <Box width={LABEL_COL}>
+          <Text color={FOREGROUND_MUTED}>Agent</Text>
         </Box>
-      )}
+        <Text color={focused === "harness" ? ACCENT : FOREGROUND_MUTED}>
+          {"\u203a "}
+        </Text>
+        <Text bold color={harness === "pi" ? ACCENT : FOREGROUND_MUTED}>
+          {harness === "pi" ? "[\u25cf] pi" : "[ ] pi"}
+        </Text>
+        <Text color={FOREGROUND_MUTED}>{"  "}</Text>
+        <Text bold color={harness === "claude" ? ACCENT : FOREGROUND_MUTED}>
+          {harness === "claude" ? "[\u25cf] Claude Code" : "[ ] Claude Code"}
+        </Text>
+        <Text color={FOREGROUND_MUTED}>{"  p/c to choose"}</Text>
+      </Box>
 
       <MatchesLine matches={matches} />
 
